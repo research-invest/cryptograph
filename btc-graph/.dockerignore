@@ -1,0 +1,19 @@
+# Секреты не должны попадать в слои образа — переменные приходят через
+# env_file/environment в docker-compose.
+.env
+.env.local
+
+# Мусор, раздувающий контекст сборки
+.git/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+htmlcov/
+.coverage
