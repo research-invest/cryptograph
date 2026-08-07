@@ -70,7 +70,10 @@ services:
   celery-worker:
     build: .
     container_name: btc_celery_worker
-    command: celery -A src.worker.celery_app worker --loglevel=info --concurrency=4
+    # -Q обязателен: evaluate_candidate роутится в очередь «evaluate»
+    # (task_routes в celery_app). Без неё воркер слушает только «celery»,
+    # и задачи оценки копятся в Redis необработанными.
+    command: celery -A src.worker.celery_app worker --loglevel=info --concurrency=4 -Q evaluate,celery
     env_file: .env
     environment:
       DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph

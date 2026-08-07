@@ -45,12 +45,15 @@ class RawTextInput(BaseModel):
     raw: str
     use_llm: bool = True
     save: bool = True
+    # false — пересчитать даже если свежая оценка этого кандидата есть в Redis
+    use_cache: bool = True
 
 
 class JsonCandidateInput(BaseModel):
     candidate: dict
     use_llm: bool = True
     save: bool = True
+    use_cache: bool = True
 
 
 class BatchInput(BaseModel):
@@ -73,7 +76,9 @@ def health():
 def evaluate_raw(body: RawTextInput):
     """Оценить кандидата из raw text."""
     try:
-        return run_pipeline(body.raw, use_llm=body.use_llm, save=body.save)
+        return run_pipeline(
+            body.raw, use_llm=body.use_llm, save=body.save, use_cache=body.use_cache
+        )
     except Exception as e:
         raise _fail(e, "Ошибка оценки кандидата из raw text")
 
@@ -82,7 +87,9 @@ def evaluate_raw(body: RawTextInput):
 def evaluate_json(body: JsonCandidateInput):
     """Оценить кандидата из JSON объекта."""
     try:
-        return run_pipeline(body.candidate, use_llm=body.use_llm, save=body.save)
+        return run_pipeline(
+            body.candidate, use_llm=body.use_llm, save=body.save, use_cache=body.use_cache
+        )
     except Exception as e:
         raise _fail(e, "Ошибка оценки кандидата из JSON")
 

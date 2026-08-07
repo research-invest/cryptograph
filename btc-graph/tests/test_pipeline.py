@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import types
 
 import pytest
 
@@ -140,6 +141,92 @@ def test_run_batch_pipeline_filters_and_dedups(reference_payload):
 
 def test_run_batch_pipeline_on_empty_list():
     assert run_batch_pipeline([], use_llm=False, save=False) == []
+
+
+# ─── Дедупликация через Redis (регрессия на замечание №6) ────────────────────
+
+@pytest.fixture
+def fake_redis(monkeypatch):
+    """Подменяет redis_cache: хранит хэши и оценки в памяти."""
+    from src.cache import redis_cache
+
+    hashes: dict[str, str] = {}
+    evaluations: dict[str, str] = {}
+
+    monkeypatch.setattr(pipeline, "_USE_REDIS", True)
+    monkeypatch.setattr(redis_cache, "is_hash_cached", lambda h: hashes.get(h))
+    monkeypatch.setattr(redis_cache, "get_cached_evaluation", lambda cid: evaluations.get(cid))
+    return types.SimpleNamespace(hashes=hashes, evaluations=evaluations)
+
+
+def test_cache_hit_returns_own_evaluation(reference_payload, fake_redis):
+    """Оценка того же кандидата берётся из кэша без пересчёта."""
+    cached = CandidateEvaluation(
+        candidate_id="245be5fb0908d59f6e89", quality_score=0.42, rating="WEAK",
+        direction="long", win_rate=0.5, favorable_adverse_ratio=1.0,
+        context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
+        summary="из кэша",
+    )
+    fake_redis.hashes["0f8928cb2fc1547b"] = "245be5fb0908d59f6e89"
+    fake_redis.evaluations["245be5fb0908d59f6e89"] = cached.model_dump_json()
+
+    ev = run_pipeline(reference_payload, use_llm=False, save=False)
+
+    assert ev.summary == "из кэша"
+    assert ev.quality_score == pytest.approx(0.42)
+
+
+def test_cache_never_returns_another_candidates_evaluation(reference_payload, fake_redis):
+    """
+    Под одним configuration_hash могут идти разные candidate_id. Раньше кэш
+    отдавался без проверки, и клиент получал чужую оценку с чужим id.
+    """
+    foreign = CandidateEvaluation(
+        candidate_id="СОВСЕМ_ДРУГОЙ", quality_score=0.11, rating="WEAK",
+        direction="short", win_rate=0.3, favorable_adverse_ratio=None,
+        context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
+        summary="чужая оценка",
+    )
+    fake_redis.hashes["0f8928cb2fc1547b"] = "СОВСЕМ_ДРУГОЙ"
+    fake_redis.evaluations["СОВСЕМ_ДРУГОЙ"] = foreign.model_dump_json()
+
+    ev = run_pipeline(reference_payload, use_llm=False, save=False)
+
+    assert ev.candidate_id == "245be5fb0908d59f6e89"
+    assert ev.summary != "чужая оценка"
+    assert ev.rating == "STRONG"
+
+
+def test_use_cache_false_forces_recompute(reference_payload, fake_redis):
+    """Кэш и сохранение развязаны: use_cache=False пересчитывает всегда."""
+    cached = CandidateEvaluation(
+        candidate_id="245be5fb0908d59f6e89", quality_score=0.42, rating="WEAK",
+        direction="long", win_rate=0.5, favorable_adverse_ratio=1.0,
+        context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
+        summary="из кэша",
+    )
+    fake_redis.hashes["0f8928cb2fc1547b"] = "245be5fb0908d59f6e89"
+    fake_redis.evaluations["245be5fb0908d59f6e89"] = cached.model_dump_json()
+
+    ev = run_pipeline(reference_payload, use_llm=False, save=False, use_cache=False)
+
+    assert ev.rating == "STRONG"
+    assert ev.summary != "из кэша"
+
+
+def test_corrupted_cache_is_ignored(reference_payload, fake_redis, caplog):
+    fake_redis.hashes["0f8928cb2fc1547b"] = "245be5fb0908d59f6e89"
+    fake_redis.evaluations["245be5fb0908d59f6e89"] = "{не json"
+
+    with caplog.at_level(logging.WARNING, logger="src.agent.pipeline"):
+        ev = run_pipeline(reference_payload, use_llm=False, save=False)
+
+    assert ev.rating == "STRONG"
+
+
+def test_candidate_without_hash_is_never_cached(reference_payload, fake_redis):
+    reference_payload.pop("configuration_hash")
+    assert run_pipeline(reference_payload, use_llm=False, save=False).rating == "STRONG"
 
 
 # ─── _persist: деградация и логирование (регрессия на замечание №4) ───────────
