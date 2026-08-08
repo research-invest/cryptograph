@@ -190,7 +190,7 @@ src/
 │   ├── connection.py         engine + get_session() (контекстный менеджер)
 │   ├── orm_models.py         candidates, candidate_events, market_events
 │   ├── candidate_repo.py     upsert оценки, лог события, поиск похожих, STRONG-выборка
-│   ├── embedding.py          18 признаков → вектор 384 (остальное нули) для pgvector
+│   ├── embedding.py          18 признаков → вектор 32 (остальное нули) для pgvector
 │   ├── graph_repo.py         Neo4j: upsert узлов/рёбер, запросы по переходам
 │   └── stats_repo.py         SQL к continuous aggregates TimescaleDB
 ├── cache/redis_cache.py      dedup по configuration_hash (TTL 30 мин), кэш оценок,
@@ -253,8 +253,8 @@ curl http://localhost:8000/health
 pip install -r requirements.txt
 cp .env.example .env
 
-# .env НЕ подхватывается автоматически — экспортируй переменные вручную:
-export $(grep -v '^#' .env | xargs)
+# .env читается автоматически: load_dotenv() вызывается в src/main.py,
+# src/worker/celery_app.py и alembic/env.py — запускай команды из корня проекта.
 
 alembic upgrade head
 uvicorn src.main:app --reload
@@ -620,7 +620,7 @@ curl -X POST http://localhost:8000/evaluate/json \
 | **PostgreSQL `candidate_events`** | Hypertable, append-only: каждая оценка — новая строка. Retention 90 дней | История: «как менялись оценки во времени» |
 | **`hourly_candidate_stats`, `daily_group_stats`** | Continuous aggregates поверх `candidate_events` | Быстрая аналитика без сканирования сырых данных |
 | **PostgreSQL `market_events`** | Hypertable под сырые рыночные события | Создана миграцией, но **кодом не используется** — задел на будущее |
-| **pgvector `candidates.embedding`** | Вектор 384 (значимы первые 18 признаков), HNSW-индекс, cosine | Поиск исторических аналогов текущего кандидата |
+| **pgvector `candidates.embedding`** | Вектор 32 (значимы первые 18 признаков, остальное — запас), HNSW-индекс, cosine | Поиск исторических аналогов текущего кандидата |
 | **Neo4j** | Узлы `MarketGroup {group_id}`, рёбра `TRANSITION {transition_id, rarity, count, avg_horizon_return, avg_quality_score}` | Топология рынка: какие переходы куда ведут и насколько они хороши |
 | **Redis** | `candidate:hash:*` (dedup, TTL 30 мин), `evaluation:*` (кэш оценок, TTL 30 мин), канал `btc:strong_candidates`, стрим `btc:candidates:stream` | Скорость, защита от повторной обработки, приём потока |
 
@@ -663,7 +663,7 @@ curl -X POST http://localhost:8000/evaluate/json \
 | `make migrate` падает | Postgres ещё не готов. Подожди ~15 сек после `make up` и повтори |
 | Правки в `src/` не применяются | Uvicorn в контейнере без `--reload`. Нужен `make build` |
 | Ошибка про `ANTHROPIC_API_KEY` | Либо впиши реальный ключ в `.env` + `make reload`, либо работай с `use_llm=false` |
-| Локальный запуск не видит `.env` | `load_dotenv()` нигде не вызывается. `export $(grep -v '^#' .env \| xargs)` перед стартом |
+| Локальный запуск не видит `.env` | `load_dotenv()` вызывается в `src/main.py`, `src/worker/celery_app.py` и `alembic/env.py`. Если переменная всё равно не видна — проверь, что `.env` лежит в корне проекта и процесс запущен оттуда же; уже выставленные в окружении значения `load_dotenv` не перезаписывает |
 
 Полезные команды:
 
