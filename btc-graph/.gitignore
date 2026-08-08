@@ -22,3 +22,6 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Выгрузки кандидатов для калибровки профилей (scripts/calibrate_profile.py)
+dumps/

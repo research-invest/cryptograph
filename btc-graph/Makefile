@@ -1,4 +1,5 @@
-.PHONY: help setup up down reload restart build logs migrate ps shell-api shell-pg test test-local
+.PHONY: help setup up down reload restart build logs migrate ps shell-api shell-pg \
+        test test-local profiles-check migrate-graph
 
 help:
 	@echo ""
@@ -21,6 +22,14 @@ help:
 	@echo "  Тесты (БД и сервисы не нужны):"
 	@echo "    make test       — прогнать тесты внутри контейнера api"
 	@echo "    make test-local — прогнать тесты локально (pytest)"
+	@echo ""
+	@echo "  Профили калибровки (config/symbols/*.yaml):"
+	@echo "    make profiles-check — проверить все YAML-профили на валидность"
+	@echo "    make reload         — подхватить правку профиля (volume, без build)"
+	@echo ""
+	@echo "  Мультимонетность (разово, перед первой не-BTC монетой):"
+	@echo "    make migrate        — включая 004_multi_symbol (ЧИТАЙ шапку миграции!)"
+	@echo "    make migrate-graph  — проставить symbol узлам Neo4j + constraint"
 	@echo ""
 	@echo "  Отладка:"
 	@echo "    make shell-api  — bash внутри контейнера api"
@@ -52,6 +61,17 @@ logs:
 
 migrate:
 	docker compose exec api alembic upgrade head
+
+# Переводит накопленный граф на ключ (symbol, group_id). Прогнать ОДИН раз,
+# до первого кандидата не по BTCUSDT — иначе узлы монет схлопнутся молча.
+migrate-graph:
+	docker compose exec -T neo4j cypher-shell -u neo4j -p btc_neo4j_pass \
+		< scripts/migrate_graph_symbol.cypher
+
+# Проверка профилей без поднятого стека: схема, монотонность лесенок,
+# сумма весов, полнота enum-карт.
+profiles-check:
+	python3 -m src.config.profiles --check
 
 # Тесты проверяют чистую логику — ни БД, ни Redis, ни Neo4j не требуются
 test:

@@ -4,6 +4,8 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 python-dotenv>=1.0.0
+# Профили калибровки на монету (config/symbols/*.yaml)
+PyYAML>=6.0
 
 # PostgreSQL + ORM + миграции
 sqlalchemy>=2.0.0

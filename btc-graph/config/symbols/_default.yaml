@@ -1,0 +1,62 @@
+# Базовая линейка. Исторически это перенос хардкода скорера шага 1 слово
+# в слово — та самая калибровка, что была сделана под BTCUSDT.
+#
+# С калибровки BTCUSDT@2 биткоин на неё больше НЕ опирается: у него, как и
+# у остальных монет, свой профиль. Роль этого файла сменилась и стала важнее —
+# он неподвижная общая мерка:
+#
+#   * по нему считается quality_score_baseline у ВСЕХ монет, и только это
+#     число сравнимо между монетами и во времени;
+#   * по нему оценивается монета, у которой своего профиля ещё нет.
+#
+# Отсюда правило: **этот файл не калибруют.** Его правка обесценивает все
+# накопленные baseline разом и рушит сравнимость задним числом. Он заморожен
+# снапшот-тестом на 200 кандидатах (tests/test_scorer_snapshot.py) и
+# продублирован замороженной копией в tests/fixtures/profiles/.
+#
+# Если правка всё же осознанна: бампнуть version, пересобрать снапшот
+# (scripts/make_scorer_snapshot.py), обновить копию в fixtures и README
+# (раздел «Как читать результат оценки»).
+#
+# Семантика ladder: список [порог, балл], проверяется сверху вниз, сравнение
+# строгое. higher_better → value > порог; lower_better → value < порог.
+# Ни одна ступень не сработала → floor.
+
+symbol: _default
+version: 1
+description: Неподвижная базовая линейка для quality_score_baseline и монет без профиля
+
+statistical:
+  valid_label_pct:       {mode: higher_better, ladder: [[0.85, 1.0], [0.80, 0.7], [0.75, 0.4]], floor: 0.0}
+  sample_size:           {mode: higher_better, ladder: [[1000, 1.0], [500, 0.7], [200, 0.4]], floor: 0.1}
+  monthly_concentration: {mode: lower_better,  ladder: [[0.10, 1.0], [0.15, 0.7], [0.30, 0.3]], floor: 0.0}
+  repeatability_months:  {mode: higher_better, ladder: [[15, 1.0], [12, 0.7], [6, 0.4]], floor: 0.1}
+
+directional:
+  win_rate:         {mode: higher_better, ladder: [[0.70, 1.0], [0.65, 0.7], [0.60, 0.4]], floor: 0.1}
+  abs_outcome_skew: {mode: higher_better, ladder: [[0.40, 1.0], [0.30, 0.7], [0.20, 0.4]], floor: 0.1}
+  fa_ratio:         {mode: higher_better, ladder: [[4.0, 1.0], [3.0, 0.7], [2.0, 0.4]], floor: 0.1}
+
+context:
+  context_status:     {fresh: 1.0, stale: 0.0}
+  age_bucket:         {age_lt_30: 1.0, age_30_60: 0.75, age_60_120: 0.5, age_gt_120: 0.0}
+  trajectory_entropy: {low: 1.0, medium: 0.5, high: 0.0}
+
+rarity:
+  event_rarity_bucket: {rare: 1.0, uncommon: 0.7, common: 0.2}
+  transition_rarity:   {rare: 1.0, uncommon: 0.7, common: 0.2}
+  research_score:      {mode: higher_better, ladder: [[0.85, 1.0], [0.70, 0.6]], floor: 0.2}
+
+weights: {statistical: 0.30, directional: 0.35, context: 0.20, rarity: 0.15}
+rating:  {strong_min: 0.75, moderate_min: 0.55}
+batch:   {min_quality_score: 0.60, fresh_bonus: 0.05}
+
+validator:
+  low_valid_label_pct: 0.70
+  very_small_sample_size: 100
+  high_monthly_concentration: 0.30
+  low_repeatability_months: 3
+  false_confidence_research_score: 0.85
+
+llm:
+  market_hint: "BTC — самый ликвидный крипторынок, история глубокая"

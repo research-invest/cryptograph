@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Union
 
+from src.config.profiles import ScoringProfile, get_profile
 from src.models.candidate import Candidate, CandidateEvaluation
 from src.parser.candidate_parser import parse_candidate, parse_candidates
 from src.validator.candidate_validator import validate_candidate
@@ -29,16 +30,27 @@ def _evaluate(
     candidate: Candidate,
     use_llm: bool,
     llm_model: str,
+    profile: ScoringProfile | None = None,
 ) -> CandidateEvaluation:
-    """Валидация → скоринг → объяснение (LLM или детерминированное)."""
-    warning_flags = validate_candidate(candidate)
-    score = score_candidate(candidate)
+    """
+    Валидация → скоринг → объяснение (LLM или детерминированное).
+
+    Профиль резолвится ОДИН раз и прокидывается во все узлы. Иначе
+    POST /config/reload посреди батча дал бы кандидата, у которого score
+    посчитан одной версией калибровки, а rating и тексты — другой.
+    """
+    profile = profile if profile is not None else get_profile(candidate.symbol)
+
+    warning_flags = validate_candidate(candidate, profile)
+    score = score_candidate(candidate, profile)
 
     if use_llm:
         # Импорт ленивый: без use_llm пакет anthropic не нужен вовсе.
         from src.agent.llm_node import evaluate_with_llm
-        return evaluate_with_llm(candidate, score, warning_flags, model=llm_model)
-    return deterministic_evaluation(candidate, score, warning_flags)
+        return evaluate_with_llm(
+            candidate, score, warning_flags, model=llm_model, profile=profile
+        )
+    return deterministic_evaluation(candidate, score, warning_flags, profile)
 
 
 def run_pipeline(
@@ -77,19 +89,36 @@ def run_batch_pipeline(
     raw: Union[str, list],
     use_llm: bool = True,
     llm_model: str = "claude-haiku-4-5-20251001",
-    min_quality_score: float = 0.60,
+    min_quality_score: float | None = None,
     save: bool = True,
 ) -> list[CandidateEvaluation]:
-    """Pipeline для списка кандидатов с фильтрацией и дедупликацией по family_key."""
+    """
+    Pipeline для списка кандидатов с фильтрацией и дедупликацией по family_key.
+
+    min_quality_score=None — порог берётся из профиля каждой монеты. Явное
+    число применяется ко всему батчу и перекрывает профили: так удобно
+    прогонять разовые эксперименты, но для регулярной работы это ровно та
+    абсолютная линейка, от которой уводит шаг 4.
+
+    Батч может содержать несколько монет. Профили резолвятся один раз здесь,
+    до первой оценки: hot-reload конфига посреди батча не должен приводить
+    к тому, что часть кандидатов посчитана старой калибровкой, часть новой.
+    """
     from src.filters.candidate_filter import filter_candidates, select_best_per_family
 
     candidates = parse_candidates(raw)
-    scored = filter_candidates(candidates, min_quality_score=min_quality_score)
-    best = select_best_per_family(scored)
+    profiles = {c.symbol: get_profile(c.symbol) for c in candidates}
+
+    scored = filter_candidates(
+        candidates, min_quality_score=min_quality_score, profiles=profiles
+    )
+    best = select_best_per_family(scored, profiles=profiles)
 
     results = []
     for candidate, _ in best:
-        evaluation = _evaluate(candidate, use_llm, llm_model)
+        evaluation = _evaluate(
+            candidate, use_llm, llm_model, profile=profiles.get(candidate.symbol)
+        )
         if save:
             _persist(candidate, evaluation)
         results.append(evaluation)
@@ -111,19 +140,22 @@ def _cached_evaluation(candidate: Candidate) -> CandidateEvaluation | None:
 
     from src.cache import redis_cache
 
-    cached_id = redis_cache.is_hash_cached(candidate.configuration_hash)
+    cached_id = redis_cache.is_hash_cached(
+        candidate.symbol, candidate.configuration_hash
+    )
     if not cached_id:
         return None
 
     if cached_id != candidate.candidate_id:
         logger.info(
-            "configuration_hash %s уже встречался у кандидата %s — "
+            "configuration_hash %s (%s) уже встречался у кандидата %s — "
             "для %s считаем заново",
-            candidate.configuration_hash, cached_id, candidate.candidate_id,
+            candidate.configuration_hash, candidate.symbol,
+            cached_id, candidate.candidate_id,
         )
         return None
 
-    cached_json = redis_cache.get_cached_evaluation(cached_id)
+    cached_json = redis_cache.get_cached_evaluation(candidate.symbol, cached_id)
     if not cached_json:
         return None
 
@@ -174,10 +206,12 @@ def _persist(candidate: Candidate, evaluation: CandidateEvaluation) -> dict[str,
         try:
             from src.cache import redis_cache
             eval_json = evaluation.model_dump_json()
-            ok = redis_cache.cache_evaluation(candidate.candidate_id, eval_json)
+            ok = redis_cache.cache_evaluation(
+                candidate.symbol, candidate.candidate_id, eval_json
+            )
             if candidate.configuration_hash:
                 ok = redis_cache.mark_hash_cached(
-                    candidate.configuration_hash, candidate.candidate_id
+                    candidate.symbol, candidate.configuration_hash, candidate.candidate_id
                 ) and ok
             if evaluation.rating == "STRONG":
                 ok = redis_cache.publish_strong_candidate(evaluation.model_dump()) and ok

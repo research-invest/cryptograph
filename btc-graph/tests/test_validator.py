@@ -25,14 +25,56 @@ def test_clean_candidate_has_no_flags(make_candidate):
     assert validate_candidate(c) == []
 
 
-@pytest.mark.parametrize("symbol,expected", [
-    ("BTCUSDT", False),
-    ("ETHUSDT", True),
-    ("btcusdt", True),      # регистр учитывается
-])
-def test_symbol_flag(make_candidate, symbol, expected):
+@pytest.mark.parametrize("symbol", ["BTCUSDT", "btcusdt"])
+def test_registered_symbol_has_no_profile_flag(make_candidate, symbol):
+    """
+    Флаг сменил смысл: раньше «не биткоин», теперь «нет своего профиля».
+    Монета с профилем принимается без единого замечания — именно это делает
+    мультимонетность рабочей, а не формальной. Реестр регистронезависим.
+    """
     flags = validate_candidate(make_candidate(symbol=symbol))
-    assert ("symbol_not_btcusdt" in flags) is expected
+    assert "unknown_symbol_profile" not in flags
+    assert "symbol_not_btcusdt" not in flags
+
+
+@pytest.mark.parametrize("symbol", ["DOGEUSDT", "XYZUSDT"])
+def test_unregistered_symbol_gets_profile_flag(make_candidate, symbol):
+    """
+    Монета без своего YAML считается чужой линейкой — и об этом надо знать.
+
+    Список заведённых монет намеренно НЕ хардкодится в тесте: он пополняется,
+    и тест, перечисляющий монеты, ломался бы при каждом добавлении. Проверяем
+    по реестру.
+    """
+    from src.config.profiles import is_known_symbol
+
+    assert not is_known_symbol(symbol), "тест взял монету, которую успели завести"
+    assert "unknown_symbol_profile" in validate_candidate(make_candidate(symbol=symbol))
+
+
+def test_every_registered_symbol_passes_clean(make_candidate):
+    """Ни одна заведённая монета не должна получать флаг про свой же профиль."""
+    from src.config.profiles import DEFAULT_PROFILE_NAME, list_profiles
+
+    for row in list_profiles():
+        if row["key"] == DEFAULT_PROFILE_NAME.upper():
+            continue
+        flags = validate_candidate(make_candidate(symbol=row["symbol"]))
+        assert "unknown_symbol_profile" not in flags, row["symbol"]
+
+
+def test_symbol_defaulted_flag(reference_payload):
+    """
+    Кандидат без поля symbol молча становится биткоином — pydantic-дефолт.
+    Флаг делает это видимым: иначе потерянное поле выглядит как BTC-кандидат.
+    """
+    from src.models.candidate import Candidate
+
+    without = dict(reference_payload)
+    without.pop("symbol")
+    assert "symbol_defaulted" in validate_candidate(Candidate(**without))
+
+    assert "symbol_defaulted" not in validate_candidate(Candidate(**reference_payload))
 
 
 @pytest.mark.parametrize("status,expected", [
@@ -156,3 +198,16 @@ def test_validator_never_raises(make_candidate):
     flags = validate_candidate(worst)
     assert len(flags) == 10                 # сработали все правила
     assert len(set(flags)) == len(flags)    # без дублей
+
+
+def test_thresholds_come_from_profile(make_candidate, eth_profile):
+    """
+    Выборка в 80 случаев — «очень маленькая» для BTC (порог 100) и приемлемая
+    для монеты с короткой историей (порог 60). Пороги обязаны приходить из
+    профиля, иначе альткоин получает замечание за то, что он альткоин.
+    """
+    c = make_candidate(symbol="ETHUSDT", sample_size=80, repeatability_months=2)
+
+    assert "very_small_sample_size" in validate_candidate(c)          # профиль BTC
+    assert "very_small_sample_size" not in validate_candidate(c, eth_profile)
+    assert "low_repeatability_months" not in validate_candidate(c, eth_profile)

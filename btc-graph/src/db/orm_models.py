@@ -17,10 +17,19 @@ from src.db.embedding import VECTOR_DIM
 
 
 class CandidateRecord(Base):
+    """
+    Оценённые кандидаты. Ключ составной: (symbol, candidate_id).
+
+    Генератор строит candidate_id как хэш от (symbol, ts, переход, блок,
+    смещение), то есть глобально уникальным он уже является. Символ в ключе
+    нужен не от коллизий, а ради локальности индексов — все выборки по
+    кандидатам идут «в пределах монеты» — и как страховка от смены схемы
+    идентификатора на стороне генератора.
+    """
     __tablename__ = "candidates"
 
+    symbol = Column(String, primary_key=True, nullable=False)
     candidate_id = Column(String, primary_key=True)
-    symbol = Column(String, nullable=False, default="BTCUSDT")
     configuration_hash = Column(String, index=True)
     family_key = Column(String, index=True)
 
@@ -47,8 +56,16 @@ class CandidateRecord(Base):
     fa_ratio = Column(Float)
 
     quality_score = Column(Float, index=True)
+    # Тот же кандидат по базовому профилю: профильный quality_score сравним
+    # только внутри монеты, baseline — между монетами.
+    quality_score_baseline = Column(Float)
     rating = Column(String, index=True)
     direction = Column(String, index=True)
+
+    # Метка калибровки, которой посчитана строка («ETHUSDT@3» + отпечаток
+    # содержимого). Без неё оценки до и после перекалибровки неотличимы.
+    scoring_profile = Column(String, index=True)
+    profile_fingerprint = Column(String)
 
     warning_flags = Column(ARRAY(Text))
     raw_payload = Column(JSONB)
@@ -78,13 +95,17 @@ class CandidateEventRecord(Base):
     __tablename__ = "candidate_events"
 
     event_time = Column(DateTime(timezone=True), primary_key=True, nullable=False)
+    symbol = Column(String, primary_key=True, nullable=False)
     candidate_id = Column(String, primary_key=True, nullable=False)
-    symbol = Column(String, default="BTCUSDT")
     transition_id = Column(String)
     current_group_id = Column(Float)
     quality_score = Column(Float)
+    quality_score_baseline = Column(Float)
     rating = Column(String)
     direction = Column(String)
     win_rate = Column(Float)
     fa_ratio = Column(Float)
     context_status = Column(String)
+    # Входит в GROUP BY continuous aggregate'ов: средние не должны склеивать
+    # оценки, посчитанные разными калибровками.
+    scoring_profile = Column(String)

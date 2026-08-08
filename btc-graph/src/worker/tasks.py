@@ -52,9 +52,12 @@ def evaluate_candidate(self, raw_payload: dict, use_llm: bool = True) -> dict:
 @celery_app.task(name="src.worker.tasks.process_stream_batch")
 def process_stream_batch(batch_size: int = 50) -> dict:
     """
-    Читает до batch_size сообщений из Redis Stream btc:candidates:stream
+    Читает до batch_size сообщений из Redis Stream candidates:stream
     и диспатчит задачу evaluate_candidate для каждого.
     Запускается по расписанию каждые 10 секунд через Celery Beat.
+
+    Стрим общий на все монеты: символ лежит в payload, и профиль калибровки
+    резолвится уже внутри pipeline.
     """
     try:
         from src.cache.redis_cache import read_pending_candidates, ack_candidate

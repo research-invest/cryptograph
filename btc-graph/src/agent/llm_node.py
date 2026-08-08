@@ -9,6 +9,7 @@ from typing import Optional
 
 import anthropic
 
+from src.config.profiles import ScoringProfile, get_profile
 from src.models.candidate import Candidate, CandidateEvaluation
 from src.scorer.candidate_scorer import ScoreBreakdown, fa_ratio_for, get_rating, win_rate_for
 
@@ -32,7 +33,7 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
-_SYSTEM_PROMPT = """Ты аналитик торговых кандидатов BTC.
+_SYSTEM_TEMPLATE = """Ты аналитик торговых кандидатов по инструменту {symbol}.
 Тебе дают структурированные данные кандидата — снимок рыночной конфигурации с историческими метриками.
 Твоя задача: дать краткий профессиональный анализ.
 
@@ -40,11 +41,14 @@ _SYSTEM_PROMPT = """Ты аналитик торговых кандидатов 
 - research_score — это НЕ вероятность прибыли, а исследовательская метрика силы кандидата.
 - Кандидат — это ИДЕЯ для исследования, а не торговый сигнал.
 - Будь честен: называй риски и слабые стороны явно.
-"""
+- quality_score посчитан профилем калибровки {scoring_profile}, откалиброванным
+  под этот инструмент. Сравнивать его с оценками других монет нельзя.
+{market_hint}"""
 
 _USER_TEMPLATE = """Проанализируй кандидата:
 
 candidate_id: {candidate_id}
+symbol: {symbol} | профиль оценки: {scoring_profile}
 research_side: {research_side} | horizon: {horizon}
 research_score: {research_score}
 transition: {transition_id} ({transition_rarity})
@@ -64,8 +68,29 @@ warning_flags: {warning_flags}
 """
 
 
-def _build_prompt(candidate: Candidate, score: ScoreBreakdown, warning_flags: list[str]) -> str:
-    rating = get_rating(score.total)
+def _build_system_prompt(candidate: Candidate, profile: ScoringProfile) -> str:
+    """
+    Системный промпт параметризуется монетой и подсказкой из её профиля.
+
+    «Ты аналитик кандидатов BTC» на кандидате по ETH — не мелочь: модель
+    начинает рассуждать о ликвидности и глубине истории не того рынка.
+    """
+    hint = profile.llm.market_hint.strip()
+    return _SYSTEM_TEMPLATE.format(
+        symbol=candidate.symbol,
+        scoring_profile=profile.name,
+        market_hint=f"- Контекст рынка: {hint}\n" if hint else "",
+    )
+
+
+def _build_prompt(
+    candidate: Candidate,
+    score: ScoreBreakdown,
+    warning_flags: list[str],
+    profile: ScoringProfile | None = None,
+) -> str:
+    profile = profile if profile is not None else get_profile(candidate.symbol)
+    rating = get_rating(score.total, profile)
     win_rate = win_rate_for(candidate)
     fa_ratio = fa_ratio_for(candidate)
 
@@ -92,6 +117,8 @@ def _build_prompt(candidate: Candidate, score: ScoreBreakdown, warning_flags: li
         win_rate_line=win_rate_line,
         fa_line=fa_line,
         candidate_id=candidate.candidate_id,
+        symbol=candidate.symbol,
+        scoring_profile=profile.name,
         research_side=candidate.research_side.value,
         horizon=candidate.horizon,
         research_score=candidate.research_score,
@@ -133,6 +160,7 @@ def _fallback_evaluation(
     score: ScoreBreakdown,
     warning_flags: list[str],
     reason: str,
+    profile: ScoringProfile | None = None,
 ) -> CandidateEvaluation:
     """
     Детерминированная оценка вместо LLM-объяснения.
@@ -142,7 +170,7 @@ def _fallback_evaluation(
     """
     from src.agent.pipeline import _deterministic_evaluation
 
-    evaluation = _deterministic_evaluation(candidate, score, warning_flags)
+    evaluation = _deterministic_evaluation(candidate, score, warning_flags, profile)
     evaluation.risks = [
         f"Аналитическое резюме сгенерировано без LLM ({reason}) — тексты шаблонные",
         *evaluation.risks,
@@ -155,6 +183,7 @@ def evaluate_with_llm(
     score: ScoreBreakdown,
     warning_flags: list[str],
     model: str = "claude-haiku-4-5-20251001",
+    profile: ScoringProfile | None = None,
 ) -> CandidateEvaluation:
     """
     Вызывает Claude для генерации strengths/risks/summary.
@@ -166,14 +195,15 @@ def evaluate_with_llm(
     """
     import json as _json
 
-    prompt = _build_prompt(candidate, score, warning_flags)
+    profile = profile if profile is not None else get_profile(candidate.symbol)
+    prompt = _build_prompt(candidate, score, warning_flags, profile)
 
     try:
         client = _get_client()
         response = client.messages.create(
             model=model,
             max_tokens=1024,
-            system=_SYSTEM_PROMPT,
+            system=_build_system_prompt(candidate, profile),
             messages=[{"role": "user", "content": prompt}],
         )
         content = _extract_text(response)
@@ -182,12 +212,16 @@ def evaluate_with_llm(
             "Claude API недоступен (%s) — оценка %s собрана без LLM",
             type(exc).__name__, candidate.candidate_id, exc_info=True,
         )
-        return _fallback_evaluation(candidate, score, warning_flags, reason="сбой Claude API")
+        return _fallback_evaluation(
+            candidate, score, warning_flags, reason="сбой Claude API", profile=profile
+        )
     except Exception:
         logger.exception(
             "Непредвиденная ошибка при вызове Claude для %s", candidate.candidate_id
         )
-        return _fallback_evaluation(candidate, score, warning_flags, reason="ошибка вызова LLM")
+        return _fallback_evaluation(
+            candidate, score, warning_flags, reason="ошибка вызова LLM", profile=profile
+        )
 
     # Извлекаем JSON из ответа
     json_match = content
@@ -208,13 +242,17 @@ def evaluate_with_llm(
             "summary": content[:200],
         }
 
-    rating = get_rating(score.total)
+    rating = get_rating(score.total, profile)
     win_rate = win_rate_for(candidate)
     fa_ratio = fa_ratio_for(candidate)
 
     return CandidateEvaluation(
         candidate_id=candidate.candidate_id,
+        symbol=candidate.symbol,
+        scoring_profile=score.profile,
+        profile_fingerprint=score.fingerprint,
         quality_score=score.total,
+        quality_score_baseline=score.baseline_total,
         rating=rating,
         direction=candidate.research_side.value,
         win_rate=round(win_rate, 4),

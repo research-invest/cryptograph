@@ -1,5 +1,15 @@
 """
 Redis: кэш, дедупликация по configuration_hash, pub/sub для STRONG-кандидатов.
+
+Все ключи, привязанные к кандидату, живут под префиксом монеты. Причина —
+дедупликация: `configuration_hash` считается генератором по конфигурации графа
+и (до соответствующей правки на его стороне) символа не содержит. Совпадение
+хэша между монетами в пределах TTL означало бы, что ETH получает готовую
+оценку BTC. Диагностировать это по данным почти невозможно: кандидат выглядит
+нормально оценённым.
+
+Стрим приёма остаётся ОДИН на все монеты — символ уже лежит в payload,
+плодить consumer-группы незачем.
 """
 from __future__ import annotations
 
@@ -16,7 +26,18 @@ _client: Optional[redis.Redis] = None
 
 DEDUP_TTL = 1800         # 30 мин — TTL дедупликации по хэшу
 CACHE_TTL = 1800         # 30 мин — TTL кэша последних оценок
-STRONG_CHANNEL = "btc:strong_candidates"
+
+# Канал на монету + общий канал для подписчиков, которым нужны все монеты.
+STRONG_CHANNEL_ALL = "candidates:strong:all"
+
+
+def strong_channel(symbol: str) -> str:
+    return f"candidates:strong:{_key_symbol(symbol)}"
+
+
+def _key_symbol(symbol: str | None) -> str:
+    """Нормализованный символ для ключа. Пусто → UNKNOWN, а не тихо BTCUSDT."""
+    return (symbol or "").strip().upper() or "UNKNOWN"
 
 
 def get_client() -> redis.Redis:
@@ -31,19 +52,22 @@ def get_client() -> redis.Redis:
 
 # --- Дедупликация ---
 
-def is_hash_cached(configuration_hash: str) -> str | None:
-    """Возвращает candidate_id если хэш уже в кэше, иначе None."""
+def is_hash_cached(symbol: str, configuration_hash: str) -> str | None:
+    """Возвращает candidate_id если хэш этой монеты уже в кэше, иначе None."""
     try:
-        return get_client().get(f"candidate:hash:{configuration_hash}")
+        return get_client().get(f"{_key_symbol(symbol)}:candidate:hash:{configuration_hash}")
     except redis.RedisError:
         logger.warning("Redis недоступен при проверке дедупликации", exc_info=True)
         return None
 
 
-def mark_hash_cached(configuration_hash: str, candidate_id: str) -> bool:
+def mark_hash_cached(symbol: str, configuration_hash: str, candidate_id: str) -> bool:
     """Помечает хэш как обработанный с TTL 30 мин. Возвращает успех записи."""
     try:
-        get_client().setex(f"candidate:hash:{configuration_hash}", DEDUP_TTL, candidate_id)
+        get_client().setex(
+            f"{_key_symbol(symbol)}:candidate:hash:{configuration_hash}",
+            DEDUP_TTL, candidate_id,
+        )
         return True
     except redis.RedisError:
         logger.warning("Не удалось пометить хэш %s в Redis", configuration_hash, exc_info=True)
@@ -52,19 +76,21 @@ def mark_hash_cached(configuration_hash: str, candidate_id: str) -> bool:
 
 # --- Кэш оценок ---
 
-def cache_evaluation(candidate_id: str, evaluation_json: str) -> bool:
+def cache_evaluation(symbol: str, candidate_id: str, evaluation_json: str) -> bool:
     """Кладёт оценку в кэш с TTL. Возвращает успех записи."""
     try:
-        get_client().setex(f"evaluation:{candidate_id}", CACHE_TTL, evaluation_json)
+        get_client().setex(
+            f"{_key_symbol(symbol)}:evaluation:{candidate_id}", CACHE_TTL, evaluation_json
+        )
         return True
     except redis.RedisError:
         logger.warning("Не удалось закэшировать оценку %s", candidate_id, exc_info=True)
         return False
 
 
-def get_cached_evaluation(candidate_id: str) -> str | None:
+def get_cached_evaluation(symbol: str, candidate_id: str) -> str | None:
     try:
-        return get_client().get(f"evaluation:{candidate_id}")
+        return get_client().get(f"{_key_symbol(symbol)}:evaluation:{candidate_id}")
     except redis.RedisError:
         logger.warning("Redis недоступен при чтении кэша оценки %s", candidate_id, exc_info=True)
         return None
@@ -73,33 +99,51 @@ def get_cached_evaluation(candidate_id: str) -> str | None:
 # --- Pub/Sub для STRONG кандидатов ---
 
 def publish_strong_candidate(evaluation_dict: dict) -> bool:
-    """Публикует STRONG-кандидата в Redis канал для downstream подписчиков."""
+    """
+    Публикует STRONG-кандидата в канал своей монеты и в общий канал.
+
+    Дублирование намеренное: подписчику одной монеты незачем фильтровать чужой
+    поток, а дашборду «что сегодня сильного вообще» незачем подписываться
+    на каждую монету по отдельности.
+    """
+    payload = json.dumps(evaluation_dict, ensure_ascii=False)
+    symbol = evaluation_dict.get("symbol")
     try:
-        get_client().publish(STRONG_CHANNEL, json.dumps(evaluation_dict, ensure_ascii=False))
+        client = get_client()
+        client.publish(strong_channel(symbol), payload)
+        client.publish(STRONG_CHANNEL_ALL, payload)
         return True
     except redis.RedisError:
         logger.warning("Не удалось опубликовать STRONG-кандидата", exc_info=True)
         return False
 
 
-def subscribe_strong_candidates():
+def subscribe_strong_candidates(symbol: str | None = None):
     """
     Генератор для подписки на STRONG-кандидатов.
+
+    symbol=None — все монеты (общий канал).
     Использование:
-        for msg in subscribe_strong_candidates():
+        for msg in subscribe_strong_candidates("ETHUSDT"):
             data = json.loads(msg['data'])
     """
+    channel = strong_channel(symbol) if symbol else STRONG_CHANNEL_ALL
     pubsub = get_client().pubsub()
-    pubsub.subscribe(STRONG_CHANNEL)
+    pubsub.subscribe(channel)
     for message in pubsub.listen():
         if message["type"] == "message":
             yield message
 
 
 # --- Очередь задач через Redis Streams ---
+#
+# Стрим общий на все монеты: символ лежит в payload, отдельные consumer-группы
+# на монету только раздробили бы пул воркеров. Имена сменились вместе с
+# ключами (btc:* → candidates:*) — переименование безопасно только при пустой
+# очереди, проверь XLEN перед деплоем (см. docs/step_04_multi_symbol.md).
 
-STREAM_KEY = "btc:candidates:stream"
-STREAM_GROUP = "btc:candidates:workers"
+STREAM_KEY = "candidates:stream"
+STREAM_GROUP = "candidates:workers"
 STREAM_CONSUMER = "dispatcher"
 
 

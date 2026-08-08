@@ -147,16 +147,34 @@ def test_run_batch_pipeline_on_empty_list():
 
 @pytest.fixture
 def fake_redis(monkeypatch):
-    """Подменяет redis_cache: хранит хэши и оценки в памяти."""
+    """
+    Подменяет redis_cache: хранит хэши и оценки в памяти.
+
+    Ключи — пары (symbol, …), как в настоящем кэше: без символа в ключе
+    совпадение configuration_hash между монетами отдало бы ETH готовую
+    оценку BTC.
+    """
     from src.cache import redis_cache
 
-    hashes: dict[str, str] = {}
-    evaluations: dict[str, str] = {}
+    hashes: dict[tuple[str, str], str] = {}
+    evaluations: dict[tuple[str, str], str] = {}
+
+    def seed(config_hash: str, candidate_id: str, evaluation=None,
+             symbol: str = "BTCUSDT") -> None:
+        hashes[(symbol, config_hash)] = candidate_id
+        if evaluation is not None:
+            payload = (
+                evaluation if isinstance(evaluation, str)
+                else evaluation.model_dump_json()
+            )
+            evaluations[(symbol, candidate_id)] = payload
 
     monkeypatch.setattr(pipeline, "_USE_REDIS", True)
-    monkeypatch.setattr(redis_cache, "is_hash_cached", lambda h: hashes.get(h))
-    monkeypatch.setattr(redis_cache, "get_cached_evaluation", lambda cid: evaluations.get(cid))
-    return types.SimpleNamespace(hashes=hashes, evaluations=evaluations)
+    monkeypatch.setattr(redis_cache, "is_hash_cached", lambda s, h: hashes.get((s, h)))
+    monkeypatch.setattr(
+        redis_cache, "get_cached_evaluation", lambda s, cid: evaluations.get((s, cid))
+    )
+    return types.SimpleNamespace(hashes=hashes, evaluations=evaluations, seed=seed)
 
 
 def test_cache_hit_returns_own_evaluation(reference_payload, fake_redis):
@@ -167,8 +185,7 @@ def test_cache_hit_returns_own_evaluation(reference_payload, fake_redis):
         context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
         summary="из кэша",
     )
-    fake_redis.hashes["0f8928cb2fc1547b"] = "245be5fb0908d59f6e89"
-    fake_redis.evaluations["245be5fb0908d59f6e89"] = cached.model_dump_json()
+    fake_redis.seed("0f8928cb2fc1547b", "245be5fb0908d59f6e89", cached)
 
     ev = run_pipeline(reference_payload, use_llm=False, save=False)
 
@@ -187,8 +204,7 @@ def test_cache_never_returns_another_candidates_evaluation(reference_payload, fa
         context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
         summary="чужая оценка",
     )
-    fake_redis.hashes["0f8928cb2fc1547b"] = "СОВСЕМ_ДРУГОЙ"
-    fake_redis.evaluations["СОВСЕМ_ДРУГОЙ"] = foreign.model_dump_json()
+    fake_redis.seed("0f8928cb2fc1547b", "СОВСЕМ_ДРУГОЙ", foreign)
 
     ev = run_pipeline(reference_payload, use_llm=False, save=False)
 
@@ -205,8 +221,7 @@ def test_use_cache_false_forces_recompute(reference_payload, fake_redis):
         context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
         summary="из кэша",
     )
-    fake_redis.hashes["0f8928cb2fc1547b"] = "245be5fb0908d59f6e89"
-    fake_redis.evaluations["245be5fb0908d59f6e89"] = cached.model_dump_json()
+    fake_redis.seed("0f8928cb2fc1547b", "245be5fb0908d59f6e89", cached)
 
     ev = run_pipeline(reference_payload, use_llm=False, save=False, use_cache=False)
 
@@ -215,8 +230,7 @@ def test_use_cache_false_forces_recompute(reference_payload, fake_redis):
 
 
 def test_corrupted_cache_is_ignored(reference_payload, fake_redis, caplog):
-    fake_redis.hashes["0f8928cb2fc1547b"] = "245be5fb0908d59f6e89"
-    fake_redis.evaluations["245be5fb0908d59f6e89"] = "{не json"
+    fake_redis.seed("0f8928cb2fc1547b", "245be5fb0908d59f6e89", "{не json")
 
     with caplog.at_level(logging.WARNING, logger="src.agent.pipeline"):
         ev = run_pipeline(reference_payload, use_llm=False, save=False)
@@ -227,6 +241,35 @@ def test_corrupted_cache_is_ignored(reference_payload, fake_redis, caplog):
 def test_candidate_without_hash_is_never_cached(reference_payload, fake_redis):
     reference_payload.pop("configuration_hash")
     assert run_pipeline(reference_payload, use_llm=False, save=False).rating == "STRONG"
+
+
+def test_dedup_does_not_leak_between_symbols(reference_payload, fake_redis):
+    """
+    Самая опасная точка мультимонетности: configuration_hash считается по
+    конфигурации графа и совпадение между монетами возможно. Без символа
+    в ключе ETH получил бы готовую оценку BTC — и выглядел бы при этом
+    нормально оценённым кандидатом.
+    """
+    btc_evaluation = CandidateEvaluation(
+        candidate_id="общий_id", symbol="BTCUSDT", quality_score=0.42, rating="WEAK",
+        direction="long", win_rate=0.5, favorable_adverse_ratio=1.0,
+        context_freshness="fresh", warning_flags=[], strengths=[], risks=[],
+        summary="оценка BTC",
+    )
+    fake_redis.seed("одинаковый_хэш", "общий_id", btc_evaluation, symbol="BTCUSDT")
+
+    eth = dict(reference_payload, candidate_id="общий_id", symbol="ETHUSDT",
+               configuration_hash="одинаковый_хэш")
+    ev = run_pipeline(eth, use_llm=False, save=False)
+
+    assert ev.summary != "оценка BTC"
+    assert ev.symbol == "ETHUSDT"
+
+    # А своя запись той же монеты по-прежнему отдаётся из кэша.
+    fake_redis.seed("одинаковый_хэш", "общий_id",
+                    btc_evaluation.model_copy(update={"summary": "оценка ETH"}),
+                    symbol="ETHUSDT")
+    assert run_pipeline(eth, use_llm=False, save=False).summary == "оценка ETH"
 
 
 # ─── _persist: деградация и логирование (регрессия на замечание №4) ───────────

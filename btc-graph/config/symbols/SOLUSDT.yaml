@@ -1,0 +1,83 @@
+# Калибровка SOLUSDT. Основа — черновик scripts/calibrate_profile.py по
+# 5710 свежим кандидатам прогона #15 (история с листинга 2020-08,
+# 209 986 баров 15m — примерно две трети от BTC и ETH).
+#
+# Это первая монета, на которой сработал относительный порог дробления:
+# min_group_share × 209 986 = 525 против 782 у длинных историй. С прежним
+# абсолютным порогом 800 граф вышел бы заметно грубее — не потому, что рынок
+# SOL однороднее, а потому что линейка была бы чужой. Получилось 32 состояния,
+# то есть тот же порядок, что у BTC (43) и ETH (29).
+#
+# Веса — пресет low-liquidity (statistical 0.40): у SOL directional шумит
+# сильнее, чем у старших монет, перекос на короткой выборке чаще артефакт,
+# чем сигнал.
+#
+# valid_label_pct не переопределён по той же причине, что и у ETH: верхний
+# перцентиль упирается в 1.0, а ступень с таким порогом недостижима —
+# сравнение строгое.
+#
+# Селективность приведена к эталону: BTCUSDT даёт 1.0% STRONG, здесь 1.2%.
+# Проверка на отложенной свежей трети: 2.9% — дрейф чуть заметнее, чем у ETH,
+# и это ожидаемо: история короче, накопление sample_size идёт круче.
+# Если доля STRONG со временем уползёт выше 5%, пересобери профиль
+# и бампни version (правило 6 из docs/step_04_multi_symbol.md).
+
+symbol: SOLUSDT
+version: 1
+description: Калибровка по 5710 свежим кандидатам прогона #15, веса low-liquidity
+extends: _default
+weights: {statistical: 0.4, directional: 0.25, context: 0.2, rarity: 0.15}
+statistical:
+  sample_size:
+    mode: higher_better
+    ladder:
+    - [587, 1.0]
+    - [258, 0.7]
+    - [118, 0.4]
+    floor: 0.1
+  monthly_concentration:
+    mode: lower_better
+    ladder:
+    - [0.0541, 1.0]
+    - [0.0741, 0.7]
+    - [0.1008, 0.3]
+    floor: 0.0
+  repeatability_months:
+    mode: higher_better
+    ladder:
+    - [51, 1.0]
+    - [39, 0.7]
+    - [26, 0.4]
+    floor: 0.1
+directional:
+  win_rate:
+    mode: higher_better
+    ladder:
+    - [0.651, 1.0]
+    - [0.5969, 0.7]
+    - [0.5643, 0.4]
+    floor: 0.1
+  abs_outcome_skew:
+    mode: higher_better
+    ladder:
+    - [0.302, 1.0]
+    - [0.1938, 0.7]
+    - [0.1286, 0.4]
+    floor: 0.1
+  fa_ratio:
+    mode: higher_better
+    ladder:
+    - [3.521, 1.0]
+    - [2.61, 0.7]
+    - [2.228, 0.4]
+    floor: 0.1
+rarity:
+  research_score:
+    mode: higher_better
+    ladder:
+    - [0.7513, 1.0]
+    - [0.7226, 0.7]
+    - [0.6815, 0.4]
+    floor: 0.2
+rating: {strong_min: 0.745, moderate_min: 0.515}
+batch: {min_quality_score: 0.515, fresh_bonus: 0.05}

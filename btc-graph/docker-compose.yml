@@ -58,6 +58,12 @@ services:
       DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
       REDIS_URL: redis://redis:6379/0
       NEO4J_URI: bolt://neo4j:7687
+      PROFILES_DIR: /app/config/symbols
+    volumes:
+      # Профили калибровки правятся без пересборки образа: нужен только
+      # make reload (или POST /config/reload при ENABLE_CONFIG_RELOAD=true).
+      # Именно поэтому пороги живут в YAML, а не в коде.
+      - ./config:/app/config:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -79,6 +85,12 @@ services:
       DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
       REDIS_URL: redis://redis:6379/0
       NEO4J_URI: bolt://neo4j:7687
+      PROFILES_DIR: /app/config/symbols
+    volumes:
+      # Профили калибровки правятся без пересборки образа: нужен только
+      # make reload (или POST /config/reload при ENABLE_CONFIG_RELOAD=true).
+      # Именно поэтому пороги живут в YAML, а не в коде.
+      - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,6 +107,12 @@ services:
       DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
       REDIS_URL: redis://redis:6379/0
       NEO4J_URI: bolt://neo4j:7687
+      PROFILES_DIR: /app/config/symbols
+    volumes:
+      # Профили калибровки правятся без пересборки образа: нужен только
+      # make reload (или POST /config/reload при ENABLE_CONFIG_RELOAD=true).
+      # Именно поэтому пороги живут в YAML, а не в коде.
+      - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy

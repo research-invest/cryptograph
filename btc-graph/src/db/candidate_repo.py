@@ -1,5 +1,8 @@
 """
 CRUD операции для таблицы candidates.
+
+Все выборки принимают symbol. Без него выдача перемешивает монеты: «последние
+STRONG long» без указания инструмента — это не запрос, а случайный срез.
 """
 from __future__ import annotations
 
@@ -18,12 +21,13 @@ def save_evaluation(
     """Сохраняет или обновляет результат оценки кандидата."""
     embedding = build_embedding(candidate)
 
-    record = session.get(CandidateRecord, candidate.candidate_id)
+    record = session.get(CandidateRecord, (candidate.symbol, candidate.candidate_id))
     if record is None:
-        record = CandidateRecord(candidate_id=candidate.candidate_id)
+        record = CandidateRecord(
+            symbol=candidate.symbol, candidate_id=candidate.candidate_id
+        )
         session.add(record)
 
-    record.symbol = candidate.symbol
     record.configuration_hash = candidate.configuration_hash
     record.family_key = candidate.candidate_family_key
     record.research_score = candidate.research_score
@@ -46,6 +50,9 @@ def save_evaluation(
     record.outcome_skew = candidate.historical_outcome_skew
     record.fa_ratio = candidate.long_favorable_adverse_ratio_p70_p80
     record.quality_score = evaluation.quality_score
+    record.quality_score_baseline = evaluation.quality_score_baseline
+    record.scoring_profile = evaluation.scoring_profile
+    record.profile_fingerprint = evaluation.profile_fingerprint
     record.rating = evaluation.rating
     record.direction = evaluation.direction
     record.warning_flags = evaluation.warning_flags
@@ -55,15 +62,20 @@ def save_evaluation(
     return record
 
 
-def get_by_id(session: Session, candidate_id: str) -> CandidateRecord | None:
-    return session.get(CandidateRecord, candidate_id)
+def get_by_id(session: Session, symbol: str, candidate_id: str) -> CandidateRecord | None:
+    return session.get(CandidateRecord, (symbol, candidate_id))
 
 
-def is_hash_evaluated(session: Session, configuration_hash: str) -> str | None:
-    """Возвращает candidate_id если хэш уже оценивался, иначе None."""
+def is_hash_evaluated(
+    session: Session, symbol: str, configuration_hash: str
+) -> str | None:
+    """Возвращает candidate_id если хэш этой монеты уже оценивался, иначе None."""
     record = (
         session.query(CandidateRecord)
-        .filter(CandidateRecord.configuration_hash == configuration_hash)
+        .filter(
+            CandidateRecord.symbol == symbol,
+            CandidateRecord.configuration_hash == configuration_hash,
+        )
         .first()
     )
     return record.candidate_id if record else None
@@ -72,11 +84,21 @@ def is_hash_evaluated(session: Session, configuration_hash: str) -> str | None:
 def find_similar(
     session: Session,
     embedding: list[float],
+    symbol: str | None = None,
     limit: int = 10,
 ) -> list[CandidateRecord]:
-    """Поиск ближайших кандидатов по векторному расстоянию (cosine)."""
+    """
+    Поиск ближайших кандидатов по векторному расстоянию (cosine).
+
+    Вектор намеренно остаётся symbol-agnostic: это позволяет спросить
+    «а у BTC такая конфигурация уже была?» по кандидату ETH. Изоляция —
+    фильтр в SQL, а не свойство вектора; symbol=None ищет по всем монетам.
+    """
+    query = session.query(CandidateRecord)
+    if symbol is not None:
+        query = query.filter(CandidateRecord.symbol == symbol)
     return (
-        session.query(CandidateRecord)
+        query
         .order_by(CandidateRecord.embedding.cosine_distance(embedding))
         .limit(limit)
         .all()
@@ -94,11 +116,13 @@ def log_event(
 
     event = CandidateEventRecord(
         event_time=datetime.now(timezone.utc),
-        candidate_id=candidate.candidate_id,
         symbol=candidate.symbol,
+        candidate_id=candidate.candidate_id,
         transition_id=candidate.transition_id,
         current_group_id=candidate.current_group_id,
         quality_score=evaluation.quality_score,
+        quality_score_baseline=evaluation.quality_score_baseline,
+        scoring_profile=evaluation.scoring_profile,
         rating=evaluation.rating,
         direction=evaluation.direction,
         win_rate=evaluation.win_rate,
@@ -108,8 +132,32 @@ def log_event(
     session.add(event)
 
 
-def get_strong_candidates(session: Session, direction: str | None = None, limit: int = 20) -> list[CandidateRecord]:
+def get_strong_candidates(
+    session: Session,
+    symbol: str | None = None,
+    direction: str | None = None,
+    limit: int = 20,
+) -> list[CandidateRecord]:
+    """
+    Последние STRONG-кандидаты. symbol=None — по всем монетам сразу.
+
+    Смешанная выдача осмысленна только вместе с quality_score_baseline:
+    профильные quality_score разных монет между собой не сравнимы.
+    """
     q = session.query(CandidateRecord).filter(CandidateRecord.rating == "STRONG")
+    if symbol:
+        q = q.filter(CandidateRecord.symbol == symbol)
     if direction:
         q = q.filter(CandidateRecord.direction == direction)
     return q.order_by(CandidateRecord.evaluated_at.desc()).limit(limit).all()
+
+
+def list_symbols(session: Session) -> list[str]:
+    """Монеты, по которым есть сохранённые оценки."""
+    rows = (
+        session.query(CandidateRecord.symbol)
+        .distinct()
+        .order_by(CandidateRecord.symbol)
+        .all()
+    )
+    return [row[0] for row in rows if row[0]]

@@ -12,7 +12,10 @@ def format_report(candidate: Candidate, evaluation: CandidateEvaluation) -> str:
     strengths_lines = "\n".join(f"  + {s}" for s in evaluation.strengths)
     risks_lines = "\n".join(f"  - {r}" for r in evaluation.risks)
 
+    # Монета и профиль — в шапке: отчёт без них читается как отчёт про BTC,
+    # каким он и был до шага 4.
     return f"""КАНДИДАТ: {evaluation.candidate_id}
+Инструмент: {candidate.symbol} | Профиль оценки: {evaluation.scoring_profile or "—"}
 Горизонт: {candidate.horizon} | Направление: {evaluation.direction.upper()} | Win rate: {win_rate_pct:.1f}%
 
 КЛЮЧЕВЫЕ МЕТРИКИ:
@@ -27,7 +30,8 @@ def format_report(candidate: Candidate, evaluation: CandidateEvaluation) -> str:
 - События: {candidate.event_block_id}, интенсивность {candidate.event_intensity_bucket.value}, семей {candidate.event_family_count}
 
 ОЦЕНКА:
-- quality_score: {evaluation.quality_score:.3f}
+- quality_score: {evaluation.quality_score:.3f} (по профилю монеты; между монетами не сравним)
+- quality_score_baseline: {evaluation.quality_score_baseline:.3f} (базовая калибровка — сравним)
 - statistical: {evaluation.score_statistical:.3f} | directional: {evaluation.score_directional:.3f} | context: {evaluation.score_context:.3f} | rarity: {evaluation.score_rarity:.3f}
 - Флаги: {", ".join(evaluation.warning_flags) if evaluation.warning_flags else "нет"}
 

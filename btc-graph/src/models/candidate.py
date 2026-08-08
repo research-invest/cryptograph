@@ -105,7 +105,20 @@ class Candidate(BaseModel):
 
 class CandidateEvaluation(BaseModel):
     candidate_id: str
+    symbol: str = "BTCUSDT"
+
+    # Каким профилем посчитана оценка. Без этого сохранённые quality_score
+    # разных калибровок неотличимы и молча смешиваются в средних; fingerprint
+    # ловит правку порогов без бампа version.
+    scoring_profile: str = ""
+    profile_fingerprint: str = ""
+
     quality_score: float = Field(ge=0.0, le=1.0)
+    # Тот же кандидат по базовому профилю. Профильный quality_score сравним
+    # только ВНУТРИ монеты; baseline существует для вопроса «какая монета
+    # сегодня интереснее» и в rating не участвует.
+    quality_score_baseline: float = Field(default=0.0, ge=0.0, le=1.0)
+
     rating: str  # STRONG / MODERATE / WEAK
     direction: str  # long / short
     win_rate: float

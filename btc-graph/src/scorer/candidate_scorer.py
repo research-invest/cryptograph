@@ -1,24 +1,32 @@
 """
 Scorer: вычисляет quality_score [0..1] по 4 осям согласно ТЗ.
+
+Порогов в этом файле нет — они живут в профиле монеты
+(`config/symbols/*.yaml`, загрузка через `src.config.profiles`). Код здесь
+описывает только форму формулы: какие признаки входят в какую ось, как ось
+усредняется и как оси складываются в итог.
+
+Разделение важно потому, что ступени вида `sample_size > 1000` откалиброваны
+под рынок с десятилетней историей. Для монеты с двумя годами торгов та же
+лесенка означает «всё WEAK» — и это свойство линейки, а не кандидатов.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
+from src.config.profiles import (
+    DEFAULT_PROFILE_NAME,
+    LadderSpec,
+    ScoringProfile,
+    default_profile,
+    get_profile,
+)
 from src.models.candidate import (
-    Candidate,
-    ContextStatus,
     AgeBucket,
-    TrajectoryEntropy,
-    TransitionRarity,
-    EventRarityBucket,
+    Candidate,
     ResearchSide,
 )
-
-# Границы итогового рейтинга. Единственное определение в проекте —
-# все потребители обязаны звать get_rating(), а не сравнивать числа сами.
-RATING_STRONG_MIN = 0.75
-RATING_MODERATE_MIN = 0.55
 
 
 @dataclass
@@ -29,47 +37,41 @@ class ScoreBreakdown:
     rarity: float        # D. Редкость и специфичность
     total: float
 
+    # Каким профилем посчитано. Без этих двух полей сохранённые quality_score
+    # разных калибровок неотличимы друг от друга и молча смешиваются в средних.
+    profile: str = ""
+    fingerprint: str = ""
 
-def _score_statistical(c: Candidate) -> float:
+    # Тот же кандидат, посчитанный профилем `_default`. Профильный total
+    # ранжирует кандидатов ВНУТРИ монеты и между монетами не сравним (у ETH
+    # ступень sample_size вдвое ниже); baseline существует ровно для вопроса
+    # «какая монета сегодня интереснее». В rating не участвует.
+    baseline_total: float = 0.0
+
+
+def _ladder(value: float, spec: LadderSpec) -> float:
+    """Балл по ступенчатой шкале профиля."""
+    return spec.apply(value)
+
+
+def _map(key: str, spec: dict[str, float]) -> float:
+    """Балл по карте «значение enum → балл». Полнота карты проверена при загрузке."""
+    return spec[key]
+
+
+def _resolve(candidate: Candidate, profile: ScoringProfile | None) -> ScoringProfile:
+    return profile if profile is not None else get_profile(candidate.symbol)
+
+
+def _score_statistical(c: Candidate, profile: ScoringProfile | None = None) -> float:
     """A. Статистическая надёжность выборки."""
-    score = 0.0
-
-    if c.valid_label_pct > 0.85:
-        score += 1.0
-    elif c.valid_label_pct > 0.80:
-        score += 0.7
-    elif c.valid_label_pct > 0.75:
-        score += 0.4
-    else:
-        score += 0.0
-
-    if c.sample_size > 1000:
-        score += 1.0
-    elif c.sample_size > 500:
-        score += 0.7
-    elif c.sample_size > 200:
-        score += 0.4
-    else:
-        score += 0.1
-
-    if c.monthly_concentration < 0.10:
-        score += 1.0
-    elif c.monthly_concentration < 0.15:
-        score += 0.7
-    elif c.monthly_concentration < 0.30:
-        score += 0.3
-    else:
-        score += 0.0
-
-    if c.repeatability_months > 15:
-        score += 1.0
-    elif c.repeatability_months > 12:
-        score += 0.7
-    elif c.repeatability_months > 6:
-        score += 0.4
-    else:
-        score += 0.1
-
+    spec = _resolve(c, profile).statistical
+    score = (
+        _ladder(c.valid_label_pct, spec.valid_label_pct)
+        + _ladder(c.sample_size, spec.sample_size)
+        + _ladder(c.monthly_concentration, spec.monthly_concentration)
+        + _ladder(c.repeatability_months, spec.repeatability_months)
+    )
     return score / 4.0
 
 
@@ -79,6 +81,8 @@ def win_rate_for(c: Candidate) -> float:
 
     Единственное место, где long_outcome_share переводится в win rate —
     используется и скорером, и сборкой CandidateEvaluation.
+
+    В профиль не выносится: это свойство данных, а не калибровки.
     """
     if c.research_side == ResearchSide.long:
         return c.long_outcome_share
@@ -94,138 +98,107 @@ def fa_ratio_for(c: Candidate) -> float | None:
     риск меняются местами, а симметричных short-полей источник данных не даёт.
     Поэтому для short метрика неприменима и возвращается None — вместо того
     чтобы начислять баллы за чужую сторону рынка.
+
+    В профиль не выносится по той же причине, что и win_rate_for.
     """
     if c.research_side == ResearchSide.long:
         return c.long_favorable_adverse_ratio_p70_p80
     return None
 
 
-def _score_directional(c: Candidate) -> float:
+def _score_directional(c: Candidate, profile: ScoringProfile | None = None) -> float:
     """
     B. Сила directional asymmetry.
 
     Для long усредняется по трём критериям, для short — по двум:
     F/A ratio к short-кандидату неприменим (см. fa_ratio_for).
     """
-    score = 0.0
+    spec = _resolve(c, profile).directional
+
+    score = (
+        _ladder(win_rate_for(c), spec.win_rate)
+        + _ladder(abs(c.historical_outcome_skew), spec.abs_outcome_skew)
+    )
     criteria = 2
-
-    win_rate = win_rate_for(c)
-
-    if win_rate > 0.70:
-        score += 1.0
-    elif win_rate > 0.65:
-        score += 0.7
-    elif win_rate > 0.60:
-        score += 0.4
-    else:
-        score += 0.1
-
-    skew = abs(c.historical_outcome_skew)
-    if skew > 0.40:
-        score += 1.0
-    elif skew > 0.30:
-        score += 0.7
-    elif skew > 0.20:
-        score += 0.4
-    else:
-        score += 0.1
 
     ratio = fa_ratio_for(c)
     if ratio is not None:
         criteria = 3
-        if ratio > 4.0:
-            score += 1.0
-        elif ratio > 3.0:
-            score += 0.7
-        elif ratio > 2.0:
-            score += 0.4
-        else:
-            score += 0.1
+        score += _ladder(ratio, spec.fa_ratio)
 
     return score / criteria
 
 
-# Чем дольше рынок сидит в текущем состоянии, тем ближе смена фазы —
-# оценка убывает по мере старения состояния.
-_AGE_SCORE = {
-    AgeBucket.age_lt_30: 1.0,
-    AgeBucket.age_30_60: 0.75,
-    AgeBucket.age_60_120: 0.5,
-    AgeBucket.age_gt_120: 0.0,
-}
+def _score_context(c: Candidate, profile: ScoringProfile | None = None) -> float:
+    """
+    C. Контекстуальная свежесть.
 
-
-def _score_context(c: Candidate) -> float:
-    """C. Контекстуальная свежесть."""
-    score = 0.0
-
-    if c.context_status == ContextStatus.fresh:
-        score += 1.0
-    else:
-        score += 0.0
-
-    score += _AGE_SCORE[c.current_group_age_bucket]
-
-    if c.trajectory_entropy == TrajectoryEntropy.low:
-        score += 1.0
-    elif c.trajectory_entropy == TrajectoryEntropy.medium:
-        score += 0.5
-    else:
-        score += 0.0
-
-    return score / 3.0
-
-
-def _score_rarity(c: Candidate) -> float:
-    """D. Редкость и специфичность."""
-    score = 0.0
-
-    if c.event_rarity_bucket == EventRarityBucket.rare:
-        score += 1.0
-    elif c.event_rarity_bucket == EventRarityBucket.uncommon:
-        score += 0.7
-    else:
-        score += 0.2
-
-    if c.transition_rarity == TransitionRarity.rare:
-        score += 1.0
-    elif c.transition_rarity == TransitionRarity.uncommon:
-        score += 0.7
-    else:
-        score += 0.2
-
-    if c.research_score > 0.85:
-        score += 1.0
-    elif c.research_score > 0.70:
-        score += 0.6
-    else:
-        score += 0.2
-
-    return score / 3.0
-
-
-WEIGHTS = {
-    "statistical": 0.30,
-    "directional": 0.35,
-    "context": 0.20,
-    "rarity": 0.15,
-}
-
-
-def score_candidate(candidate: Candidate) -> ScoreBreakdown:
-    """Вычисляет quality_score и разбивку по осям."""
-    stat = _score_statistical(candidate)
-    direc = _score_directional(candidate)
-    ctx = _score_context(candidate)
-    rar = _score_rarity(candidate)
-
-    total = (
-        stat * WEIGHTS["statistical"]
-        + direc * WEIGHTS["directional"]
-        + ctx * WEIGHTS["context"]
-        + rar * WEIGHTS["rarity"]
+    Чем дольше рынок сидит в текущем состоянии, тем ближе смена фазы —
+    оценка age_bucket убывает по мере старения состояния.
+    """
+    spec = _resolve(c, profile).context
+    score = (
+        _map(c.context_status.value, spec.context_status)
+        + _map(c.current_group_age_bucket.value, spec.age_bucket)
+        + _map(c.trajectory_entropy.value, spec.trajectory_entropy)
     )
+    return score / 3.0
+
+
+def _score_rarity(c: Candidate, profile: ScoringProfile | None = None) -> float:
+    """D. Редкость и специфичность."""
+    spec = _resolve(c, profile).rarity
+    score = (
+        _map(c.event_rarity_bucket.value, spec.event_rarity_bucket)
+        + _map(c.transition_rarity.value, spec.transition_rarity)
+        + _ladder(c.research_score, spec.research_score)
+    )
+    return score / 3.0
+
+
+def _weighted_total(
+    stat: float, direc: float, ctx: float, rar: float, profile: ScoringProfile
+) -> float:
+    w = profile.weights
+    return (
+        stat * w.statistical
+        + direc * w.directional
+        + ctx * w.context
+        + rar * w.rarity
+    )
+
+
+def score_candidate(
+    candidate: Candidate,
+    profile: ScoringProfile | None = None,
+) -> ScoreBreakdown:
+    """
+    Вычисляет quality_score и разбивку по осям.
+
+    profile=None — берётся профиль монеты кандидата. Явный профиль нужен
+    pipeline'у: он резолвит его один раз в начале, чтобы hot-reload посреди
+    батча не смешал в одной оценке две версии калибровки.
+    """
+    profile = _resolve(candidate, profile)
+
+    stat = _score_statistical(candidate, profile)
+    direc = _score_directional(candidate, profile)
+    ctx = _score_context(candidate, profile)
+    rar = _score_rarity(candidate, profile)
+    total = _weighted_total(stat, direc, ctx, rar, profile)
+
+    base = default_profile()
+    if profile.symbol == base.symbol and profile.version == base.version:
+        # Профиль монеты — это и есть базовый: второй проход ничего не изменит.
+        baseline = total
+    else:
+        baseline = _weighted_total(
+            _score_statistical(candidate, base),
+            _score_directional(candidate, base),
+            _score_context(candidate, base),
+            _score_rarity(candidate, base),
+            base,
+        )
 
     return ScoreBreakdown(
         statistical=round(stat, 4),
@@ -233,14 +206,57 @@ def score_candidate(candidate: Candidate) -> ScoreBreakdown:
         context=round(ctx, 4),
         rarity=round(rar, 4),
         total=round(total, 4),
+        profile=profile.name,
+        fingerprint=profile.fingerprint,
+        baseline_total=round(baseline, 4),
     )
 
 
-def get_rating(quality_score: float) -> str:
-    """STRONG / MODERATE / WEAK по quality_score. Единственный источник порогов."""
-    if quality_score >= RATING_STRONG_MIN:
+def get_rating(quality_score: float, profile: ScoringProfile | None = None) -> str:
+    """
+    STRONG / MODERATE / WEAK по quality_score. Единственный источник порогов.
+
+    profile=None → границы базового профиля. Никогда не сравнивай quality_score
+    с числом напрямую: границы у монет разные.
+    """
+    bounds = (profile or default_profile()).rating
+    if quality_score >= bounds.strong_min:
         return "STRONG"
-    elif quality_score >= RATING_MODERATE_MIN:
+    if quality_score >= bounds.moderate_min:
         return "MODERATE"
-    else:
-        return "WEAK"
+    return "WEAK"
+
+
+# ─── Совместимость ────────────────────────────────────────────────────────────
+# Константы, которые до шага 4 были определениями порогов, а теперь — только
+# read-only проекция базового профиля. Читаются лениво (профили грузятся при
+# первом обращении, а не на импорте), поэтому через модульный __getattr__.
+#
+# DEPRECATED: новый код обязан брать пороги из профиля кандидата. Эти имена
+# живут ради тестов и внешних скриптов, которые их импортируют.
+_DEPRECATED_ALIASES = {
+    "RATING_STRONG_MIN": lambda p: p.rating.strong_min,
+    "RATING_MODERATE_MIN": lambda p: p.rating.moderate_min,
+    "WEIGHTS": lambda p: p.weights.as_dict(),
+    # Ключи — AgeBucket, как было до шага 4: алиас обязан быть заменяемым
+    # один в один, иначе он не алиас, а вторая, слегка другая правда.
+    "_AGE_SCORE": lambda p: {
+        AgeBucket(key): value for key, value in p.context.age_bucket.items()
+    },
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_ALIASES:
+        return _DEPRECATED_ALIASES[name](default_profile())
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "DEFAULT_PROFILE_NAME",
+    "ScoreBreakdown",
+    "fa_ratio_for",
+    "get_rating",
+    "score_candidate",
+    "win_rate_for",
+]
