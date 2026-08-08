@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Кандидаты · btc-graph-processing{% endblock %}
+
+{% block content %}
+<h1>Кандидаты</h1>
+
+<form class="toolbar" hx-get="/candidates" hx-target="#candidates-table" hx-trigger="change, submit">
+  <label>Прогон
+    <select name="run">
+      <option value="">все</option>
+      {% for run in runs %}
+        <option value="{{ run.run_id }}" {{ 'selected' if filters.run == run.run_id }}>
+          #{{ run.run_id }} {{ run.kind }}
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Рейтинг
+    <select name="rating">
+      <option value="">все</option>
+      {% for r in ['STRONG', 'MODERATE', 'WEAK'] %}
+        <option value="{{ r }}" {{ 'selected' if filters.rating == r }}>{{ r }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Сторона
+    <select name="direction">
+      <option value="">обе</option>
+      <option value="long" {{ 'selected' if filters.direction == 'long' }}>long</option>
+      <option value="short" {{ 'selected' if filters.direction == 'short' }}>short</option>
+    </select>
+  </label>
+  <label>quality ≥
+    <input type="number" name="min_quality" step="0.05" min="0" max="1"
+           value="{{ filters.min_quality if filters.min_quality is not none }}">
+  </label>
+  <label>Переход
+    <input type="text" name="transition" placeholder="42->1" value="{{ filters.transition or '' }}">
+  </label>
+  <label>Отправка
+    <select name="emitted">
+      <option value="">все</option>
+      <option value="yes" {{ 'selected' if filters.emitted == 'yes' }}>отправлены</option>
+      <option value="no" {{ 'selected' if filters.emitted == 'no' }}>в очереди</option>
+    </select>
+  </label>
+  <button type="submit">Фильтр</button>
+</form>
+
+<div id="candidates-table">
+  {% include "partials/candidates_table.html" %}
+</div>
+{% endblock %}

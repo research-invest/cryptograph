@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Сводка · btc-graph-processing{% endblock %}
+
+{% block content %}
+<h1>Сводка</h1>
+
+<section class="cards">
+  <div class="card">
+    <div class="card-label">Базовый ТФ / горизонт</div>
+    <div class="card-value">{{ data.base_tf }} → {{ data.horizon }}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Состояний в графе</div>
+    <div class="card-value">{{ data.graph.groups or '—' }}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Переходов</div>
+    <div class="card-value">{{ data.graph.transitions or '—' }}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Кандидатов (последний прогон)</div>
+    <div class="card-value">{{ data.totals.candidates or 0 }}</div>
+    <div class="card-sub">отправлено: {{ data.totals.emitted or 0 }}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Средний quality_score</div>
+    <div class="card-value">
+      {{ '%.3f'|format(data.totals.avg_quality) if data.totals.avg_quality else '—' }}
+    </div>
+    <div class="card-sub">
+      STRONG {{ data.totals.strong or 0 }} ·
+      MODERATE {{ data.totals.moderate or 0 }} ·
+      WEAK {{ data.totals.weak or 0 }}
+    </div>
+  </div>
+  <div class="card {{ 'ok' if sink.ok else 'bad' }}">
+    <div class="card-label">Приёмник btc-graph</div>
+    <div class="card-value">{{ sink.mode }}</div>
+    <div class="card-sub">{{ sink.detail }}</div>
+  </div>
+</section>
+
+{% if data.active_run %}
+<div class="banner">
+  Идёт прогон #{{ data.active_run.run_id }} ({{ data.active_run.kind }}) —
+  {{ '%.0f'|format(data.active_run.progress * 100) }}%,
+  стадия {{ data.active_run.stage or '—' }}.
+  <a href="/runs/{{ data.active_run.run_id }}">открыть лог</a>
+</div>
+{% endif %}
+
+<section class="split">
+  <div>
+    <h2>Покрытие истории</h2>
+    <table>
+      <thead><tr><th>ТФ</th><th>Баров</th><th>Начало</th><th>Конец</th></tr></thead>
+      <tbody>
+      {% for row in data.coverage %}
+        <tr>
+          <td>{{ row.tf }}</td>
+          <td class="num">{{ '{:,}'.format(row.bars).replace(',', ' ') }}</td>
+          <td>{{ row.first_ts.strftime('%Y-%m-%d') }}</td>
+          <td>{{ row.last_ts.strftime('%Y-%m-%d %H:%M') }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">Истории нет — запусти прогон с загрузкой данных</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Оценки btc-graph</h2>
+    <table>
+      <thead><tr><th>Рейтинг</th><th>Сторона</th><th>Кандидатов</th><th>Средний score</th></tr></thead>
+      <tbody>
+      {% for row in ratings %}
+        <tr>
+          <td><span class="tag {{ row.rating|lower }}">{{ row.rating }}</span></td>
+          <td>{{ row.direction }}</td>
+          <td class="num">{{ row.n }}</td>
+          <td class="num">{{ '%.3f'|format(row.avg_quality) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">Оценок пока нет</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<h2>Последние прогоны</h2>
+{% include "partials/runs_table.html" %}
+{% endblock %}

@@ -1,0 +1,39 @@
+# Данные и расчёты
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.13.0
+scikit-learn>=1.5.0
+joblib>=1.4.0
+
+# Загрузка истории
+httpx>=0.27.0
+
+# Хранилище
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# Совместимость со схемой кандидата btc-graph
+pydantic>=2.7.0
+
+# Админка
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+jinja2>=3.1.0
+python-multipart>=0.0.9
+itsdangerous>=2.2.0
+
+# CLI и конфиг
+typer>=0.12.0
+python-dotenv>=1.0.0
+
+# Redis (публикация STRONG-кандидатов, статус прогонов)
+redis[hiredis]>=5.0.0
+
+# Нужны только при SINK_MODE=direct: pipeline btc-graph вызывается как
+# библиотека и внутри себя пишет в pgvector и Neo4j. Без них кандидат
+# всё равно оценивается, но не сохраняется — в логе будет ModuleNotFoundError.
+pgvector>=0.3.0
+neo4j>=5.0.0
+
+# Тесты
+pytest>=8.0.0

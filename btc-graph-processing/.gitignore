@@ -1,0 +1,12 @@
+.env
+data/
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+*.joblib
+models/
+.idea/
+.env.local

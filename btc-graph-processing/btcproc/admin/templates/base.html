@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}btc-graph-processing{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    btc-graph-processing
+    <small>{{ symbol }}</small>
+  </div>
+  <nav>
+    <a href="/" class="{{ 'on' if active == 'dashboard' }}">Сводка</a>
+    <a href="/graph" class="{{ 'on' if active == 'graph' }}">Граф состояний</a>
+    <a href="/chart" class="{{ 'on' if active == 'chart' }}">График</a>
+    <a href="/candidates" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
+    <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
+  </nav>
+  <div class="user">{{ user }} · <a href="/logout">выйти</a></div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

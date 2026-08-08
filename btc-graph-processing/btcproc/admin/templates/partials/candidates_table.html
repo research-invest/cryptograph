@@ -1,0 +1,52 @@
+<p class="muted">
+  Найдено {{ data.total }} · страница {{ data.page }} из {{ data.pages }}
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Время</th><th>Переход</th><th>Блок событий</th><th>Сторона</th>
+      <th>research</th><th>Выборка</th><th>quality</th><th>Рейтинг</th>
+      <th>Флаги</th><th>Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in data.rows %}
+    <tr onclick="location.href='/candidates/{{ row.candidate_id }}'">
+      <td>{{ row.ts.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td><code>{{ row.transition_id }}</code></td>
+      <td><code>{{ row.event_block_id }}</code></td>
+      <td class="{{ row.research_side }}">{{ row.research_side }}</td>
+      <td class="num">{{ '%.3f'|format(row.research_score) }}</td>
+      <td class="num">{{ row.sample_size }}</td>
+      <td class="num">{{ '%.3f'|format(row.quality_score) if row.quality_score is not none else '—' }}</td>
+      <td>{% if row.rating %}<span class="tag {{ row.rating|lower }}">{{ row.rating }}</span>{% else %}—{% endif %}</td>
+      <td class="flags">{{ (row.warning_flags or [])|join(', ') or '—' }}</td>
+      <td>
+        {%- if row.emitted_at -%}
+          <span class="status done">отправлен</span>
+        {%- elif row.emit_error -%}
+          <span class="status failed" title="{{ row.emit_error }}">ошибка</span>
+        {%- else -%}
+          <span class="status running">в очереди</span>
+        {%- endif -%}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="muted">Ничего не найдено</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if data.pages > 1 %}
+<div class="pager">
+  {% if data.page > 1 %}
+    <button hx-get="/candidates?page_num={{ data.page - 1 }}{% for k, v in filters.items() if v is not none and v != '' %}&{{ k }}={{ v }}{% endfor %}"
+            hx-target="#candidates-table">← назад</button>
+  {% endif %}
+  {% if data.page < data.pages %}
+    <button hx-get="/candidates?page_num={{ data.page + 1 }}{% for k, v in filters.items() if v is not none and v != '' %}&{{ k }}={{ v }}{% endfor %}"
+            hx-target="#candidates-table">вперёд →</button>
+  {% endif %}
+</div>
+{% endif %}

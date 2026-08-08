@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход · btc-graph-processing</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-page">
+  <form class="login-card" method="post" action="/login" autocomplete="off">
+    <h1>btc-graph-processing</h1>
+    <p class="hint">Доступ только по учётным данным из <code>.env</code></p>
+
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+    <label>Логин
+      <input type="text" name="user" required autofocus>
+    </label>
+    <label>Пароль
+      <input type="password" name="password" required>
+    </label>
+    <button type="submit">Войти</button>
+  </form>
+</body>
+</html>

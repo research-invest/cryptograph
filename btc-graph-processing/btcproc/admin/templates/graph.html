@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Граф состояний · btc-graph-processing{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<h1>Граф состояний</h1>
+<p class="hint">
+  Узел — состояние рынка (<code>group_id</code>), размер узла — доля истории,
+  цвет — исторический перекос исходов. Ребро — переход, толщина по частоте,
+  цвет по редкости. Клик по узлу открывает его переходы.
+</p>
+
+<form class="toolbar" onsubmit="return false;">
+  <label>Прогон
+    <select id="run">
+      {% for run in runs if run.kind == 'train' %}
+        <option value="{{ run.run_id }}" {{ 'selected' if run.run_id == run_id }}>
+          #{{ run.run_id }} — {{ run.started_at.strftime('%Y-%m-%d %H:%M') }} ({{ run.status }})
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Редкость
+    <select id="rarity">
+      <option value="">все</option>
+      <option value="rare">rare</option>
+      <option value="uncommon">uncommon</option>
+      <option value="rare,uncommon">rare + uncommon</option>
+      <option value="common">common</option>
+    </select>
+  </label>
+  <label>Мин. частота перехода
+    <input type="number" id="minCount" value="1" min="1" step="1">
+  </label>
+  <button id="reload">Обновить</button>
+  <span id="graphInfo" class="muted"></span>
+</form>
+
+<div class="graph-wrap">
+  <div id="cy"></div>
+  <aside id="details" class="details">
+    <p class="muted">Выбери узел или ребро.</p>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const cy = cytoscape({
+  container: document.getElementById('cy'),
+  style: [
+    { selector: 'node', style: {
+        'label': 'data(label)',
+        'width': 'data(w)', 'height': 'data(w)',
+        'background-color': 'data(color)',
+        'color': '#e8edf5', 'font-size': 11,
+        'text-valign': 'center', 'text-halign': 'center',
+        'border-width': 1, 'border-color': '#0f141b'
+    }},
+    { selector: 'edge', style: {
+        'width': 'data(w)',
+        'line-color': 'data(color)',
+        'target-arrow-color': 'data(color)',
+        'target-arrow-shape': 'triangle',
+        'curve-style': 'bezier',
+        'opacity': 0.75
+    }},
+    { selector: '.selected', style: { 'border-width': 3, 'border-color': '#f2c94c' } }
+  ],
+  layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120 }
+});
+
+const biasColor = { long_skew: '#2f9e5e', short_skew: '#c0392b', neutral: '#4b5c72' };
+const rarityColor = { rare: '#f2c94c', uncommon: '#7aa2f7', common: '#3c4657' };
+
+async function load() {
+  const run = document.getElementById('run').value;
+  const rarity = document.getElementById('rarity').value;
+  const minCount = document.getElementById('minCount').value || 1;
+  const params = new URLSearchParams({ run, min_count: minCount });
+  if (rarity) params.set('rarity', rarity);
+
+  const data = await (await fetch('/api/graph?' + params)).json();
+  const maxSize = Math.max(1, ...data.nodes.map(n => n.data.size));
+  const maxCount = Math.max(1, ...data.edges.map(e => e.data.count));
+
+  const elements = [
+    ...data.nodes.map(n => ({ data: {
+      ...n.data,
+      w: 24 + 46 * Math.sqrt(n.data.size / maxSize),
+      color: biasColor[n.data.bias] || biasColor.neutral
+    }})),
+    ...data.edges.map(e => ({ data: {
+      ...e.data,
+      w: 1 + 6 * Math.sqrt(e.data.count / maxCount),
+      color: rarityColor[e.data.rarity] || rarityColor.common
+    }}))
+  ];
+
+  cy.elements().remove();
+  cy.add(elements);
+  cy.layout({ name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120 }).run();
+  document.getElementById('graphInfo').textContent =
+    `${data.nodes.length} состояний, ${data.edges.length} переходов`;
+}
+
+function pct(x) { return x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%'; }
+function num(x, d = 3) { return x === null || x === undefined ? '—' : Number(x).toFixed(d); }
+
+cy.on('tap', 'node', async (evt) => {
+  const d = evt.target.data();
+  const run = document.getElementById('run').value;
+  const info = await (await fetch(`/api/graph/group/${d.group_id}?run=${run}`)).json();
+  const feats = Object.entries(d.top_features || {})
+    .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
+    .join('');
+  const rows = (list) => list.map(t => `
+    <tr><td>${t.transition_id}</td><td class="num">${t.count}</td>
+        <td><span class="tag ${t.rarity}">${t.rarity}</span></td>
+        <td class="num">${pct(t.up_share)}</td></tr>`).join('');
+
+  document.getElementById('details').innerHTML = `
+    <h3>Состояние ${d.label}</h3>
+    <p>Баров: <b>${d.size}</b> (${pct(d.share)} истории)<br>
+       Перекос: <b>${d.bias}</b>, доля роста ${pct(d.up_share)}<br>
+       Средний исход: ${num(d.avg_ret_pct, 2)}%</p>
+    <h4>Чем отличается от рынка в среднем</h4>
+    <ul class="feats">${feats || '<li class="muted">нет данных</li>'}</ul>
+    <h4>Входящие переходы</h4>
+    <table><tbody>${rows(info.incoming || [])}</tbody></table>
+    <h4>Исходящие переходы</h4>
+    <table><tbody>${rows(info.outgoing || [])}</tbody></table>
+    <p><a href="/candidates?run=${run}">кандидаты этого прогона</a></p>`;
+});
+
+cy.on('tap', 'edge', (evt) => {
+  const d = evt.target.data();
+  const run = document.getElementById('run').value;
+  document.getElementById('details').innerHTML = `
+    <h3>Переход ${d.label}</h3>
+    <p>Случаев: <b>${d.count}</b> (${pct(d.share)} всех переходов)<br>
+       Редкость: <span class="tag ${d.rarity}">${d.rarity}</span><br>
+       Доля роста после перехода: ${pct(d.up_share)}<br>
+       Средний исход: ${num(d.avg_horizon_return, 2)}%</p>
+    <p><a href="/candidates?run=${run}&transition=${encodeURIComponent(d.label)}">
+       кандидаты по этому переходу</a></p>`;
+});
+
+document.getElementById('reload').addEventListener('click', load);
+document.getElementById('run').addEventListener('change', load);
+load();
+</script>
+{% endblock %}

@@ -1,0 +1,29 @@
+<table class="runs">
+  <thead>
+    <tr><th>#</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th>Стадия</th>
+        <th>Начало</th><th>Длительность</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for run in (runs or recent_runs) %}
+    <tr>
+      <td>{{ run.run_id }}</td>
+      <td>{{ run.kind }}</td>
+      <td><span class="status {{ run.status }}">{{ run.status }}</span></td>
+      <td>
+        <div class="bar"><span style="width: {{ (run.progress * 100)|round(1) }}%"></span></div>
+        {{ '%.0f'|format(run.progress * 100) }}%
+      </td>
+      <td>{{ run.stage or '—' }}</td>
+      <td>{{ run.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>
+        {%- if run.finished_at -%}
+          {{ ((run.finished_at - run.started_at).total_seconds() / 60)|round(1) }} мин
+        {%- else -%}—{%- endif -%}
+      </td>
+      <td><a href="/runs/{{ run.run_id }}">лог</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="muted">Прогонов ещё не было</td></tr>
+  {% endfor %}
+  </tbody>
+</table>

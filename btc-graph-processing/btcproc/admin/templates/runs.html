@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Прогоны · btc-graph-processing{% endblock %}
+
+{% block content %}
+<h1>Прогоны</h1>
+
+<section class="split">
+  <form class="panel" method="post" action="/runs/train">
+    <h2>Полный прогон истории</h2>
+    <p class="hint">
+      Качает историю, считает признаки и события, переобучает состояния,
+      строит граф, собирает кандидатов и отправляет их в btc-graph.
+      Занимает десятки минут.
+    </p>
+    <label><input type="checkbox" name="ingest" value="true" checked> качать историю Binance</label>
+    <label><input type="checkbox" name="emit" value="true" checked> отправлять кандидатов в btc-graph</label>
+    <label>С даты <input type="date" name="start"></label>
+    <label>По дату <input type="date" name="end"></label>
+    <button type="submit" {{ 'disabled' if active_run }}>Запустить</button>
+  </form>
+
+  <form class="panel" method="post" action="/runs/live">
+    <h2>Инкрементальный прогон</h2>
+    <p class="hint">
+      Добирает свежие бары и размечает их уже обученной моделью. Состояния
+      не переобучаются — граф в btc-graph остаётся сопоставимым.
+    </p>
+    <label>Свежесть, минут <input type="number" name="lookback" value="240" min="15" step="15"></label>
+    <label><input type="checkbox" name="emit" value="true" checked> отправлять кандидатов</label>
+    <button type="submit" {{ 'disabled' if active_run }}>Запустить</button>
+  </form>
+</section>
+
+{% if active_run %}
+<div class="banner">
+  Идёт прогон #{{ active_run.run_id }} — запуск новых заблокирован.
+</div>
+{% endif %}
+
+<div hx-get="/runs" hx-trigger="every 3s" hx-target="this">
+  {% include "partials/runs_table.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,192 @@
+-- Схема processing: всё, что считает генератор кандидатов.
+-- Таблицы btc-graph (public.candidates, public.candidate_events) не трогаются:
+-- в них пишет только его собственный pipeline.
+--
+-- Скрипт идемпотентный, гоняется при каждом старте (make init-db).
+-- {schema} подставляется из PG_SCHEMA кодом в src/db/session.py.
+
+CREATE SCHEMA IF NOT EXISTS {schema};
+SET search_path TO {schema}, public;
+
+-- ─── Сырые бары ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ohlcv (
+    symbol        TEXT             NOT NULL,
+    tf            TEXT             NOT NULL,
+    ts            TIMESTAMPTZ      NOT NULL,
+    open          DOUBLE PRECISION NOT NULL,
+    high          DOUBLE PRECISION NOT NULL,
+    low           DOUBLE PRECISION NOT NULL,
+    close         DOUBLE PRECISION NOT NULL,
+    volume        DOUBLE PRECISION NOT NULL,
+    quote_volume  DOUBLE PRECISION,
+    trades        INTEGER,
+    taker_buy_base DOUBLE PRECISION,
+    PRIMARY KEY (symbol, tf, ts)
+);
+
+CREATE INDEX IF NOT EXISTS ohlcv_tf_ts_idx ON ohlcv (tf, ts DESC);
+
+-- ─── Признаки базового ТФ ───────────────────────────────────────────────────
+-- Имена признаков лежат в feature_sets.names — так набор можно менять,
+-- не переписывая схему.
+CREATE TABLE IF NOT EXISTS feature_sets (
+    version     TEXT PRIMARY KEY,
+    names       TEXT[] NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    params      JSONB
+);
+
+CREATE TABLE IF NOT EXISTS features (
+    symbol   TEXT               NOT NULL,
+    ts       TIMESTAMPTZ        NOT NULL,
+    version  TEXT               NOT NULL,
+    values   DOUBLE PRECISION[] NOT NULL,
+    PRIMARY KEY (symbol, ts, version)
+);
+
+-- ─── События ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bar_events (
+    symbol          TEXT        NOT NULL,
+    ts              TIMESTAMPTZ NOT NULL,
+    event_block_id  TEXT        NOT NULL,
+    atoms           TEXT[]      NOT NULL,
+    families        TEXT[]      NOT NULL,
+    atom_count      INTEGER     NOT NULL,
+    family_count    INTEGER     NOT NULL,
+    intensity       TEXT        NOT NULL,
+    primary_family  TEXT,
+    PRIMARY KEY (symbol, ts)
+);
+
+CREATE INDEX IF NOT EXISTS bar_events_block_idx ON bar_events (event_block_id);
+
+CREATE TABLE IF NOT EXISTS event_blocks (
+    run_id          BIGINT      NOT NULL,
+    event_block_id  TEXT        NOT NULL,
+    total_rows      INTEGER     NOT NULL,
+    row_share       DOUBLE PRECISION NOT NULL,
+    rarity          TEXT        NOT NULL,
+    intensity       TEXT        NOT NULL,
+    atom_count      INTEGER     NOT NULL,
+    family_count    INTEGER     NOT NULL,
+    primary_family  TEXT,
+    families        TEXT[],
+    PRIMARY KEY (run_id, event_block_id)
+);
+
+-- ─── Состояния и граф ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS state_models (
+    run_id      BIGINT PRIMARY KEY,
+    version     TEXT NOT NULL,
+    n_groups    INTEGER NOT NULL,
+    feature_ver TEXT NOT NULL,
+    params      JSONB,
+    artifact    BYTEA,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS market_groups (
+    run_id        BIGINT           NOT NULL,
+    group_id      DOUBLE PRECISION NOT NULL,
+    size          INTEGER          NOT NULL,
+    share         DOUBLE PRECISION NOT NULL,
+    dominant_bias TEXT,
+    up_share      DOUBLE PRECISION,
+    avg_ret_pct   DOUBLE PRECISION,
+    avg_vol_pct   DOUBLE PRECISION,
+    centroid      DOUBLE PRECISION[],
+    top_features  JSONB,
+    PRIMARY KEY (run_id, group_id)
+);
+
+CREATE TABLE IF NOT EXISTS bar_states (
+    symbol       TEXT             NOT NULL,
+    ts           TIMESTAMPTZ      NOT NULL,
+    run_id       BIGINT           NOT NULL,
+    group_id     DOUBLE PRECISION NOT NULL,
+    prev_group_id DOUBLE PRECISION,
+    state_seq    BIGINT           NOT NULL,
+    age_minutes  INTEGER          NOT NULL,
+    age_bucket   TEXT             NOT NULL,
+    entropy      TEXT             NOT NULL,
+    is_transition BOOLEAN         NOT NULL,
+    transition_id TEXT,
+    PRIMARY KEY (symbol, ts, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS bar_states_transition_idx
+    ON bar_states (run_id, transition_id) WHERE is_transition;
+CREATE INDEX IF NOT EXISTS bar_states_group_idx ON bar_states (run_id, group_id);
+
+CREATE TABLE IF NOT EXISTS transitions (
+    run_id        BIGINT NOT NULL,
+    transition_id TEXT   NOT NULL,
+    prev_group_id DOUBLE PRECISION,
+    cur_group_id  DOUBLE PRECISION NOT NULL,
+    count         INTEGER NOT NULL,
+    share         DOUBLE PRECISION NOT NULL,
+    rarity        TEXT   NOT NULL,
+    avg_horizon_return DOUBLE PRECISION,
+    up_share      DOUBLE PRECISION,
+    PRIMARY KEY (run_id, transition_id)
+);
+
+-- ─── Исходы ─────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS outcomes (
+    symbol   TEXT             NOT NULL,
+    ts       TIMESTAMPTZ      NOT NULL,
+    horizon  TEXT             NOT NULL,
+    ret_pct  DOUBLE PRECISION,
+    mfe_pct  DOUBLE PRECISION,
+    mae_pct  DOUBLE PRECISION,
+    is_up    BOOLEAN,
+    valid    BOOLEAN          NOT NULL,
+    PRIMARY KEY (symbol, ts, horizon)
+);
+
+-- ─── Кандидаты ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS candidates (
+    candidate_id   TEXT PRIMARY KEY,
+    run_id         BIGINT      NOT NULL,
+    symbol         TEXT        NOT NULL,
+    ts             TIMESTAMPTZ NOT NULL,
+    transition_id  TEXT        NOT NULL,
+    event_block_id TEXT        NOT NULL,
+    family_key     TEXT,
+    research_side  TEXT        NOT NULL,
+    research_score DOUBLE PRECISION NOT NULL,
+    sample_size    INTEGER     NOT NULL,
+    payload        JSONB       NOT NULL,
+    -- Заполняется после отправки в btc-graph.
+    quality_score  DOUBLE PRECISION,
+    rating         TEXT,
+    direction      TEXT,
+    warning_flags  TEXT[],
+    evaluation     JSONB,
+    emitted_at     TIMESTAMPTZ,
+    emit_error     TEXT,
+    created_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS candidates_run_ts_idx ON candidates (run_id, ts DESC);
+CREATE INDEX IF NOT EXISTS candidates_rating_idx ON candidates (rating, direction);
+CREATE INDEX IF NOT EXISTS candidates_pending_idx ON candidates (emitted_at)
+    WHERE emitted_at IS NULL;
+CREATE INDEX IF NOT EXISTS candidates_transition_idx ON candidates (transition_id);
+
+-- ─── Прогоны ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS runs (
+    run_id      BIGSERIAL PRIMARY KEY,
+    kind        TEXT        NOT NULL,
+    status      TEXT        NOT NULL DEFAULT 'running',
+    stage       TEXT,
+    progress    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    params      JSONB,
+    stats       JSONB,
+    error       TEXT,
+    log         TEXT        NOT NULL DEFAULT '',
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS runs_started_idx ON runs (started_at DESC);

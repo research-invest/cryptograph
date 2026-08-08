@@ -1,0 +1,20 @@
+<div class="run-progress">
+  <div class="bar big"><span style="width: {{ (run.progress * 100)|round(1) }}%"></span></div>
+  <b>{{ '%.1f'|format(run.progress * 100) }}%</b> · стадия {{ run.stage or '—' }}
+</div>
+
+{% if run.error %}<div class="error">{{ run.error }}</div>{% endif %}
+
+{% if run.stats %}
+<h2>Итоги</h2>
+<table class="kv">
+  <tbody>
+  {% for key, value in run.stats.items() %}
+    <tr><td><code>{{ key }}</code></td><td>{{ value }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Лог</h2>
+<pre class="log">{{ run.log }}</pre>
