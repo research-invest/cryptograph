@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}btc-graph-processing{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
+  <!-- Тема выставляется до отрисовки: иначе при загрузке мигает чужой фон. -->
+  <script>
+    (function () {
+      var saved = localStorage.getItem('btcproc-theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js" defer></script>
   {% block head %}{% endblock %}
 </head>
@@ -22,12 +29,42 @@
     <a href="/candidates" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
     <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
   </nav>
-  <div class="user">{{ user }} · <a href="/logout">выйти</a></div>
+  <div class="user">
+    <button type="button" class="theme-toggle" id="themeToggle" title="Переключить тему"></button>
+    <span>{{ user }} · <a href="/logout">выйти</a></span>
+  </div>
 </header>
 
-<main>
+<main class="{% block main_class %}{% endblock %}">
   {% block content %}{% endblock %}
 </main>
+
+<script>
+// Переключатель темы. Страницы графа и чарта слушают btcproc:theme —
+// их палитра живёт в JS и сама по CSS не перекрашивается.
+(function () {
+  var btn = document.getElementById('themeToggle');
+  function current() {
+    return document.documentElement.getAttribute('data-theme') || 'dark';
+  }
+  function render() {
+    btn.textContent = current() === 'light' ? '☾ тёмная' : '☀ светлая';
+  }
+  btn.addEventListener('click', function () {
+    var next = current() === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('btcproc-theme', next);
+    render();
+    window.dispatchEvent(new CustomEvent('btcproc:theme', { detail: next }));
+  });
+  render();
+})();
+
+// Читалка CSS-переменных: единственный источник цветов для Cytoscape и чарта.
+window.cssVar = function (name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+};
+</script>
 
 {% block scripts %}{% endblock %}
 </body>

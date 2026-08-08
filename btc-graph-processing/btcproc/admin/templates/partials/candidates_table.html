@@ -1,7 +1,11 @@
 <p class="muted">
-  Найдено {{ data.total }} · страница {{ data.page }} из {{ data.pages }}
+  Найдено {{ data.total }} · страница {{ data.page }} из {{ data.pages }} ·
+  <span class="tag strong">STRONG</span> ≥ 0.75 ·
+  <span class="tag moderate">MODERATE</span> ≥ 0.55 ·
+  <span class="tag weak">WEAK</span> ниже — пороги quality_score в btc-graph
 </p>
 
+<div class="scroll-y">
 <table>
   <thead>
     <tr>
@@ -37,6 +41,7 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 
 {% if data.pages > 1 %}
 <div class="pager">

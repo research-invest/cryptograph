@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import colorsys
 from typing import Any
 
 import pandas as pd
@@ -88,7 +89,7 @@ def graph_payload(run_id: int, min_count: int = 1, rarity: str | None = None) ->
 
 
 def chart_data(run_id: int, start: str | None = None, end: str | None = None,
-               limit: int = 1500) -> dict:
+               limit: int = 1500, rating: str | None = None) -> dict:
     """
     Свечи с раскраской по состоянию + маркеры кандидатов.
 
@@ -117,12 +118,21 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
         return {"bars": [], "markers": [], "groups": []}
 
     first_ts, last_ts = bars[0]["ts"], bars[-1]["ts"]
-    candidates = fetch_all(
-        "SELECT candidate_id, ts, research_side, rating, quality_score, transition_id "
-        "FROM candidates WHERE run_id = %s AND ts BETWEEN %s AND %s "
-        "ORDER BY ts LIMIT 500",
-        (run_id, first_ts, last_ts),
-    )
+    # rating="none" — маркеры не нужны вовсе: на длинном окне их сотни,
+    # и они перекрывают саму раскраску состояний.
+    if rating == "none":
+        candidates = []
+    else:
+        sql_c = (
+            "SELECT candidate_id, ts, research_side, rating, quality_score, transition_id "
+            "FROM candidates WHERE run_id = %s AND ts BETWEEN %s AND %s"
+        )
+        params_c: list[Any] = [run_id, first_ts, last_ts]
+        if rating:
+            sql_c += " AND rating = ANY(%s)"
+            params_c.append([r.strip() for r in rating.split(",") if r.strip()])
+        sql_c += " ORDER BY ts LIMIT 500"
+        candidates = fetch_all(sql_c, params_c)
 
     group_ids = sorted({b["group_id"] for b in bars if b["group_id"] is not None})
     palette = {gid: _color(i, len(group_ids)) for i, gid in enumerate(group_ids)}
@@ -158,9 +168,17 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
 
 
 def _color(index: int, total: int) -> str:
-    """Равномерно разнесённые оттенки — соседние состояния не сливаются."""
-    hue = int(360 * index / max(total, 1))
-    return f"hsl({hue}, 62%, 55%)"
+    """
+    Равномерно разнесённые оттенки — соседние состояния не сливаются.
+
+    Возвращаем именно hex: lightweight-charts парсит цвета сам и на строке
+    вида `hsl(32, 62%, 55%)` падает с «Cannot parse color».
+    """
+    hue = 360.0 * index / max(total, 1)
+    red, green, blue = colorsys.hls_to_rgb(hue / 360.0, 0.55, 0.62)
+    return "#{:02x}{:02x}{:02x}".format(
+        round(red * 255), round(green * 255), round(blue * 255)
+    )
 
 
 def _rating_color(rating: str | None) -> str:
@@ -223,6 +241,15 @@ def candidates_page(
 
 def candidate_detail(candidate_id: str) -> dict | None:
     return fetch_one("SELECT * FROM candidates WHERE candidate_id = %s", (candidate_id,))
+
+
+def top_groups(run_id: int, limit: int = 10) -> list[dict]:
+    """Крупнейшие состояния — где рынок проводит больше всего времени."""
+    return fetch_all(
+        "SELECT group_id, size, share, dominant_bias, up_share, avg_ret_pct "
+        "FROM market_groups WHERE run_id = %s ORDER BY size DESC LIMIT %s",
+        (run_id, limit),
+    )
 
 
 def transitions_table(run_id: int, limit: int = 200) -> list[dict]:

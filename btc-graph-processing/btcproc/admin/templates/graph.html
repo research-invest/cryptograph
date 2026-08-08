@@ -1,18 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Граф состояний · btc-graph-processing{% endblock %}
+{% block main_class %}wide{% endblock %}
 
 {% block head %}
 <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 {% endblock %}
 
 {% block content %}
-<h1>Граф состояний</h1>
-<p class="hint">
-  Узел — состояние рынка (<code>group_id</code>), размер узла — доля истории,
-  цвет — исторический перекос исходов. Ребро — переход, толщина по частоте,
-  цвет по редкости. Клик по узлу открывает его переходы.
-</p>
-
 <form class="toolbar" onsubmit="return false;">
   <label>Прогон
     <select id="run">
@@ -23,111 +17,236 @@
       {% endfor %}
     </select>
   </label>
-  <label>Редкость
+  <label>Редкость перехода
     <select id="rarity">
       <option value="">все</option>
-      <option value="rare">rare</option>
-      <option value="uncommon">uncommon</option>
+      <option value="rare">только rare</option>
       <option value="rare,uncommon">rare + uncommon</option>
-      <option value="common">common</option>
+      <option value="uncommon">только uncommon</option>
+      <option value="common">только common</option>
     </select>
   </label>
-  <label>Мин. частота перехода
-    <input type="number" id="minCount" value="1" min="1" step="1">
+  <label>Показывать рёбер
+    <select id="topEdges">
+      <option value="60">60 самых частых</option>
+      <option value="120" selected>120 самых частых</option>
+      <option value="250">250</option>
+      <option value="0">все</option>
+    </select>
   </label>
-  <button id="reload">Обновить</button>
-  <span id="graphInfo" class="muted"></span>
+  <label>Мин. случаев перехода
+    <input type="number" id="minCount" value="1" min="1" step="1" style="width: 74px">
+  </label>
+  <label>Раскладка
+    <select id="layout">
+      <option value="cose">силовая</option>
+      <option value="concentric">кольцами по размеру</option>
+      <option value="circle">по кругу</option>
+      <option value="grid">сеткой</option>
+      <option value="breadthfirst">по уровням</option>
+    </select>
+  </label>
+  <label>Найти состояние
+    <input type="text" id="findNode" placeholder="напр. 7" style="width: 90px">
+  </label>
+  <label><input type="checkbox" id="hideIsolated" checked> скрывать без связей</label>
+
+  <div class="spacer"></div>
+  <button id="fit" type="button">Уместить</button>
+  <button id="reload" type="button" class="primary">Обновить</button>
 </form>
+
+<div class="legend-box">
+  <div class="legend-group">
+    <b>Узел = состояние</b>
+    <span class="legend-item"><i style="width:12px;height:12px;background:var(--bias-long)"></i>чаще рос</span>
+    <span class="legend-item"><i style="width:12px;height:12px;background:var(--bias-short)"></i>чаще падал</span>
+    <span class="legend-item"><i style="width:12px;height:12px;background:var(--bias-neutral)"></i>без перекоса</span>
+    <span class="legend-item"><i class="sz-s"></i><i class="sz-m"></i><i class="sz-l"></i>размер = доля истории</span>
+  </div>
+  <div class="legend-group">
+    <b>Ребро = переход</b>
+    <span class="legend-item"><i class="line" style="background:var(--rarity-rare)"></i>rare</span>
+    <span class="legend-item"><i class="line" style="background:var(--rarity-uncommon)"></i>uncommon</span>
+    <span class="legend-item"><i class="line" style="background:var(--rarity-common)"></i>common</span>
+    <span class="legend-item">толщина = сколько раз случался</span>
+  </div>
+  <div class="legend-group">
+    <span class="legend-item" id="graphInfo"></span>
+  </div>
+</div>
 
 <div class="graph-wrap">
   <div id="cy"></div>
   <aside id="details" class="details">
-    <p class="muted">Выбери узел или ребро.</p>
+    <p class="muted">
+      Клик по узлу — состояние и его переходы, соседи подсвечиваются.
+      Клик по ребру — статистика перехода. Клик по пустому месту — сброс подсветки.
+      Колесо — зум, узлы можно перетаскивать.
+    </p>
   </aside>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-const cy = cytoscape({
-  container: document.getElementById('cy'),
-  style: [
+const el = (id) => document.getElementById(id);
+let raw = { nodes: [], edges: [] };
+
+function palette() {
+  return {
+    long_skew: cssVar('--bias-long'),
+    short_skew: cssVar('--bias-short'),
+    neutral: cssVar('--bias-neutral'),
+    rare: cssVar('--rarity-rare'),
+    uncommon: cssVar('--rarity-uncommon'),
+    common: cssVar('--rarity-common'),
+    label: cssVar('--node-label'),
+    border: cssVar('--node-border'),
+    accent: cssVar('--accent'),
+  };
+}
+
+function styleSheet() {
+  const p = palette();
+  return [
     { selector: 'node', style: {
-        'label': 'data(label)',
-        'width': 'data(w)', 'height': 'data(w)',
-        'background-color': 'data(color)',
-        'color': '#e8edf5', 'font-size': 11,
-        'text-valign': 'center', 'text-halign': 'center',
-        'border-width': 1, 'border-color': '#0f141b'
+        'label': 'data(label)', 'width': 'data(w)', 'height': 'data(w)',
+        'background-color': 'data(color)', 'color': p.label, 'font-size': 11,
+        'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center',
+        'border-width': 1, 'border-color': p.border,
+        'transition-property': 'opacity', 'transition-duration': '120ms'
     }},
     { selector: 'edge', style: {
-        'width': 'data(w)',
-        'line-color': 'data(color)',
-        'target-arrow-color': 'data(color)',
-        'target-arrow-shape': 'triangle',
-        'curve-style': 'bezier',
-        'opacity': 0.75
+        'width': 'data(w)', 'line-color': 'data(color)',
+        'target-arrow-color': 'data(color)', 'target-arrow-shape': 'triangle',
+        'arrow-scale': .8, 'curve-style': 'bezier', 'opacity': .65
     }},
-    { selector: '.selected', style: { 'border-width': 3, 'border-color': '#f2c94c' } }
-  ],
-  layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120 }
+    // Приглушение всего, кроме выбранного соседства: без этого 120 рёбер
+    // читаются как клубок.
+    { selector: '.faded', style: { 'opacity': .08, 'text-opacity': .15 } },
+    { selector: '.highlight', style: {
+        'border-width': 3, 'border-color': p.accent, 'opacity': 1 } },
+    { selector: 'edge.highlight', style: { 'opacity': 1, 'width': 'data(wHi)' } },
+    { selector: '.found', style: {
+        'border-width': 4, 'border-color': p.accent } },
+  ];
+}
+
+const cy = cytoscape({
+  container: el('cy'),
+  style: styleSheet(),
+  wheelSensitivity: 0.25,
+  minZoom: 0.15,
+  maxZoom: 3,
 });
 
-const biasColor = { long_skew: '#2f9e5e', short_skew: '#c0392b', neutral: '#4b5c72' };
-const rarityColor = { rare: '#f2c94c', uncommon: '#7aa2f7', common: '#3c4657' };
+function layoutOptions(name) {
+  const common = { animate: false, fit: true, padding: 30 };
+  if (name === 'cose') {
+    return Object.assign({ name: 'cose', nodeRepulsion: 18000, idealEdgeLength: 140,
+                           nodeOverlap: 24, gravity: 0.6, numIter: 1200 }, common);
+  }
+  if (name === 'concentric') {
+    return Object.assign({ name: 'concentric', minNodeSpacing: 28,
+                           concentric: (n) => n.data('size'),
+                           levelWidth: () => 3 }, common);
+  }
+  if (name === 'breadthfirst') {
+    return Object.assign({ name: 'breadthfirst', spacingFactor: 1.3 }, common);
+  }
+  return Object.assign({ name: name, spacingFactor: 1.2 }, common);
+}
 
-async function load() {
-  const run = document.getElementById('run').value;
-  const rarity = document.getElementById('rarity').value;
-  const minCount = document.getElementById('minCount').value || 1;
-  const params = new URLSearchParams({ run, min_count: minCount });
-  if (rarity) params.set('rarity', rarity);
+function runLayout() {
+  cy.layout(layoutOptions(el('layout').value)).run();
+}
 
-  const data = await (await fetch('/api/graph?' + params)).json();
-  const maxSize = Math.max(1, ...data.nodes.map(n => n.data.size));
-  const maxCount = Math.max(1, ...data.edges.map(e => e.data.count));
+function render() {
+  const p = palette();
+  const minCount = Number(el('minCount').value || 1);
+  const topN = Number(el('topEdges').value || 0);
+  const hideIsolated = el('hideIsolated').checked;
+
+  let edges = raw.edges.filter(e => e.data.count >= minCount);
+  edges.sort((a, b) => b.data.count - a.data.count);
+  if (topN > 0) edges = edges.slice(0, topN);
+
+  const used = new Set();
+  edges.forEach(e => { used.add(e.data.source); used.add(e.data.target); });
+  let nodes = raw.nodes;
+  if (hideIsolated) nodes = nodes.filter(n => used.has(n.data.id));
+
+  const maxSize = Math.max(1, ...nodes.map(n => n.data.size));
+  const maxCount = Math.max(1, ...edges.map(e => e.data.count));
 
   const elements = [
-    ...data.nodes.map(n => ({ data: {
-      ...n.data,
-      w: 24 + 46 * Math.sqrt(n.data.size / maxSize),
-      color: biasColor[n.data.bias] || biasColor.neutral
-    }})),
-    ...data.edges.map(e => ({ data: {
-      ...e.data,
-      w: 1 + 6 * Math.sqrt(e.data.count / maxCount),
-      color: rarityColor[e.data.rarity] || rarityColor.common
-    }}))
+    ...nodes.map(n => ({ data: Object.assign({}, n.data, {
+      w: 22 + 44 * Math.sqrt(n.data.size / maxSize),
+      color: p[n.data.bias] || p.neutral,
+    })})),
+    ...edges.map(e => {
+      const w = 1 + 6 * Math.sqrt(e.data.count / maxCount);
+      return { data: Object.assign({}, e.data, {
+        w: w, wHi: w + 2, color: p[e.data.rarity] || p.common,
+      })};
+    }),
   ];
 
   cy.elements().remove();
   cy.add(elements);
-  cy.layout({ name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120 }).run();
-  document.getElementById('graphInfo').textContent =
-    `${data.nodes.length} состояний, ${data.edges.length} переходов`;
+  runLayout();
+
+  el('graphInfo').textContent =
+    `${nodes.length} из ${raw.nodes.length} состояний · ` +
+    `${edges.length} из ${raw.edges.length} переходов`;
+}
+
+async function load() {
+  const params = new URLSearchParams({ run: el('run').value, min_count: 1 });
+  const rarity = el('rarity').value;
+  if (rarity) params.set('rarity', rarity);
+  raw = await (await fetch('/api/graph?' + params)).json();
+  render();
 }
 
 function pct(x) { return x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%'; }
 function num(x, d = 3) { return x === null || x === undefined ? '—' : Number(x).toFixed(d); }
 
+function focusOn(collection) {
+  cy.elements().addClass('faded');
+  collection.removeClass('faded').addClass('highlight');
+}
+
+function resetFocus() {
+  cy.elements().removeClass('faded highlight found');
+}
+
 cy.on('tap', 'node', async (evt) => {
-  const d = evt.target.data();
-  const run = document.getElementById('run').value;
+  const node = evt.target;
+  const d = node.data();
+  resetFocus();
+  focusOn(node.closedNeighborhood());
+
+  const run = el('run').value;
   const info = await (await fetch(`/api/graph/group/${d.group_id}?run=${run}`)).json();
   const feats = Object.entries(d.top_features || {})
     .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
     .join('');
   const rows = (list) => list.map(t => `
-    <tr><td>${t.transition_id}</td><td class="num">${t.count}</td>
+    <tr><td><code>${t.transition_id}</code></td><td class="num">${t.count}</td>
         <td><span class="tag ${t.rarity}">${t.rarity}</span></td>
-        <td class="num">${pct(t.up_share)}</td></tr>`).join('');
+        <td class="num">${pct(t.up_share)}</td></tr>`).join('') ||
+    '<tr><td class="muted">нет</td></tr>';
 
-  document.getElementById('details').innerHTML = `
+  el('details').innerHTML = `
     <h3>Состояние ${d.label}</h3>
-    <p>Баров: <b>${d.size}</b> (${pct(d.share)} истории)<br>
-       Перекос: <b>${d.bias}</b>, доля роста ${pct(d.up_share)}<br>
-       Средний исход: ${num(d.avg_ret_pct, 2)}%</p>
+    <p>Баров: <b>${d.size.toLocaleString('ru')}</b> (${pct(d.share)} истории)<br>
+       Что бывало дальше: <b>${d.bias === 'long_skew' ? 'чаще рост' : d.bias === 'short_skew' ? 'чаще падение' : 'без перекоса'}</b>,
+       рост в ${pct(d.up_share)} случаев<br>
+       Средний исход за 24ч: ${num(d.avg_ret_pct, 2)}%</p>
     <h4>Чем отличается от рынка в среднем</h4>
+    <p class="muted" style="font-size:11px;margin:2px 0">Отклонение признака в стандартных отклонениях</p>
     <ul class="feats">${feats || '<li class="muted">нет данных</li>'}</ul>
     <h4>Входящие переходы</h4>
     <table><tbody>${rows(info.incoming || [])}</tbody></table>
@@ -137,20 +256,49 @@ cy.on('tap', 'node', async (evt) => {
 });
 
 cy.on('tap', 'edge', (evt) => {
-  const d = evt.target.data();
-  const run = document.getElementById('run').value;
-  document.getElementById('details').innerHTML = `
+  const edge = evt.target;
+  const d = edge.data();
+  resetFocus();
+  focusOn(edge.connectedNodes().union(edge));
+
+  const run = el('run').value;
+  el('details').innerHTML = `
     <h3>Переход ${d.label}</h3>
-    <p>Случаев: <b>${d.count}</b> (${pct(d.share)} всех переходов)<br>
+    <p>Случаев в истории: <b>${d.count.toLocaleString('ru')}</b> (${pct(d.share)} всех переходов)<br>
        Редкость: <span class="tag ${d.rarity}">${d.rarity}</span><br>
-       Доля роста после перехода: ${pct(d.up_share)}<br>
-       Средний исход: ${num(d.avg_horizon_return, 2)}%</p>
+       Рост после перехода: ${pct(d.up_share)} случаев<br>
+       Средний исход за 24ч: ${num(d.avg_horizon_return, 2)}%</p>
+    <p class="muted">Чем реже переход, тем специфичнее сигнал — в btc-graph это
+       ось rarity, 15% итогового quality_score.</p>
     <p><a href="/candidates?run=${run}&transition=${encodeURIComponent(d.label)}">
-       кандидаты по этому переходу</a></p>`;
+       кандидаты по этому переходу →</a></p>`;
 });
 
-document.getElementById('reload').addEventListener('click', load);
-document.getElementById('run').addEventListener('change', load);
+cy.on('tap', (evt) => { if (evt.target === cy) resetFocus(); });
+
+el('findNode').addEventListener('input', (e) => {
+  const value = e.target.value.trim();
+  cy.nodes().removeClass('found');
+  if (!value) return;
+  const node = cy.nodes().filter(n => String(n.data('label')) === value);
+  if (node.length) {
+    node.addClass('found');
+    cy.animate({ center: { eles: node }, zoom: 1.2 }, { duration: 250 });
+  }
+});
+
+['rarity', 'run'].forEach(id => el(id).addEventListener('change', load));
+['topEdges', 'minCount', 'hideIsolated'].forEach(id => el(id).addEventListener('change', render));
+el('layout').addEventListener('change', runLayout);
+el('reload').addEventListener('click', load);
+el('fit').addEventListener('click', () => cy.fit(undefined, 30));
+
+// Смена темы перекрашивает узлы и рёбра: их цвета заданы в data, а не в CSS.
+window.addEventListener('btcproc:theme', () => {
+  cy.style(styleSheet());
+  render();
+});
+
 load();
 </script>
 {% endblock %}

@@ -138,7 +138,10 @@ def dashboard(request: Request):
         data=data,
         ratings=queries.rating_distribution(run_id),
         sink=graph_sink.sink_status(),
-        recent_runs=runs_repo.list_runs(8),
+        recent_runs=runs_repo.list_runs(6),
+        top_groups=queries.top_groups(run_id, 10) if run_id else [],
+        top_transitions=queries.transitions_table(run_id, 10) if run_id else [],
+        run_id=run_id,
     )
 
 
@@ -277,11 +280,13 @@ def api_group(group_id: float, run: int | None = None):
 
 @app.get("/api/chart")
 def api_chart(run: int | None = None, start: str | None = None,
-              end: str | None = None, limit: int = 1500):
+              end: str | None = None, limit: int = 1500, rating: str | None = None):
     run_id = run or _latest_train_id()
     if run_id is None:
         return {"bars": [], "markers": [], "groups": []}
-    return queries.chart_data(run_id, start=start, end=end, limit=min(limit, 5000))
+    return queries.chart_data(
+        run_id, start=start, end=end, limit=min(limit, 5000), rating=rating
+    )
 
 
 @app.get("/api/runs/{run_id}")

@@ -6,37 +6,46 @@
 
 <section class="cards">
   <div class="card">
-    <div class="card-label">Базовый ТФ / горизонт</div>
+    <div class="card-label">ТФ → горизонт</div>
     <div class="card-value">{{ data.base_tf }} → {{ data.horizon }}</div>
+    <div class="card-sub">{{ data.symbol }}</div>
   </div>
   <div class="card">
-    <div class="card-label">Состояний в графе</div>
+    <div class="card-label">Состояний</div>
     <div class="card-value">{{ data.graph.groups or '—' }}</div>
+    <div class="card-sub">{{ data.graph.transitions or '—' }} переходов</div>
   </div>
   <div class="card">
-    <div class="card-label">Переходов</div>
-    <div class="card-value">{{ data.graph.transitions or '—' }}</div>
+    <div class="card-label">Кандидатов</div>
+    <div class="card-value">{{ '{:,}'.format(data.totals.candidates or 0).replace(',', ' ') }}</div>
+    <div class="card-sub">отправлено {{ '{:,}'.format(data.totals.emitted or 0).replace(',', ' ') }}</div>
   </div>
   <div class="card">
-    <div class="card-label">Кандидатов (последний прогон)</div>
-    <div class="card-value">{{ data.totals.candidates or 0 }}</div>
-    <div class="card-sub">отправлено: {{ data.totals.emitted or 0 }}</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Средний quality_score</div>
+    <div class="card-label">Средний quality</div>
     <div class="card-value">
       {{ '%.3f'|format(data.totals.avg_quality) if data.totals.avg_quality else '—' }}
     </div>
     <div class="card-sub">
-      STRONG {{ data.totals.strong or 0 }} ·
-      MODERATE {{ data.totals.moderate or 0 }} ·
-      WEAK {{ data.totals.weak or 0 }}
+      <span class="tag strong">{{ data.totals.strong or 0 }}</span>
+      <span class="tag moderate">{{ data.totals.moderate or 0 }}</span>
+      <span class="tag weak">{{ data.totals.weak or 0 }}</span>
     </div>
   </div>
   <div class="card {{ 'ok' if sink.ok else 'bad' }}">
     <div class="card-label">Приёмник btc-graph</div>
     <div class="card-value">{{ sink.mode }}</div>
     <div class="card-sub">{{ sink.detail }}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Последний прогон</div>
+    <div class="card-value">
+      {% if data.last_train %}#{{ data.last_train.run_id }}{% else %}—{% endif %}
+    </div>
+    <div class="card-sub">
+      {% if data.last_train %}
+        {{ data.last_train.finished_at.strftime('%Y-%m-%d %H:%M') if data.last_train.finished_at }}
+      {% else %}прогонов не было{% endif %}
+    </div>
   </div>
 </section>
 
@@ -49,7 +58,7 @@
 </div>
 {% endif %}
 
-<section class="split">
+<section class="split" style="grid-template-columns: 1fr 1fr 1fr">
   <div>
     <h2>Покрытие истории</h2>
     <table>
@@ -67,22 +76,65 @@
       {% endfor %}
       </tbody>
     </table>
-  </div>
 
-  <div>
     <h2>Оценки btc-graph</h2>
     <table>
-      <thead><tr><th>Рейтинг</th><th>Сторона</th><th>Кандидатов</th><th>Средний score</th></tr></thead>
+      <thead><tr><th>Рейтинг</th><th>Сторона</th><th>Кол-во</th><th>Ср. score</th></tr></thead>
       <tbody>
       {% for row in ratings %}
         <tr>
           <td><span class="tag {{ row.rating|lower }}">{{ row.rating }}</span></td>
-          <td>{{ row.direction }}</td>
-          <td class="num">{{ row.n }}</td>
+          <td class="{{ row.direction }}">{{ row.direction }}</td>
+          <td class="num">{{ '{:,}'.format(row.n).replace(',', ' ') }}</td>
           <td class="num">{{ '%.3f'|format(row.avg_quality) }}</td>
         </tr>
       {% else %}
         <tr><td colspan="4" class="muted">Оценок пока нет</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Крупнейшие состояния</h2>
+    <p class="hint" style="margin-top:0">Где рынок проводит больше всего времени</p>
+    <table>
+      <thead><tr><th>Состояние</th><th>Доля</th><th>Дальше</th><th>Рост</th></tr></thead>
+      <tbody>
+      {% for row in top_groups %}
+        <tr>
+          <td><a href="/graph?run={{ run_id }}">{{ '%g'|format(row.group_id) }}</a></td>
+          <td class="num">{{ '%.1f'|format(row.share * 100) }}%</td>
+          <td>
+            {%- if row.dominant_bias == 'long_skew' -%}<span class="long">чаще рост</span>
+            {%- elif row.dominant_bias == 'short_skew' -%}<span class="short">чаще падение</span>
+            {%- else -%}<span class="muted">без перекоса</span>{%- endif -%}
+          </td>
+          <td class="num">{{ '%.1f'|format(row.up_share * 100) if row.up_share is not none else '—' }}%</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">Графа ещё нет</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Самые частые переходы</h2>
+    <p class="hint" style="margin-top:0">Частый переход менее информативен — это ось rarity</p>
+    <table>
+      <thead><tr><th>Переход</th><th>Случаев</th><th>Редкость</th><th>Рост</th></tr></thead>
+      <tbody>
+      {% for row in top_transitions %}
+        <tr>
+          <td><a href="/candidates?run={{ run_id }}&transition={{ row.transition_id }}">
+            <code>{{ row.transition_id }}</code></a></td>
+          <td class="num">{{ '{:,}'.format(row.count).replace(',', ' ') }}</td>
+          <td><span class="tag {{ row.rarity }}">{{ row.rarity }}</span></td>
+          <td class="num">{{ '%.1f'|format(row.up_share * 100) if row.up_share is not none else '—' }}%</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">Графа ещё нет</td></tr>
       {% endfor %}
       </tbody>
     </table>
