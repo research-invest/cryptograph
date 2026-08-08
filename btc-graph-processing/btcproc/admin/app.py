@@ -38,6 +38,41 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 PUBLIC_PATHS = {"/login", "/logout", "/health"}
 
 
+# ─── Разбор параметров форм ─────────────────────────────────────────────────
+# HTML-форма отправляет незаполненные поля пустыми строками. Типизированные
+# параметры FastAPI (`int | None`, `float | None`) на `?run=&min_quality=`
+# отвечают 422, и вся фильтрация ломается разом. Поэтому query-параметры
+# страниц принимаются строками и разбираются этими помощниками: пусто и мусор
+# означают «фильтр не задан», а не ошибку запроса.
+def opt_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def opt_int(value: str | None) -> int | None:
+    value = opt_str(value)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Неразбираемое целое в параметре: %r", value)
+        return None
+
+
+def opt_float(value: str | None) -> float | None:
+    value = opt_str(value)
+    if value is None:
+        return None
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        logger.warning("Неразбираемое число в параметре: %r", value)
+        return None
+
+
 @app.on_event("startup")
 def _startup() -> None:
     # Конфигурация проверяется до первого запроса: лучше не подняться вовсе,
@@ -146,15 +181,15 @@ def dashboard(request: Request):
 
 
 @app.get("/graph", response_class=HTMLResponse)
-def graph_page(request: Request, run: int | None = None):
-    run_id = run or _latest_train_id()
+def graph_page(request: Request, run: str | None = None):
+    run_id = opt_int(run) or _latest_train_id()
     return page(request, "graph.html", active="graph", run_id=run_id,
                 runs=runs_repo.list_runs(20))
 
 
 @app.get("/chart", response_class=HTMLResponse)
-def chart_page(request: Request, run: int | None = None):
-    run_id = run or _latest_train_id()
+def chart_page(request: Request, run: str | None = None):
+    run_id = opt_int(run) or _latest_train_id()
     return page(request, "chart.html", active="chart", run_id=run_id,
                 runs=runs_repo.list_runs(20))
 
@@ -162,21 +197,33 @@ def chart_page(request: Request, run: int | None = None):
 @app.get("/candidates", response_class=HTMLResponse)
 def candidates_page(
     request: Request,
-    run: int | None = None,
+    run: str | None = None,
     rating: str | None = None,
     direction: str | None = None,
-    min_quality: float | None = None,
+    min_quality: str | None = None,
     transition: str | None = None,
     emitted: str | None = None,
-    page_num: int = 1,
+    page_num: str | None = None,
 ):
+    # Все фильтры принимаются строками: форма отправляет незаполненные поля
+    # как пустые строки (`min_quality=&run=`), а типизированные параметры
+    # FastAPI на такое отвечают 422 — фильтрация переставала работать целиком.
+    run_id = opt_int(run)
     data = queries.candidates_page(
-        run_id=run, rating=rating, direction=direction, min_quality=min_quality,
-        transition=transition, emitted=emitted, page=page_num,
+        run_id=run_id,
+        rating=opt_str(rating),
+        direction=opt_str(direction),
+        min_quality=opt_float(min_quality),
+        transition=opt_str(transition),
+        emitted=opt_str(emitted),
+        page=opt_int(page_num) or 1,
     )
+    # В шаблон возвращаем то, что пришло, — чтобы выбранные значения
+    # остались в полях формы после перерисовки.
     filters = {
-        "run": run, "rating": rating, "direction": direction,
-        "min_quality": min_quality, "transition": transition, "emitted": emitted,
+        "run": run_id, "rating": opt_str(rating), "direction": opt_str(direction),
+        "min_quality": opt_float(min_quality), "transition": opt_str(transition),
+        "emitted": opt_str(emitted),
     }
     template = "partials/candidates_table.html" if request.headers.get("hx-request") \
         else "candidates.html"
@@ -262,16 +309,19 @@ def _safe_run(func, *args, **kwargs) -> None:
 
 # ─── JSON для страниц ───────────────────────────────────────────────────────
 @app.get("/api/graph")
-def api_graph(run: int | None = None, min_count: int = 1, rarity: str | None = None):
-    run_id = run or _latest_train_id()
+def api_graph(run: str | None = None, min_count: str | None = None,
+              rarity: str | None = None):
+    run_id = opt_int(run) or _latest_train_id()
     if run_id is None:
         return {"nodes": [], "edges": []}
-    return queries.graph_payload(run_id, min_count=min_count, rarity=rarity)
+    return queries.graph_payload(
+        run_id, min_count=opt_int(min_count) or 1, rarity=opt_str(rarity)
+    )
 
 
 @app.get("/api/graph/group/{group_id}")
-def api_group(group_id: float, run: int | None = None):
-    run_id = run or _latest_train_id()
+def api_group(group_id: float, run: str | None = None):
+    run_id = opt_int(run) or _latest_train_id()
     node = queries.group_detail(run_id, group_id) if run_id else None
     if not node:
         raise HTTPException(status_code=404, detail="Состояние не найдено")
@@ -279,13 +329,18 @@ def api_group(group_id: float, run: int | None = None):
 
 
 @app.get("/api/chart")
-def api_chart(run: int | None = None, start: str | None = None,
-              end: str | None = None, limit: int = 1500, rating: str | None = None):
-    run_id = run or _latest_train_id()
+def api_chart(run: str | None = None, start: str | None = None,
+              end: str | None = None, limit: str | None = None,
+              rating: str | None = None):
+    run_id = opt_int(run) or _latest_train_id()
     if run_id is None:
         return {"bars": [], "markers": [], "groups": []}
     return queries.chart_data(
-        run_id, start=start, end=end, limit=min(limit, 5000), rating=rating
+        run_id,
+        start=opt_str(start),
+        end=opt_str(end),
+        limit=min(opt_int(limit) or 1500, 5000),
+        rating=opt_str(rating),
     )
 
 

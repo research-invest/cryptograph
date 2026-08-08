@@ -223,6 +223,19 @@ def save_candidates(run_id: int, candidates: Iterable[dict]) -> int:
     )
 
 
+def last_candidate_ts(symbol: str | None = None) -> pd.Timestamp | None:
+    """
+    Время самого свежего выпущенного кандидата — точка, с которой продолжает
+    live-прогон. Берётся по символу, а не по run_id: каждый live создаёт свой
+    прогон, и привязка к нему потеряла бы всю предысторию.
+    """
+    row = fetch_one(
+        "SELECT max(ts) AS ts FROM candidates WHERE symbol = %s",
+        (symbol or config.data.symbol,),
+    )
+    return pd.Timestamp(row["ts"]) if row and row["ts"] else None
+
+
 def save_evaluations(evaluations: Iterable[dict]) -> int:
     """Проставляет кандидатам оценку, вернувшуюся из btc-graph."""
     rows = [

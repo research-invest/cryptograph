@@ -342,7 +342,9 @@ def _assemble(
 
         # Event context
         "event_block_id": row["event_block_id"],
-        "primary_event_family": row.get("primary_family"),
+        # NaN вместо None: reindex по снимкам возвращает пропуски float'ом,
+        # а в схеме btc-graph это Optional[str] — NaN валидацию не проходит.
+        "primary_event_family": _as_str_or_none(row.get("primary_family")),
         "event_intensity_bucket": row["intensity"],
         "event_rarity_bucket": e_rarity,
         "signature_atom_count": int(row["atom_count"]),
@@ -390,6 +392,13 @@ def _as_float(value) -> float | None:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
     return float(value)
+
+
+def _as_str_or_none(value) -> str | None:
+    """pandas отдаёт пропуски как NaN — в схеме кандидата это должен быть None."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    return str(value)
 
 
 def _fmt_group(value: float) -> str:

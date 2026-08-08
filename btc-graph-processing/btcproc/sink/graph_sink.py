@@ -30,6 +30,35 @@ logger = logging.getLogger(__name__)
 
 _pipeline = None  # кэш импортированного модуля btc-graph
 
+# Пакеты, которые btc-graph импортирует лениво, уже внутри сохранения.
+# Без них кандидат оценивается, но не пишется ни в PostgreSQL, ни в Neo4j —
+# и узнать об этом можно было только по трейсбеку из чужого кода.
+DIRECT_DEPENDENCIES = {
+    "pgvector": "запись оценок в PostgreSQL",
+    "neo4j": "обновление графа состояний",
+}
+
+
+def missing_direct_dependencies() -> dict[str, str]:
+    """Каких пакетов не хватает текущему интерпретатору для режима direct."""
+    import importlib.util
+
+    return {
+        name: purpose
+        for name, purpose in DIRECT_DEPENDENCIES.items()
+        if importlib.util.find_spec(name) is None
+    }
+
+
+def _dependency_hint(missing: dict[str, str]) -> str:
+    details = "; ".join(f"{name} — {purpose}" for name, purpose in missing.items())
+    return (
+        f"Для SINK_MODE=direct не хватает пакетов: {details}. "
+        f"Поставь их в тот же интерпретатор, из которого запускаешь "
+        f"({sys.executable}):\n"
+        f"    {sys.executable} -m pip install -r requirements.txt"
+    )
+
 
 def _load_btc_graph():
     """
@@ -57,10 +86,16 @@ def _load_btc_graph():
     os.environ.setdefault("USE_REDIS", "true")
     os.environ.setdefault("USE_GRAPH", "true")
 
+    missing = missing_direct_dependencies()
+    if missing:
+        # Не падаем: оценка кандидатов работает и без записи. Но предупреждаем
+        # один раз внятно, до того как посыплются чужие ModuleNotFoundError.
+        logger.warning(_dependency_hint(missing))
+
     from src.agent import pipeline  # noqa: E402  (пакет btc-graph)
 
     _pipeline = pipeline
-    logger.info("btc-graph подключён из %s", path)
+    logger.info("btc-graph подключён из %s (интерпретатор %s)", path, sys.executable)
     return _pipeline
 
 
@@ -139,7 +174,20 @@ def sink_status() -> dict:
     if mode == "direct":
         try:
             _load_btc_graph()
-            status.update(ok=True, detail=f"пакет btc-graph из {config.sink.btc_graph_path}")
+            missing = missing_direct_dependencies()
+            if missing:
+                status.update(
+                    ok=False,
+                    detail=(
+                        "кандидаты оцениваются, но не сохраняются: нет "
+                        + ", ".join(missing)
+                        + f" в {sys.executable}"
+                    ),
+                )
+            else:
+                status.update(
+                    ok=True, detail=f"пакет btc-graph из {config.sink.btc_graph_path}"
+                )
         except Exception as exc:  # noqa: BLE001 — показываем причину в админке
             status["detail"] = str(exc)
         return status

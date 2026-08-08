@@ -26,16 +26,65 @@ from btcproc.states import assign, graph
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_LOOKBACK_MINUTES = 240
+MAX_LOOKBACK_DAYS = 30
+
+
+def resolve_cutoff(
+    last_bar: pd.Timestamp,
+    last_candidate: pd.Timestamp | None,
+    lookback_minutes: int | None,
+    max_lookback_days: int = MAX_LOOKBACK_DAYS,
+) -> tuple[pd.Timestamp, str]:
+    """
+    С какого момента выпускать кандидатов.
+
+    По умолчанию (lookback_minutes=None) точка берётся не из календаря, а из
+    данных: продолжаем с самого свежего уже выпущенного кандидата. Иначе
+    запуск в понедельник после пятничного прогона потерял бы все выходные —
+    бары бы догрузились, а кандидаты по ним нет.
+
+    Верхняя граница (max_lookback_days) страхует от первого запуска на давно
+    заполненной базе: без неё пауза в полгода вылилась бы в разовый выпуск
+    десятков тысяч кандидатов.
+
+    Возвращает границу и причину — она пишется в лог прогона.
+    """
+    if lookback_minutes is not None:
+        return (
+            last_bar - pd.Timedelta(minutes=lookback_minutes),
+            f"окно задано явно: {lookback_minutes} мин",
+        )
+
+    limit = last_bar - pd.Timedelta(days=max_lookback_days)
+    if last_candidate is None:
+        return (
+            last_bar - pd.Timedelta(minutes=DEFAULT_LOOKBACK_MINUTES),
+            f"кандидатов ещё не было, окно по умолчанию {DEFAULT_LOOKBACK_MINUTES} мин",
+        )
+    if last_candidate < limit:
+        return limit, (
+            f"последний кандидат от {last_candidate:%Y-%m-%d %H:%M} старше "
+            f"{max_lookback_days} дней — окно обрезано"
+        )
+    gap_hours = (last_bar - last_candidate).total_seconds() / 3600
+    return last_candidate, (
+        f"продолжаем с {last_candidate:%Y-%m-%d %H:%M} "
+        f"(пропуск {gap_hours:.1f} ч)"
+    )
+
+
 def run_live(
     *,
     model_run_id: int | None = None,
-    lookback_minutes: int = 240,
+    lookback_minutes: int | None = None,
+    max_lookback_days: int = MAX_LOOKBACK_DAYS,
     do_emit: bool = True,
     symbol: str | None = None,
 ) -> dict:
     """
-    lookback_minutes — насколько назад от последнего бара считать кандидатов
-    «свежими». Всё старше уже выпускалось прошлыми запусками.
+    lookback_minutes=None — продолжить с последнего выпущенного кандидата
+    (см. resolve_cutoff). Число — жёсткое окно в минутах от последнего бара.
     """
     symbol = symbol or config.data.symbol
     started = time.time()
@@ -53,7 +102,12 @@ def run_live(
         raise RuntimeError(f"У прогона {model_run_id} нет сохранённой модели состояний.")
 
     run_id = runs.start_run(
-        "live", {"model_run_id": model_run_id, "lookback_minutes": lookback_minutes}
+        "live",
+        {
+            "model_run_id": model_run_id,
+            "lookback_minutes": lookback_minutes or "auto",
+            "max_lookback_days": max_lookback_days,
+        },
     )
     stats: dict = {"run_id": run_id, "model_run_id": model_run_id}
 
@@ -95,8 +149,17 @@ def run_live(
 
         runs.log(run_id, "Сборка кандидатов", stage="candidates", progress=0.7)
         snapshots = cand.build_snapshots(states, events, outcomes)
-        cutoff = features.index[-1] - pd.Timedelta(minutes=lookback_minutes)
+        cutoff, reason = resolve_cutoff(
+            features.index[-1], repo.last_candidate_ts(symbol),
+            lookback_minutes, max_lookback_days,
+        )
+        stats["cutoff"] = cutoff.isoformat()
+        runs.log(run_id, f"Кандидаты начиная с {cutoff:%Y-%m-%d %H:%M} — {reason}")
 
+        # Граница включающая: перекрытие с прошлым запуском безопаснее дыры.
+        # candidate_id детерминирован (symbol|ts|переход|блок|смещение), запись
+        # идёт upsert'ом, а emitted_at при этом не сбрасывается — повторно
+        # отправлен уже отправленный кандидат не будет.
         fresh = []
         for candidate in cand.generate(snapshots, rarity_map, block_map, symbol):
             ts = pd.Timestamp(candidate["_meta"]["ts"])

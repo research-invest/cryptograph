@@ -148,8 +148,11 @@ def robust_scale_params(f: pd.DataFrame) -> dict[str, np.ndarray]:
     Robust, а не z-score: у доходностей и объёмов тяжёлые хвосты, среднее и
     std по ним смещаются одним флеш-крэшем.
     """
-    median = f.median().to_numpy(dtype=float)
-    iqr = (f.quantile(0.75) - f.quantile(0.25)).to_numpy(dtype=float)
+    # copy=True обязателен: на свежих pandas/numpy to_numpy() может вернуть
+    # представление поверх данных Series, и оно read-only — присваивание
+    # в iqr падало бы с «assignment destination is read-only».
+    median = f.median().to_numpy(dtype=float, copy=True)
+    iqr = (f.quantile(0.75) - f.quantile(0.25)).to_numpy(dtype=float, copy=True)
     iqr[iqr == 0] = 1.0
     return {"median": median, "iqr": iqr}
 
