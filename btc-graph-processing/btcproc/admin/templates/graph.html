@@ -115,8 +115,12 @@ function palette() {
     label: cssVar('--node-label'),
     border: cssVar('--node-border'),
     accent: cssVar('--accent'),
-    // Подложка под подписью имён, чтобы текст читался поверх рёбер.
-    bg: cssVar('--bg'),
+    // Подпись ИМЕНИ висит под узлом, на фоне страницы, а не на заливке узла.
+    // Поэтому ей нужен обычный цвет текста и подложка панели: --node-label
+    // белый по замыслу (он для текста ПОВЕРХ цветного узла), и на светлой
+    // теме давал белое по почти белому — надписи просто не было видно.
+    textOutside: cssVar('--text'),
+    panel: cssVar('--panel'),
   };
 }
 
@@ -128,6 +132,9 @@ function styleSheet() {
         'background-color': 'data(color)', 'color': p.label, 'font-size': 11,
         'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center',
         'border-width': 1, 'border-color': p.border,
+        // Тёмная обводка вокруг номера: заливка узла бывает зелёной, красной
+        // и серой, и белая цифра на сером читалась плохо в обеих темах.
+        'text-outline-width': 1.6, 'text-outline-color': 'rgba(0,0,0,.55)',
         'transition-property': 'opacity', 'transition-duration': '120ms'
     }},
     // Режим «имена на узлах»: подпись уезжает под узел и переносится по
@@ -136,8 +143,11 @@ function styleSheet() {
         'label': 'data(labelFull)', 'text-valign': 'bottom',
         'text-margin-y': 4, 'text-wrap': 'wrap', 'text-max-width': 120,
         'font-size': 10, 'font-weight': 500,
-        'text-background-color': p.bg, 'text-background-opacity': .8,
-        'text-background-padding': 2
+        'color': p.textOutside, 'text-outline-width': 0,
+        'text-background-color': p.panel, 'text-background-opacity': .92,
+        'text-background-padding': 3, 'text-background-shape': 'roundrectangle',
+        'text-border-width': 1, 'text-border-color': p.border,
+        'text-border-opacity': .5
     }},
     { selector: 'edge', style: {
         'width': 'data(w)', 'line-color': 'data(color)',

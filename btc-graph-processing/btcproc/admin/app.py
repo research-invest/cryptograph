@@ -275,6 +275,16 @@ def candidate_detail(request: Request, candidate_id: str):
     return page(request, "candidate_detail.html", active="candidates", row=row)
 
 
+@app.get("/help", response_class=HTMLResponse)
+def help_page(request: Request):
+    """
+    Шпаргалка для оператора: принципы работы и то, к чему возвращаются каждый
+    день. Полная инструкция с процедурами живёт в docs/operator_guide.md —
+    страница не заменяет её, а избавляет от похода в репозиторий за мелочью.
+    """
+    return page(request, "help.html", active="help")
+
+
 @app.get("/runs", response_class=HTMLResponse)
 def runs_page(request: Request):
     template = "partials/runs_table.html" if request.headers.get("hx-request") \

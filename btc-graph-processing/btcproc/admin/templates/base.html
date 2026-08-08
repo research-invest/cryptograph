@@ -49,6 +49,8 @@
     <a href="/chart?{{ symbol_qs }}" class="{{ 'on' if active == 'chart' }}">График</a>
     <a href="/candidates?{{ symbol_qs }}" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
     <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
+    {# Справка последней и без ?symbol=: она про систему в целом, не про монету. #}
+    <a href="/help" class="{{ 'on' if active == 'help' }}">Справка</a>
   </nav>
   <div class="user">
     <button type="button" class="theme-toggle" id="themeToggle" title="Переключить тему"></button>
