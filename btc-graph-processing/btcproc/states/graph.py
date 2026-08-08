@@ -13,6 +13,8 @@ import logging
 import numpy as np
 import pandas as pd
 
+from btcproc.states import naming
+
 logger = logging.getLogger(__name__)
 
 RARE_QUANTILE = 0.33
@@ -115,6 +117,15 @@ def group_stats(
     else:
         grouped["top_features"] = None
 
+    # Имя состояния считается здесь же, из его собственных отклонений, и
+    # хранится рядом с ними. Задавать имена руками нельзя: train перенумеровывает
+    # состояния при каждом прогоне, и ручная подпись начала бы молча врать —
+    # номер остался бы, а смысл под ним поменялся.
+    grouped["name"] = [
+        naming.describe_state(row.top_features, row.dominant_bias)
+        for row in grouped.itertuples()
+    ]
+
     return grouped.reset_index()
 
 
@@ -153,7 +164,12 @@ def to_cytoscape(groups: pd.DataFrame, transitions: pd.DataFrame) -> dict:
             "data": {
                 "id": f"g{row.group_id:g}",
                 "group_id": float(row.group_id),
+                # label — короткая подпись на самом узле: имена в 60 символов
+                # на графе из сорока узлов сливаются в кашу. Полное имя лежит
+                # рядом, его показывают панель деталей, подсказка и переключатель
+                # «имена на узлах».
                 "label": f"{row.group_id:g}",
+                "name": row.get("name") or "",
                 "size": int(row["count"]),
                 "share": float(row.share),
                 "bias": row.get("dominant_bias") or "neutral",

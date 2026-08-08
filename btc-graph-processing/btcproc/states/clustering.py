@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -100,6 +101,24 @@ def _split_gain(x: np.ndarray, rng: np.random.Generator, cfg: config.StatesConfi
     ref = silhouette_score(reference, ref_labels)
 
     return float(real - ref)
+
+
+def effective_min_group_size(cfg: config.StatesConfig, n_samples: int) -> int:
+    """
+    Порог дробления, приведённый к длине истории.
+
+    `min_group_size = 800` подобран под ~300 тыс. баров BTC 15m с 2017 года,
+    то есть это 0.27% истории. На монете с двумя годами торгов (~70 тыс. баров)
+    те же 800 — уже 1.1%, и дробление останавливается заметно раньше: граф
+    выходит грубее не потому, что рынок однороднее, а потому что порог
+    абсолютный.
+
+    Поэтому берём максимум из доли истории и абсолютного минимума. Абсолютный
+    минимум остаётся нижней границей осознанно: группа в сотню баров не даёт
+    кандидату статистики при любой длине истории.
+    """
+    scaled = round(cfg.min_group_share * n_samples)
+    return max(cfg.min_group_size, int(scaled))
 
 
 def _recursive_split(
@@ -213,6 +232,17 @@ def fit_states(
     сглаживанием занимается src/states/assign.py).
     """
     cfg = cfg or config.states
+
+    # Порог дробления приводится к длине истории ОДИН раз здесь, а не в каждом
+    # месте использования: дальше по коду cfg.min_group_size уже эффективный.
+    scaled_min_group = effective_min_group_size(cfg, len(x))
+    if scaled_min_group != cfg.min_group_size:
+        logger.info(
+            "min_group_size: %d → %d (доля %.4f от %d баров)",
+            cfg.min_group_size, scaled_min_group, cfg.min_group_share, len(x),
+        )
+    cfg = dataclasses.replace(cfg, min_group_size=scaled_min_group)
+
     rng = np.random.default_rng(cfg.random_state)
     trace: list[dict] = []
 
@@ -253,7 +283,9 @@ def fit_states(
         group_ids=group_ids,
         params={
             "seed_clusters": cfg.seed_clusters,
+            # Уже приведённый к длине истории — именно он применялся.
             "min_group_size": cfg.min_group_size,
+            "min_group_share": cfg.min_group_share,
             "max_depth": cfg.max_depth,
             "split_gain": cfg.split_gain,
             "merge_separation": cfg.merge_separation,

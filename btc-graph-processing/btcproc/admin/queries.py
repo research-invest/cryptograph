@@ -18,16 +18,25 @@ from btcproc.db.session import fetch_all, fetch_one
 MARKER_LIMIT = 500
 
 
-def overview() -> dict:
-    """Сводка для дашборда."""
+def overview(symbol: str | None = None) -> dict:
+    """
+    Сводка для дашборда по выбранной монете.
+
+    symbol прокидывается аргументом, а не берётся из config: селектор в шапке
+    должен переключать ВСЕ цифры страницы, а не только заголовок.
+    """
+    symbol = symbol or config.data.symbol
     coverage = fetch_all(
         "SELECT tf, count(*) AS bars, min(ts) AS first_ts, max(ts) AS last_ts "
         "FROM ohlcv WHERE symbol = %s GROUP BY tf ORDER BY tf",
-        (config.data.symbol,),
+        (symbol,),
     )
-    last_train = runs_repo.latest_completed_run("train")
+    last_train = runs_repo.latest_completed_run("train", symbol)
     run_id = last_train["run_id"] if last_train else None
 
+    # Фильтр по монете нужен даже при фильтре по run_id: run_id уже задаёт
+    # монету, но без symbol запрос без прогона (run_id=None) посчитал бы
+    # кандидатов всех монет сразу.
     totals = fetch_one(
         "SELECT count(*) AS candidates, "
         "count(*) FILTER (WHERE emitted_at IS NOT NULL) AS emitted, "
@@ -35,8 +44,8 @@ def overview() -> dict:
         "count(*) FILTER (WHERE rating = 'MODERATE') AS moderate, "
         "count(*) FILTER (WHERE rating = 'WEAK') AS weak, "
         "avg(quality_score) AS avg_quality "
-        "FROM candidates" + (" WHERE run_id = %s" if run_id else ""),
-        (run_id,) if run_id else None,
+        "FROM candidates WHERE symbol = %s" + (" AND run_id = %s" if run_id else ""),
+        (symbol, run_id) if run_id else (symbol,),
     ) or {}
 
     graph_size = fetch_one(
@@ -46,23 +55,27 @@ def overview() -> dict:
     ) if run_id else {}
 
     return {
-        "symbol": config.data.symbol,
+        "symbol": symbol,
         "base_tf": config.data.base_tf,
         "horizon": config.data.horizon,
         "coverage": coverage,
         "last_train": last_train,
         "totals": totals,
         "graph": graph_size or {},
-        "active_run": runs_repo.active_run(),
+        "active_run": runs_repo.active_run(symbol=symbol),
+        "active_runs": runs_repo.active_runs(),
     }
 
 
-def rating_distribution(run_id: int | None = None) -> list[dict]:
+def rating_distribution(run_id: int | None = None, symbol: str | None = None) -> list[dict]:
     sql = (
         "SELECT rating, direction, count(*) AS n, avg(quality_score) AS avg_quality "
         "FROM candidates WHERE rating IS NOT NULL"
     )
     params: list[Any] = []
+    if symbol:
+        sql += " AND symbol = %s"
+        params.append(symbol)
     if run_id:
         sql += " AND run_id = %s"
         params.append(run_id)
@@ -74,7 +87,7 @@ def graph_payload(run_id: int, min_count: int = 1, rarity: str | None = None) ->
     """Узлы и рёбра графа состояний в формате Cytoscape."""
     groups = fetch_all(
         "SELECT group_id, size AS count, share, dominant_bias, up_share, avg_ret_pct, "
-        "top_features FROM market_groups WHERE run_id = %s ORDER BY group_id",
+        "top_features, name FROM market_groups WHERE run_id = %s ORDER BY group_id",
         (run_id,),
     )
     sql = "SELECT * FROM transitions WHERE run_id = %s AND count >= %s"
@@ -93,14 +106,42 @@ def graph_payload(run_id: int, min_count: int = 1, rarity: str | None = None) ->
     return to_cytoscape(pd.DataFrame(groups), pd.DataFrame(transitions))
 
 
-def chart_data(run_id: int, start: str | None = None, end: str | None = None,
-               limit: int = 1500, rating: str | None = None) -> dict:
+class SymbolRunMismatch(ValueError):
+    """
+    run_id принадлежит другой монете.
+
+    Отдельное исключение, потому что симптом обманчив: LEFT JOIN по
+    (symbol, ts, run_id) просто не совпадёт, и график BTC с прогоном ETH
+    отдаст свечи вообще без раскраски. Выглядит как «граф ничего не нашёл»,
+    а на самом деле выбраны несогласованные монета и прогон.
+    """
+
+
+def run_symbol(run_id: int) -> str | None:
+    row = fetch_one("SELECT symbol FROM runs WHERE run_id = %s", (run_id,))
+    return row["symbol"] if row else None
+
+
+def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
+               end: str | None = None, limit: int = 1500,
+               rating: str | None = None) -> dict:
     """
     Свечи с раскраской по состоянию + маркеры кандидатов.
 
     Раскраска — главный смысл этой страницы: видно, где именно граф считает,
     что рынок сменил состояние, и совпадает ли это с тем, что видит глаз.
+
+    symbol и run_id обязаны быть согласованы — иначе раскраски не будет, и
+    понять почему по пустому графику невозможно. Проверяем явно.
     """
+    symbol = symbol or config.data.symbol
+    owner = run_symbol(run_id)
+    if owner and owner != symbol:
+        raise SymbolRunMismatch(
+            f"Прогон #{run_id} посчитан по {owner}, а график запрошен для {symbol}. "
+            f"Выбери прогон этой монеты — состояния между монетами несопоставимы."
+        )
+
     sql = (
         "SELECT o.ts, o.open, o.high, o.low, o.close, s.group_id, s.is_transition, "
         "s.transition_id, s.age_bucket, s.entropy "
@@ -108,7 +149,7 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
         "  ON s.symbol = o.symbol AND s.ts = o.ts AND s.run_id = %s "
         "WHERE o.symbol = %s AND o.tf = %s"
     )
-    params: list[Any] = [run_id, config.data.symbol, config.data.base_tf]
+    params: list[Any] = [run_id, symbol, config.data.base_tf]
     if start:
         sql += " AND o.ts >= %s"
         params.append(start)
@@ -156,6 +197,14 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
 
     group_ids = sorted({b["group_id"] for b in bars if b["group_id"] is not None})
     palette = {gid: _color(i, len(group_ids)) for i, gid in enumerate(group_ids)}
+    # Имена состояний для легенды: без них «состояние 7» ничего не говорит,
+    # а сверяться с таблицей ради каждого цвета никто не будет.
+    names = {
+        float(r["group_id"]): r["name"] or ""
+        for r in fetch_all(
+            "SELECT group_id, name FROM market_groups WHERE run_id = %s", (run_id,)
+        )
+    }
 
     out_bars = []
     for b in bars:
@@ -183,7 +232,10 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
     return {
         "bars": out_bars,
         "markers": markers,
-        "groups": [{"group_id": gid, "color": palette[gid]} for gid in group_ids],
+        "groups": [
+            {"group_id": gid, "color": palette[gid], "name": names.get(gid, "")}
+            for gid in group_ids
+        ],
         "markers_truncated": truncated,
     }
 
@@ -210,6 +262,7 @@ def _rating_color(rating: str | None) -> str:
 
 def candidates_page(
     run_id: int | None = None,
+    symbol: str | None = None,
     rating: str | None = None,
     direction: str | None = None,
     min_quality: float | None = None,
@@ -219,6 +272,9 @@ def candidates_page(
     per_page: int = 50,
 ) -> dict:
     where, params = [], []
+    if symbol:
+        where.append("symbol = %s")
+        params.append(symbol)
     if run_id:
         where.append("run_id = %s")
         params.append(run_id)
@@ -244,7 +300,7 @@ def candidates_page(
 
     offset = max(page - 1, 0) * per_page
     rows = fetch_all(
-        "SELECT candidate_id, ts, transition_id, event_block_id, research_side, "
+        "SELECT candidate_id, symbol, ts, transition_id, event_block_id, research_side, "
         "research_score, sample_size, quality_score, rating, warning_flags, "
         "emitted_at, emit_error FROM candidates"
         + clause
@@ -281,6 +337,11 @@ def transitions_table(run_id: int, limit: int = 200) -> list[dict]:
 
 
 def group_detail(run_id: int, group_id: float) -> dict | None:
+    """
+    Узел графа. Монета не аргумент: run_id уже однозначно её задаёт
+    (один прогон = одна монета). Но подписать её в UI обязательно —
+    «group_id 7» без монеты бессмысленен.
+    """
     node = fetch_one(
         "SELECT * FROM market_groups WHERE run_id = %s AND group_id = %s",
         (run_id, group_id),

@@ -175,9 +175,15 @@ CREATE INDEX IF NOT EXISTS candidates_pending_idx ON candidates (emitted_at)
 CREATE INDEX IF NOT EXISTS candidates_transition_idx ON candidates (transition_id);
 
 -- ─── Прогоны ────────────────────────────────────────────────────────────────
+-- Прогон всегда про ОДНУ монету: модель состояний обучается на каждую
+-- отдельно. Из этого следует, что state_models, market_groups, transitions
+-- и event_blocks помонетны автоматически — run_id уже однозначно задаёт
+-- монету, и колонка symbol в них не нужна. Заодно это делает невозможным
+-- состояние «в одном прогоне смешаны две монеты».
 CREATE TABLE IF NOT EXISTS runs (
     run_id      BIGSERIAL PRIMARY KEY,
     kind        TEXT        NOT NULL,
+    symbol      TEXT,
     status      TEXT        NOT NULL DEFAULT 'running',
     stage       TEXT,
     progress    DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -190,3 +196,32 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE INDEX IF NOT EXISTS runs_started_idx ON runs (started_at DESC);
+
+-- ─── Мультимонетность ───────────────────────────────────────────────────────
+-- Скрипт идемпотентен и гоняется при каждом init-db, поэтому доводка старых
+-- баз делается здесь же, а не отдельным механизмом миграций.
+
+-- Колонка, а не params->>'symbol': по ней идут выборки «последняя модель
+-- монеты» и фильтр списка прогонов, и индекс по выражению из JSONB тут лишний.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS symbol TEXT;
+
+-- UPDATE безопасен в идемпотентном скрипте: он проставляет значение только
+-- там, где колонка пустая, то есть ровно один раз — на прогонах, сделанных
+-- до появления мультимонетности. Все они были по BTCUSDT.
+UPDATE runs SET symbol = COALESCE(params->>'symbol', 'BTCUSDT') WHERE symbol IS NULL;
+
+CREATE INDEX IF NOT EXISTS runs_symbol_started_idx ON runs (symbol, started_at DESC);
+
+-- last_candidate_ts и страница кандидатов всегда фильтруют по монете.
+CREATE INDEX IF NOT EXISTS candidates_symbol_ts_idx ON candidates (symbol, ts DESC);
+
+-- Покрытие истории в status и на дашборде считается по (symbol, tf).
+CREATE INDEX IF NOT EXISTS ohlcv_symbol_tf_ts_idx ON ohlcv (symbol, tf, ts DESC);
+
+-- ─── Имена состояний ────────────────────────────────────────────────────────
+-- Человекочитаемая подпись состояния, выведенная из его отклонений от
+-- среднего рынка (btcproc/states/naming.py). Хранится, а не считается на
+-- лету, чтобы имя было тем же самым во всех местах и в старых прогонах —
+-- словарь формулировок со временем меняется, а подпись прогона меняться
+-- не должна.
+ALTER TABLE market_groups ADD COLUMN IF NOT EXISTS name TEXT;

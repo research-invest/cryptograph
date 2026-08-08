@@ -1,5 +1,9 @@
 """
-Загрузка истории BTCUSDT.
+Загрузка истории торговых пар с Binance.
+
+Монет может быть несколько: `sync_many()` проходит их подряд, беря дату
+начала истории у каждой из реестра `btcproc/symbols.py`. Остальные функции
+работают по одной монете и принимают её символом.
 
 Основной источник — публичные дампы data.binance.vision: месячные zip-архивы
 klines. Это на порядок быстрее REST (вся история 15m с 2017 — несколько минут
@@ -20,7 +24,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import httpx
 import pandas as pd
@@ -212,6 +216,74 @@ def sync_history(
     return {"months": len(months), "rows": total_rows, "missing_months": missing}
 
 
+def sync_many(
+    tickers: Sequence[str] | None = None,
+    tf: str | None = None,
+    start: str | None = None,
+    context: bool = True,
+    progress=None,
+    on_symbol=None,
+) -> dict:
+    """
+    Загрузка истории по нескольким монетам подряд.
+
+    Цикл живёт здесь, а не в CLI, потому что он нужен трём вызывающим —
+    команде `ingest --all`, форме админки и обкатке новой монеты — и у всех
+    трёх одинаковые требования к поведению.
+
+    Как устроено и почему:
+
+      * **Дата начала берётся из реестра, у каждой монеты своя.** Общий
+        HISTORY_START на альткоине означал бы полсотни запросов за месяцы
+        до листинга: каждый вернёт 404 и попадёт в missing_months, замусорив
+        отчёт настолько, что настоящий пропуск в нём не разглядеть.
+        Явный `start` перекрывает реестр — для точечных догрузок.
+      * **Падение одной монеты не останавливает остальные.** Сеть отвалилась
+        на третьей из семи — остальные четыре всё равно должны загрузиться,
+        иначе ночной прогон превращается в лотерею. Диагноз копится
+        и возвращается вызывающему.
+      * **Последовательно, а не параллельно.** Упирается всё в сеть и в
+        запись пачками в одну таблицу; параллельная закачка дала бы выигрыш
+        только до первого 429 от Binance.
+
+    Возвращает сводку: что загрузилось, что упало и сколько всего баров.
+    Печатает — вызывающий, а не эта функция.
+
+    tickers=None — все активные монеты реестра.
+    """
+    from btcproc import symbols
+
+    specs = (
+        [symbols.get(t) for t in tickers] if tickers else symbols.enabled()
+    )
+    tf = tf or config.data.base_tf
+
+    result: dict = {"symbols": {}, "failed": {}, "rows_total": 0}
+
+    for index, spec in enumerate(specs, start=1):
+        if on_symbol:
+            on_symbol(index, len(specs), spec.ticker)
+        try:
+            report = sync_history(
+                spec.ticker, tf, start or spec.start_date(),
+                progress=(
+                    (lambda i, n, msg, _t=spec.ticker: progress(i, n, f"{_t}: {msg}"))
+                    if progress else None
+                ),
+            )
+            if context:
+                report["context"] = rebuild_context_timeframes(spec.ticker)
+            result["symbols"][spec.ticker] = report
+            result["rows_total"] += report["rows"]
+        except Exception as exc:  # noqa: BLE001 — одна монета не рушит пакет
+            logger.exception("Загрузка %s упала", spec.ticker)
+            result["failed"][spec.ticker] = f"{type(exc).__name__}: {exc}"
+
+    result["ok"] = len(result["symbols"])
+    result["total"] = len(specs)
+    return result
+
+
 def _sync_daily_tail(symbol: str, tf: str, client: httpx.Client, progress=None) -> int:
     """Дневные дампы за текущий месяц: месячный появится только после его конца."""
     today = datetime.now(timezone.utc).date()
@@ -237,14 +309,22 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
     Используется и в live-режиме: вызов дешёвый, ходит максимум
     limit_batches × 1000 баров.
     """
+    from btcproc import symbols
+
     symbol = symbol or config.data.symbol
     tf = tf or config.data.base_tf
     last = last_ts(symbol, tf)
-    start_ms = (
-        int(last.timestamp() * 1000) + 1
-        if last
-        else int(pd.Timestamp(config.data.history_start, tz="UTC").timestamp() * 1000)
-    )
+    if last:
+        start_ms = int(last.timestamp() * 1000) + 1
+    else:
+        # Баров ещё нет вовсе. Точка старта — дата листинга монеты из реестра,
+        # а не общий HISTORY_START: для поздно listed-монеты общий дефолт
+        # означал бы запрос за годы до появления пары.
+        try:
+            fallback = symbols.get(symbol).start_date()
+        except symbols.UnknownSymbolError:
+            fallback = config.data.history_start
+        start_ms = int(pd.Timestamp(fallback, tz="UTC").timestamp() * 1000)
 
     rows = 0
     with httpx.Client(timeout=30.0) as client:
@@ -345,3 +425,26 @@ def coverage(symbol: str | None = None) -> list[dict]:
         "FROM ohlcv WHERE symbol = %s GROUP BY tf ORDER BY tf",
         (symbol or config.data.symbol,),
     )
+
+
+def coverage_all(symbols_filter: list[str] | None = None, tf: str | None = None) -> list[dict]:
+    """
+    Сводка покрытия по всем монетам сразу — одним запросом, а не N.
+
+    tf=None — по всем таймфреймам; иначе только базовый, что и нужно
+    помонетной таблице `status`.
+    """
+    sql = (
+        "SELECT symbol, tf, count(*) AS bars, min(ts) AS first_ts, max(ts) AS last_ts "
+        "FROM ohlcv"
+    )
+    conditions, params = [], []
+    if symbols_filter:
+        conditions.append("symbol = ANY(%s)")
+        params.append(list(symbols_filter))
+    if tf:
+        conditions.append("tf = %s")
+        params.append(tf)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    return fetch_all(sql + " GROUP BY symbol, tf ORDER BY symbol, tf", params)

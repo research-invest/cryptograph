@@ -23,11 +23,23 @@ logger = logging.getLogger(__name__)
 MAX_LOG_CHARS = 200_000
 
 
-def start_run(kind: str, params: dict[str, Any] | None = None) -> int:
+def start_run(
+    kind: str,
+    params: dict[str, Any] | None = None,
+    symbol: str | None = None,
+) -> int:
+    """
+    Заводит прогон. symbol пишется отдельной колонкой, а не только в params:
+    по нему идут выборки «последняя модель монеты» и фильтр списка прогонов.
+    """
+    params = dict(params or {})
+    symbol = symbol or params.get("symbol") or config.data.symbol
+    params.setdefault("symbol", symbol)
+
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO runs (kind, params) VALUES (%s, %s) RETURNING run_id",
-            (kind, psycopg2.extras.Json(params or {})),
+            "INSERT INTO runs (kind, symbol, params) VALUES (%s, %s, %s) RETURNING run_id",
+            (kind, symbol, psycopg2.extras.Json(params)),
         )
         return int(cur.fetchone()[0])
 
@@ -102,30 +114,75 @@ def get_run(run_id: int) -> dict | None:
     return fetch_one("SELECT * FROM runs WHERE run_id = %s", (run_id,))
 
 
-def list_runs(limit: int = 50) -> list[dict]:
-    return fetch_all("SELECT * FROM runs ORDER BY started_at DESC LIMIT %s", (limit,))
+def list_runs(limit: int = 50, symbol: str | None = None) -> list[dict]:
+    """Последние прогоны. symbol=None — по всем монетам."""
+    sql = "SELECT * FROM runs"
+    params: list[Any] = []
+    if symbol:
+        sql += " WHERE symbol = %s"
+        params.append(symbol)
+    sql += " ORDER BY started_at DESC LIMIT %s"
+    params.append(limit)
+    return fetch_all(sql, params)
 
 
-def active_run(kind: str | None = None) -> dict | None:
-    """Текущий незавершённый прогон — чтобы не запускать два одновременно."""
+def active_run(kind: str | None = None, symbol: str | None = None) -> dict | None:
+    """
+    Текущий незавершённый прогон.
+
+    symbol=None означает «любой прогон вообще» — это нужно для общего лимита
+    одновременных расчётов. Прогоны РАЗНЫХ монет друг другу не мешают
+    (пишут в разные строки по symbol и в свой run_id), поэтому блокировать
+    их взаимно нельзя: иначе мультимонетность сводится к очереди из одной
+    монеты за раз.
+    """
+    conditions = ["status = 'running'"]
+    params: list[Any] = []
     if kind:
-        return fetch_one(
-            "SELECT * FROM runs WHERE status = 'running' AND kind = %s "
-            "ORDER BY started_at DESC LIMIT 1",
-            (kind,),
-        )
+        conditions.append("kind = %s")
+        params.append(kind)
+    if symbol:
+        conditions.append("symbol = %s")
+        params.append(symbol)
     return fetch_one(
-        "SELECT * FROM runs WHERE status = 'running' ORDER BY started_at DESC LIMIT 1"
+        f"SELECT * FROM runs WHERE {' AND '.join(conditions)} "
+        "ORDER BY started_at DESC LIMIT 1",
+        tuple(params),
     )
 
 
-def latest_completed_run(kind: str = "train") -> dict | None:
-    """Последний успешный прогон нужного типа — источник актуальной модели."""
-    return fetch_one(
-        "SELECT * FROM runs WHERE kind = %s AND status = 'done' "
-        "ORDER BY finished_at DESC LIMIT 1",
-        (kind,),
+def active_runs(kind: str | None = None) -> list[dict]:
+    """Все идущие прогоны — для лимита одновременных расчётов в админке."""
+    sql = "SELECT * FROM runs WHERE status = 'running'"
+    params: list[Any] = []
+    if kind:
+        sql += " AND kind = %s"
+        params.append(kind)
+    return fetch_all(sql + " ORDER BY started_at DESC", params)
+
+
+def latest_completed_run(kind: str = "train", symbol: str | None = None) -> dict | None:
+    """
+    Последний успешный прогон нужного типа — источник актуальной модели.
+
+    Фильтр по монете обязателен по смыслу: модель состояний ETH нельзя
+    применить к барам BTC, а без фильтра live взял бы модель последнего
+    train'а вообще, чем бы он ни был.
+    """
+    sql = "SELECT * FROM runs WHERE kind = %s AND status = 'done'"
+    params: list[Any] = [kind]
+    if symbol:
+        sql += " AND symbol = %s"
+        params.append(symbol)
+    return fetch_one(sql + " ORDER BY finished_at DESC LIMIT 1", tuple(params))
+
+
+def symbols_with_runs() -> list[str]:
+    """Монеты, по которым были прогоны — для селектора в админке."""
+    rows = fetch_all(
+        "SELECT DISTINCT symbol FROM runs WHERE symbol IS NOT NULL ORDER BY symbol"
     )
+    return [row["symbol"] for row in rows]
 
 
 def dumps(obj: Any) -> str:

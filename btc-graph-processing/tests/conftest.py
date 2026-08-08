@@ -80,3 +80,62 @@ def features(bars, context) -> pd.DataFrame:
     from btcproc.features.builder import build_features
 
     return build_features(bars, context)
+
+
+# На синтетике 125 дней переходов набирается немного, поэтому порог выборки
+# ослаблен: тесты проверяют корректность сборки кандидата, а не статистическую
+# значимость (её обеспечивает боевой CAND_MIN_SAMPLE_SIZE).
+def test_candidate_config():
+    from btcproc import config
+
+    return config.CandidateConfig(min_sample_size=10)
+
+
+@pytest.fixture(scope="session")
+def pipeline_data(bars, context) -> dict:
+    """
+    Прогон всей цепочки на синтетике — база для проверок кандидатов.
+
+    Живёт в conftest, а не в одном файле тестов: цепочка нужна и проверкам
+    сборки кандидата, и проверкам мультимонетности, а считается она секунды.
+    """
+    from btcproc import config
+    from btcproc.candidates import builder as cand
+    from btcproc.candidates.outcomes import compute_outcomes
+    from btcproc.features import builder as feat
+    from btcproc.features import events as ev
+    from btcproc.states import assign, clustering, graph
+
+    features = feat.build_features(bars, context)
+    scale = feat.robust_scale_params(features)
+    matrix = feat.apply_scale(features, scale)
+    # min_group_share=0 — на синтетике порог задаём абсолютным числом, чтобы
+    # результат не зависел от длины сгенерированного ряда.
+    cfg = config.StatesConfig(
+        seed_clusters=4, min_group_size=400, min_group_share=0.0, max_depth=2
+    )
+    model, labels = clustering.fit_states(matrix, list(features.columns), scale, cfg)
+
+    states = assign.assign_states(features.index, labels)
+    events = ev.build_event_blocks(bars).reindex(features.index).dropna(
+        subset=["event_block_id"]
+    )
+    blocks = ev.block_statistics(events)
+    outcomes = compute_outcomes(bars).reindex(features.index)
+    transitions = graph.transition_stats(states, outcomes)
+
+    snapshots = cand.build_snapshots(states, events, outcomes)
+    return {
+        "features": features, "states": states, "events": events, "blocks": blocks,
+        "outcomes": outcomes, "transitions": transitions, "snapshots": snapshots,
+    }
+
+
+@pytest.fixture(scope="session")
+def states_and_features(pipeline_data) -> tuple:
+    """Разметка, признаки и исходы одного прогона — для проверок графа и имён."""
+    return (
+        pipeline_data["states"],
+        pipeline_data["features"],
+        pipeline_data["outcomes"],
+    )

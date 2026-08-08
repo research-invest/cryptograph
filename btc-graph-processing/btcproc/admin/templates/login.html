@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Вход · btc-graph-processing</title>
+  <title>Вход · crypto-graph</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/app.css">
   <script>
     (function () {
@@ -14,7 +15,17 @@
 </head>
 <body class="login-page">
   <form class="login-card" method="post" action="/login" autocomplete="off">
-    <h1>btc-graph-processing</h1>
+    <h1>
+      <svg class="mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path d="M7 6.5 17 12 7 17.5" fill="none" stroke="currentColor"
+              stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+              opacity="0.5"/>
+        <circle cx="7" cy="6.5" r="3" fill="currentColor"/>
+        <circle cx="17" cy="12" r="3" fill="currentColor"/>
+        <circle cx="7" cy="17.5" r="3" fill="currentColor"/>
+      </svg>
+      crypto-graph
+    </h1>
     <p class="hint">Доступ только по учётным данным из <code>.env</code></p>
 
     {% if error %}<div class="error">{{ error }}</div>{% endif %}

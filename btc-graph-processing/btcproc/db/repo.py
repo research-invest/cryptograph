@@ -113,12 +113,28 @@ def save_state_model(run_id: int, model, feature_version: str) -> None:
 
 
 def load_state_model(run_id: int):
+    """
+    Модель по run_id. Монета не спрашивается: run_id уже однозначно её задаёт
+    (один прогон = одна монета), а лишний аргумент только позволил бы им
+    разъехаться.
+    """
     from btcproc.states.clustering import StateModel
 
     row = fetch_one("SELECT artifact FROM state_models WHERE run_id = %s", (run_id,))
     if not row or row["artifact"] is None:
         return None
     return StateModel.from_dict(json.loads(bytes(row["artifact"]).decode("utf-8")))
+
+
+def latest_model_run_id(symbol: str) -> int | None:
+    """run_id последнего успешного train'а монеты, у которого есть модель."""
+    row = fetch_one(
+        "SELECT r.run_id FROM runs r JOIN state_models m ON m.run_id = r.run_id "
+        "WHERE r.kind = 'train' AND r.status = 'done' AND r.symbol = %s "
+        "ORDER BY r.finished_at DESC LIMIT 1",
+        (symbol,),
+    )
+    return int(row["run_id"]) if row else None
 
 
 def save_bar_states(run_id: int, states: pd.DataFrame, symbol: str | None = None) -> int:
@@ -151,11 +167,12 @@ def save_groups(run_id: int, groups: pd.DataFrame, centroids: dict | None = None
             _nan_to_none(r.get("avg_vol_pct")),
             (centroids or {}).get(gid),
             psycopg2.extras.Json(r.get("top_features") or {}),
+            r.get("name"),
         ))
     return bulk_upsert(
         "market_groups",
         ["run_id", "group_id", "size", "share", "dominant_bias", "up_share",
-         "avg_ret_pct", "avg_vol_pct", "centroid", "top_features"],
+         "avg_ret_pct", "avg_vol_pct", "centroid", "top_features", "name"],
         rows,
         conflict_columns=["run_id", "group_id"],
     )
@@ -223,15 +240,18 @@ def save_candidates(run_id: int, candidates: Iterable[dict]) -> int:
     )
 
 
-def last_candidate_ts(symbol: str | None = None) -> pd.Timestamp | None:
+def last_candidate_ts(symbol: str) -> pd.Timestamp | None:
     """
     Время самого свежего выпущенного кандидата — точка, с которой продолжает
     live-прогон. Берётся по символу, а не по run_id: каждый live создаёт свой
     прогон, и привязка к нему потеряла бы всю предысторию.
+
+    Аргумент обязателен. Молчаливый дефолт из .env здесь означал бы, что live
+    по ETH продолжает с точки BTC — и выпускает либо дыру, либо десятки тысяч
+    кандидатов разом.
     """
     row = fetch_one(
-        "SELECT max(ts) AS ts FROM candidates WHERE symbol = %s",
-        (symbol or config.data.symbol,),
+        "SELECT max(ts) AS ts FROM candidates WHERE symbol = %s", (symbol,)
     )
     return pd.Timestamp(row["ts"]) if row and row["ts"] else None
 

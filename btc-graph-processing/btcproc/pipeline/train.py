@@ -20,7 +20,7 @@ from typing import Callable
 
 import pandas as pd
 
-from btcproc import config
+from btcproc import config, symbols
 from btcproc.candidates import builder as cand
 from btcproc.candidates.outcomes import compute_outcomes
 from btcproc.db import repo, runs
@@ -89,14 +89,25 @@ def run_train(
     do_ingest=False — работать по тому, что уже в БД (быстрый пересчёт модели
     без повторной закачки истории).
     """
-    symbol = symbol or config.data.symbol
-    start = start or config.data.history_start
+    spec = symbols.resolve(symbol)
+    symbol = spec.ticker
+    # Дата листинга монеты перекрывает общий HISTORY_START: качать ETH с 2017,
+    # а SOL с 2020 — это сотни лишних 404 на каждый ingest.
+    start = start or spec.start_date()
+
+    # Пороги кластеризации приводятся к монете здесь, до запуска: точечные
+    # переопределения из реестра + масштабирование min_group_size по длине
+    # истории внутри fit_states.
+    states_cfg = spec.states_config()
+
     own_run = run_id is None
     if own_run:
         run_id = runs.start_run(
             "train",
             {"symbol": symbol, "start": start, "end": end,
-             "do_ingest": do_ingest, "do_emit": do_emit},
+             "do_ingest": do_ingest, "do_emit": do_emit,
+             "states_overrides": spec.states_overrides or None},
+            symbol=symbol,
         )
 
     progress = Progress(run_id)
@@ -167,6 +178,7 @@ def run_train(
         matrix = feat.apply_scale(features, scale)
         model, raw_labels = clustering.fit_states(
             matrix, list(features.columns), scale,
+            cfg=states_cfg,
             progress=lambda msg, frac: progress.within(frac, msg),
         )
         states = assign.assign_states(features.index, raw_labels)
@@ -261,6 +273,10 @@ def emit_pending(
     Оценок возвращается меньше, чем отправлено: btc-graph отбрасывает слабых
     и схлопывает дубликаты по family_key. Отправленным считается весь батч —
     повторно слать отсеянных смысла нет.
+
+    on_batch(готово, всего) зовётся после каждой пачки. Для исторического
+    бэкфилла это не украшательство: очередь в десятки тысяч разбирается часами,
+    и без обратной связи команда неотличима от зависшей.
     """
     from btcproc.db.session import fetch_all
 
@@ -273,6 +289,12 @@ def emit_pending(
     if limit:
         sql += " LIMIT %s"
         params.append(limit)
+
+    # Выборка идёт целиком в память: на очереди в 34 тысячи это десятки
+    # мегабайт JSONB и несколько секунд тишины перед первой пачкой. Сообщаем
+    # о начале ДО запроса — иначе непонятно, началось ли что-нибудь вообще.
+    if on_batch:
+        on_batch(0, 0)
 
     pending = [row["payload"] for row in fetch_all(sql, params)]
     total = len(pending)

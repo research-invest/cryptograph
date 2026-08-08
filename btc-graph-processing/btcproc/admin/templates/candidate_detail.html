@@ -2,7 +2,7 @@
 {% block title %}Кандидат {{ row.candidate_id }}{% endblock %}
 
 {% block content %}
-<h1>Кандидат <code>{{ row.candidate_id }}</code></h1>
+<h1>Кандидат <code>{{ row.candidate_id }}</code> · {{ row.symbol }}</h1>
 <p class="muted">
   {{ row.ts.strftime('%Y-%m-%d %H:%M') }} ·
   прогон #{{ row.run_id }} ·

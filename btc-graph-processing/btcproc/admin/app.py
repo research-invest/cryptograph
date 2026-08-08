@@ -1,5 +1,5 @@
 """
-Админка btc-graph-processing.
+Админка crypto-graph.
 
 Страницы:
   /            сводка: покрытие истории, размер графа, кандидаты, приёмник
@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from btcproc import config
+from btcproc import config, symbols
 from btcproc.admin import auth, queries
 from btcproc.db import runs as runs_repo
 from btcproc.db.session import init_schema
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-app = FastAPI(title="btc-graph-processing admin", docs_url=None, redoc_url=None)
+app = FastAPI(title="crypto-graph admin", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 PUBLIC_PATHS = {"/login", "/logout", "/health"}
@@ -78,6 +78,10 @@ def _startup() -> None:
     # Конфигурация проверяется до первого запроса: лучше не подняться вовсе,
     # чем работать с пустым паролем.
     config.admin.validate()
+    # Дефолтная монета, которой нет в реестре, — это ссылки в никуда на всех
+    # страницах. Проверяем рядом с паролями, по той же причине: лучше
+    # не подняться, чем работать неправильно.
+    symbols.validate_default()
     try:
         init_schema()
     except Exception:  # noqa: BLE001 — админка полезна и для диагностики БД
@@ -103,10 +107,34 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+def current_symbol(request: Request) -> str:
+    """
+    Монета, выбранная в шапке. Хранится в query-параметре `?symbol=`,
+    дефолт — из .env.
+
+    Неизвестный тикер не роняет страницу и не подставляется молча: он был бы
+    ссылкой, ведущей в пустую выдачу без объяснения. Откатываемся на дефолт.
+    """
+    raw = (request.query_params.get("symbol") or "").strip()
+    if not raw:
+        return config.data.symbol
+    try:
+        return symbols.get(raw).ticker
+    except symbols.UnknownSymbolError:
+        logger.warning("Неизвестная монета в ?symbol=%r — беру дефолт", raw)
+        return config.data.symbol
+
+
 def page(request: Request, name: str, **context) -> HTMLResponse:
     context.setdefault("user", auth.current_user(request))
-    context.setdefault("symbol", config.data.symbol)
+    symbol = context.setdefault("symbol", current_symbol(request))
+    # Список для селектора и признак «монет больше одной» — шаблон решает,
+    # показывать ли переключатель.
+    context.setdefault("symbols", symbols.tickers(only_enabled=True))
     context.setdefault("active", "")
+    # Хвост для ссылок между страницами: без него переход на соседнюю
+    # вкладку молча сбрасывал бы выбранную монету на дефолтную.
+    context.setdefault("symbol_qs", f"symbol={symbol}")
     return templates.TemplateResponse(request, name, context)
 
 
@@ -165,13 +193,15 @@ def health():
 # ─── Страницы ───────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
-    data = queries.overview()
+    symbol = current_symbol(request)
+    data = queries.overview(symbol)
     run_id = data["last_train"]["run_id"] if data["last_train"] else None
     return page(
         request, "dashboard.html",
         active="dashboard",
+        symbol=symbol,
         data=data,
-        ratings=queries.rating_distribution(run_id),
+        ratings=queries.rating_distribution(run_id, symbol),
         sink=graph_sink.sink_status(),
         recent_runs=runs_repo.list_runs(6),
         top_groups=queries.top_groups(run_id, 10) if run_id else [],
@@ -182,16 +212,20 @@ def dashboard(request: Request):
 
 @app.get("/graph", response_class=HTMLResponse)
 def graph_page(request: Request, run: str | None = None):
-    run_id = opt_int(run) or _latest_train_id()
-    return page(request, "graph.html", active="graph", run_id=run_id,
-                runs=runs_repo.list_runs(20))
+    # Список прогонов фильтруется по монете: выбрать в нём чужой прогон
+    # значило бы получить граф другого инструмента под заголовком этого.
+    symbol = current_symbol(request)
+    run_id = opt_int(run) or _latest_train_id(symbol)
+    return page(request, "graph.html", active="graph", symbol=symbol, run_id=run_id,
+                runs=runs_repo.list_runs(20, symbol))
 
 
 @app.get("/chart", response_class=HTMLResponse)
 def chart_page(request: Request, run: str | None = None):
-    run_id = opt_int(run) or _latest_train_id()
-    return page(request, "chart.html", active="chart", run_id=run_id,
-                runs=runs_repo.list_runs(20))
+    symbol = current_symbol(request)
+    run_id = opt_int(run) or _latest_train_id(symbol)
+    return page(request, "chart.html", active="chart", symbol=symbol, run_id=run_id,
+                runs=runs_repo.list_runs(20, symbol))
 
 
 @app.get("/candidates", response_class=HTMLResponse)
@@ -208,9 +242,11 @@ def candidates_page(
     # Все фильтры принимаются строками: форма отправляет незаполненные поля
     # как пустые строки (`min_quality=&run=`), а типизированные параметры
     # FastAPI на такое отвечают 422 — фильтрация переставала работать целиком.
+    symbol = current_symbol(request)
     run_id = opt_int(run)
     data = queries.candidates_page(
         run_id=run_id,
+        symbol=symbol,
         rating=opt_str(rating),
         direction=opt_str(direction),
         min_quality=opt_float(min_quality),
@@ -227,8 +263,8 @@ def candidates_page(
     }
     template = "partials/candidates_table.html" if request.headers.get("hx-request") \
         else "candidates.html"
-    return page(request, template, active="candidates", data=data, filters=filters,
-                runs=runs_repo.list_runs(20))
+    return page(request, template, active="candidates", symbol=symbol, data=data,
+                filters=filters, runs=runs_repo.list_runs(20, symbol))
 
 
 @app.get("/candidates/{candidate_id}", response_class=HTMLResponse)
@@ -243,8 +279,15 @@ def candidate_detail(request: Request, candidate_id: str):
 def runs_page(request: Request):
     template = "partials/runs_table.html" if request.headers.get("hx-request") \
         else "runs.html"
+    # Прогоны показываем по всем монетам: это страница про загрузку машины,
+    # а не про конкретный инструмент.
+    active_runs = runs_repo.active_runs()
+    limit = config.admin.max_concurrent_runs
     return page(request, template, active="runs", runs=runs_repo.list_runs(50),
-                active_run=runs_repo.active_run())
+                active_run=runs_repo.active_run(),
+                active_runs=active_runs,
+                max_concurrent=limit,
+                at_capacity=len(active_runs) >= limit)
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -258,36 +301,93 @@ def run_detail(request: Request, run_id: int):
 
 
 # ─── Управление прогонами ───────────────────────────────────────────────────
+
+def _form_symbols(symbol: str) -> list[str]:
+    """
+    Разбор поля формы: конкретная монета либо «все активные».
+
+    Пустое значение означает монету по умолчанию — так форма без селектора
+    (и старые закладки) продолжают работать.
+    """
+    value = (symbol or "").strip()
+    if value.lower() == "all":
+        return [spec.ticker for spec in symbols.enabled()]
+    if not value:
+        return [config.data.symbol]
+    try:
+        return [symbols.get(value).ticker]
+    except symbols.UnknownSymbolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _guard_capacity(tickers: list[str]) -> None:
+    """
+    Проверка перед запуском.
+
+    Одну монету дважды одновременно считать нельзя — это гонка за одни и те же
+    строки. Разные монеты параллельно можно и нужно, но не бесконечно: прогоны
+    идут BackgroundTasks в процессе админки, и каждый занимает ядро под
+    кластеризацию и заметный кусок памяти.
+    """
+    active = runs_repo.active_runs()
+    busy = {run["symbol"] for run in active if run.get("symbol")}
+
+    clash = sorted(busy & set(tickers))
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=f"По {', '.join(clash)} уже идёт прогон — дождись окончания",
+        )
+
+    limit = config.admin.max_concurrent_runs
+    if len(active) + len(tickers) > limit:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Одновременно выполняется {len(active)} прогонов при лимите {limit}. "
+                f"Запуск ещё {len(tickers)} превысил бы его: кластеризация упирается "
+                f"в CPU и память. Дождись окончания или подними "
+                f"ADMIN_MAX_CONCURRENT_RUNS."
+            ),
+        )
+
+
 @app.post("/runs/train")
 def start_train(
     background: BackgroundTasks,
+    symbol: str = Form(""),
     ingest: bool = Form(True),
     emit: bool = Form(True),
     start: str = Form(""),
     end: str = Form(""),
 ):
-    if runs_repo.active_run():
-        raise HTTPException(status_code=409, detail="Уже идёт прогон — дождись окончания")
-
     from btcproc.pipeline.train import run_train
 
-    background.add_task(
-        _safe_run, run_train,
-        do_ingest=ingest, do_emit=emit,
-        start=start or None, end=end or None,
-    )
+    tickers = _form_symbols(symbol)
+    _guard_capacity(tickers)
+
+    for ticker in tickers:
+        background.add_task(
+            _safe_run, run_train,
+            symbol=ticker, do_ingest=ingest, do_emit=emit,
+            start=start or None, end=end or None,
+        )
     return RedirectResponse("/runs", status_code=303)
 
 
 @app.post("/runs/live")
-def start_live(background: BackgroundTasks, emit: bool = Form(True),
-               lookback: int = Form(240)):
-    if runs_repo.active_run():
-        raise HTTPException(status_code=409, detail="Уже идёт прогон — дождись окончания")
-
+def start_live(background: BackgroundTasks, symbol: str = Form(""),
+               emit: bool = Form(True), lookback: int = Form(240)):
     from btcproc.pipeline.live import run_live
 
-    background.add_task(_safe_run, run_live, lookback_minutes=lookback, do_emit=emit)
+    tickers = _form_symbols(symbol)
+    _guard_capacity(tickers)
+
+    for ticker in tickers:
+        background.add_task(
+            _safe_run, run_live,
+            symbol=ticker, lookback_minutes=lookback, do_emit=emit,
+        )
     return RedirectResponse("/runs", status_code=303)
 
 
@@ -309,9 +409,9 @@ def _safe_run(func, *args, **kwargs) -> None:
 
 # ─── JSON для страниц ───────────────────────────────────────────────────────
 @app.get("/api/graph")
-def api_graph(run: str | None = None, min_count: str | None = None,
+def api_graph(request: Request, run: str | None = None, min_count: str | None = None,
               rarity: str | None = None):
-    run_id = opt_int(run) or _latest_train_id()
+    run_id = opt_int(run) or _latest_train_id(current_symbol(request))
     if run_id is None:
         return {"nodes": [], "edges": []}
     return queries.graph_payload(
@@ -320,28 +420,38 @@ def api_graph(run: str | None = None, min_count: str | None = None,
 
 
 @app.get("/api/graph/group/{group_id}")
-def api_group(group_id: float, run: str | None = None):
-    run_id = opt_int(run) or _latest_train_id()
+def api_group(request: Request, group_id: float, run: str | None = None):
+    run_id = opt_int(run) or _latest_train_id(current_symbol(request))
     node = queries.group_detail(run_id, group_id) if run_id else None
     if not node:
         raise HTTPException(status_code=404, detail="Состояние не найдено")
+    # Монета подписывается явно: «group_id 7» без неё бессмысленен —
+    # номера состояний у монет свои и между собой несопоставимы.
+    node["symbol"] = queries.run_symbol(run_id)
     return node
 
 
 @app.get("/api/chart")
-def api_chart(run: str | None = None, start: str | None = None,
+def api_chart(request: Request, run: str | None = None, start: str | None = None,
               end: str | None = None, limit: str | None = None,
               rating: str | None = None):
-    run_id = opt_int(run) or _latest_train_id()
+    symbol = current_symbol(request)
+    run_id = opt_int(run) or _latest_train_id(symbol)
     if run_id is None:
         return {"bars": [], "markers": [], "groups": []}
-    return queries.chart_data(
-        run_id,
-        start=opt_str(start),
-        end=opt_str(end),
-        limit=min(opt_int(limit) or 1500, 5000),
-        rating=opt_str(rating),
-    )
+    try:
+        return queries.chart_data(
+            run_id,
+            symbol=symbol,
+            start=opt_str(start),
+            end=opt_str(end),
+            limit=min(opt_int(limit) or 1500, 5000),
+            rating=opt_str(rating),
+        )
+    except queries.SymbolRunMismatch as exc:
+        # 422, а не пустой график: несогласованность монеты и прогона иначе
+        # выглядит как «состояний не нашлось».
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/runs/{run_id}")
@@ -352,6 +462,10 @@ def api_run(run_id: int):
     return run
 
 
-def _latest_train_id() -> int | None:
-    run = runs_repo.latest_completed_run("train") or runs_repo.active_run("train")
+def _latest_train_id(symbol: str | None = None) -> int | None:
+    """Последний train монеты — источник графа и раскраски по умолчанию."""
+    run = (
+        runs_repo.latest_completed_run("train", symbol)
+        or runs_repo.active_run("train", symbol)
+    )
     return int(run["run_id"]) if run else None

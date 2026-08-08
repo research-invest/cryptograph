@@ -18,28 +18,7 @@ from btcproc.states import assign, clustering, graph
 TEST_CAND_CFG = config.CandidateConfig(min_sample_size=10)
 
 
-@pytest.fixture(scope="module")
-def pipeline_data(bars, context):
-    """Прогон всей цепочки на синтетике — база для проверок кандидатов."""
-    features = feat.build_features(bars, context)
-    scale = feat.robust_scale_params(features)
-    matrix = feat.apply_scale(features, scale)
-    cfg = config.StatesConfig(seed_clusters=4, min_group_size=400, max_depth=2)
-    model, labels = clustering.fit_states(matrix, list(features.columns), scale, cfg)
-
-    states = assign.assign_states(features.index, labels)
-    events = ev.build_event_blocks(bars).reindex(features.index).dropna(
-        subset=["event_block_id"]
-    )
-    blocks = ev.block_statistics(events)
-    outcomes = compute_outcomes(bars).reindex(features.index)
-    transitions = graph.transition_stats(states, outcomes)
-
-    snapshots = cand.build_snapshots(states, events, outcomes)
-    return {
-        "features": features, "states": states, "events": events, "blocks": blocks,
-        "outcomes": outcomes, "transitions": transitions, "snapshots": snapshots,
-    }
+# Фикстура pipeline_data живёт в conftest.py — она нужна и тестам мультимонетности.
 
 
 def test_outcomes_align_with_prices(bars):

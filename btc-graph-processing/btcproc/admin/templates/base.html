@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}btc-graph-processing{% endblock %}</title>
+  <title>{% block title %}crypto-graph{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/app.css">
   <!-- Тема выставляется до отрисовки: иначе при загрузке мигает чужой фон. -->
   <script>
@@ -18,15 +19,35 @@
 <body>
 <header class="topbar">
   <div class="brand">
-    <span class="dot"></span>
-    btc-graph-processing
-    <small>{{ symbol }}</small>
+    {# Знак — фрагмент графа состояний: узел и два расходящихся перехода.
+       currentColor, поэтому следует за темой без второго набора цветов. #}
+    <svg class="mark" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+      <path d="M7 6.5 17 12 7 17.5" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+            opacity="0.5"/>
+      <circle cx="7" cy="6.5" r="3" fill="currentColor"/>
+      <circle cx="17" cy="12" r="3" fill="currentColor"/>
+      <circle cx="7" cy="17.5" r="3" fill="currentColor"/>
+    </svg>
+    crypto-graph
+    {# Селектор монеты. Выбор живёт в ?symbol= и прокидывается во все ссылки:
+       без этого переход на соседнюю вкладку молча возвращал бы на дефолтную
+       монету, а страницы графа и состояний показывали бы чужие group_id. #}
+    {% if symbols and symbols|length > 1 %}
+      <select class="symbol-picker" id="symbolPicker" title="Монета">
+        {% for ticker in symbols %}
+          <option value="{{ ticker }}" {{ 'selected' if ticker == symbol }}>{{ ticker }}</option>
+        {% endfor %}
+      </select>
+    {% else %}
+      <small>{{ symbol }}</small>
+    {% endif %}
   </div>
   <nav>
-    <a href="/" class="{{ 'on' if active == 'dashboard' }}">Сводка</a>
-    <a href="/graph" class="{{ 'on' if active == 'graph' }}">Граф состояний</a>
-    <a href="/chart" class="{{ 'on' if active == 'chart' }}">График</a>
-    <a href="/candidates" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
+    <a href="/?{{ symbol_qs }}" class="{{ 'on' if active == 'dashboard' }}">Сводка</a>
+    <a href="/graph?{{ symbol_qs }}" class="{{ 'on' if active == 'graph' }}">Граф состояний</a>
+    <a href="/chart?{{ symbol_qs }}" class="{{ 'on' if active == 'chart' }}">График</a>
+    <a href="/candidates?{{ symbol_qs }}" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
     <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
   </nav>
   <div class="user">
@@ -58,6 +79,17 @@
     window.dispatchEvent(new CustomEvent('btcproc:theme', { detail: next }));
   });
   render();
+})();
+
+// Селектор монеты: переключение перезагружает страницу с новым ?symbol=.
+// Остальные параметры (фильтры, номер прогона) при этом СБРАСЫВАЮТСЯ намеренно —
+// прогон другой монеты в фильтре дал бы пустую выдачу без объяснения.
+(function () {
+  var picker = document.getElementById('symbolPicker');
+  if (!picker) return;
+  picker.addEventListener('change', function () {
+    window.location.search = '?symbol=' + encodeURIComponent(picker.value);
+  });
 })();
 
 // Читалка CSS-переменных: единственный источник цветов для Cytoscape и чарта.

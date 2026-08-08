@@ -69,11 +69,17 @@ TIMEFRAME_MINUTES: dict[str, int] = {
 
 @dataclass(frozen=True)
 class DataConfig:
+    # Монета ПО УМОЛЧАНИЮ для одиночных команд. Полный список пар —
+    # в btcproc/symbols.py: дата листинга и переопределения порогов это
+    # знание о рынке, оно версионируется вместе с кодом, а не в окружении.
+    # Обязана присутствовать в реестре — проверяется symbols.validate_default().
     symbol: str = _env("SYMBOL", "BTCUSDT")
     base_tf: str = _env("BASE_TIMEFRAME", "15m")
     context_tfs: list[str] = field(
         default_factory=lambda: _env_list("CONTEXT_TIMEFRAMES", "1h,4h,1d")
     )
+    # Дефолт для монет, у которых history_start в реестре не задан.
+    # Спека монеты его перекрывает (см. SymbolSpec.start_date).
     history_start: str = _env("HISTORY_START", "2017-08-01")
     horizon: str = _env("HORIZON", "24h")
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "./data")))
@@ -118,8 +124,28 @@ class StatesConfig:
 
     # Стартовое число крупных кластеров, дальше дробление идёт рекурсивно.
     seed_clusters: int = _env_int("STATES_SEED_CLUSTERS", 8)
-    # Ниже этого размера группу не дробим — статистика кандидата развалится.
-    min_group_size: int = _env_int("STATES_MIN_GROUP_SIZE", 800)
+    # Размер группы, ниже которого дробить нельзя, задаётся ДВУМЯ числами:
+    # долей истории и абсолютным полом. Эффективное значение —
+    #     max(min_group_size, round(min_group_share * число баров))
+    #
+    # Доля — основной механизм. Порог обязан быть относительным: 800 баров это
+    # 0.27% истории BTC с 2017 года и 1.1% истории двухлетней монеты. С общим
+    # абсолютным порогом дробление на короткой истории останавливается рано,
+    # и граф выходит грубее не потому, что рынок однороднее, а потому что
+    # линейка чужая. 0.0025 на истории BTC даёт ~750 — то же, на чём граф
+    # калибровался.
+    min_group_share: float = _env_float("STATES_MIN_GROUP_SHARE", 0.0025)
+    # Абсолютный пол. Именно пол, а не значение по умолчанию: группа в сотню
+    # баров не даёт кандидату статистики при любой длине истории.
+    #
+    # Раньше здесь стояло 800 — значение, подобранное под BTC. Оно перекрывало
+    # долю на всём диапазоне реальных историй (0.0025 × 320 тыс. = 800), то есть
+    # относительный порог был бы формальностью. 300 — это «сотни баров»,
+    # ниже которых выборка кандидата разваливается независимо от монеты.
+    # Побочный эффект: на BTC эффективный порог стал 750 вместо 800. Граф от
+    # этого сдвигается в пределах шума, а group_id всё равно перенумеровываются
+    # при каждом train (см. README, раздел про train против live).
+    min_group_size: int = _env_int("STATES_MIN_GROUP_SIZE", 300)
     # Предел глубины рекурсии дробления (2^depth групп максимум на ветку).
     max_depth: int = _env_int("STATES_MAX_DEPTH", 4)
     # Дробим, если разбиение надвое улучшает силуэт хотя бы на столько
@@ -165,8 +191,17 @@ class CandidateConfig:
 @dataclass(frozen=True)
 class SinkConfig:
     mode: str = _env("SINK_MODE", "direct")  # direct | http | none
+    # Каталог соседнего проекта btc-graph. Дефолт вычисляется от расположения
+    # ЭТОГО файла, а не хардкодится: проекты лежат рядом внутри crypto-graph,
+    # и абсолютный путь устаревал при каждом переезде. Симптомы были тихими:
+    # SINK_MODE=direct падал с «не похож на репозиторий btc-graph», а
+    # test_generated_candidates_match_btc_graph_schema молча скипался —
+    # то есть контракт схемы переставал проверяться незаметно.
     btc_graph_path: Path = field(
-        default_factory=lambda: Path(_env("BTC_GRAPH_PATH", "/Volumes/work/btc-graph"))
+        default_factory=lambda: Path(
+            _env("BTC_GRAPH_PATH")
+            or (Path(__file__).resolve().parents[2] / "btc-graph")
+        )
     )
     btc_graph_url: str = _env("BTC_GRAPH_URL", "http://localhost:8000")
     # Redis самого btc-graph: его дедуп и канал btc:strong_candidates живут
@@ -190,6 +225,12 @@ class AdminConfig:
     )
     host: str = _env("ADMIN_HOST", "127.0.0.1")
     port: int = _env_int("ADMIN_PORT", 8100)
+    # Сколько прогонов админка готова вести одновременно. Прогоны разных монет
+    # независимы и блокировать друг друга не должны, но идут они BackgroundTasks
+    # в процессе админки: три одновременных train займут три ядра на
+    # кластеризации и утроят пик памяти. Двойка — компромисс для типичной
+    # машины; поднимать осознанно, глядя на RAM.
+    max_concurrent_runs: int = _env_int("ADMIN_MAX_CONCURRENT_RUNS", 2)
 
     def validate(self) -> None:
         """

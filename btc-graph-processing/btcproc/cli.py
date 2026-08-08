@@ -2,22 +2,28 @@
 Командная строка btc-graph-processing.
 
     python -m btcproc.cli init-db
-    python -m btcproc.cli ingest
-    python -m btcproc.cli train --no-emit
-    python -m btcproc.cli live
+    python -m btcproc.cli ingest --symbol ETHUSDT
+    python -m btcproc.cli train --all --no-emit
+    python -m btcproc.cli live --all
     python -m btcproc.cli admin
+
+Общий принцип мультимонетности: у команд, работающих с данными, есть
+`--symbol` (можно указать несколько раз) и `--all` (все активные монеты
+реестра). Без флагов поведение прежнее — монета из `.env`, чтобы существующие
+скрипты и `make train` не сломались.
 """
 from __future__ import annotations
 
 import logging
+import time
 
 import typer
 
-from btcproc import config
+from btcproc import config, symbols
 from btcproc.db import runs as runs_repo
 from btcproc.db import session
 
-app = typer.Typer(add_completion=False, help="Генератор кандидатов BTC для btc-graph")
+app = typer.Typer(add_completion=False, help="Генератор кандидатов для btc-graph")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,48 +31,134 @@ logging.basicConfig(
 )
 
 
+def _resolve(symbol: list[str] | None, all_symbols: bool) -> list[symbols.SymbolSpec]:
+    """Разбор --symbol/--all с понятной ошибкой вместо трейсбека."""
+    try:
+        return symbols.resolve_many(symbol, all_symbols)
+    except symbols.UnknownSymbolError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _run_for_each(
+    specs: list[symbols.SymbolSpec],
+    action,
+    what: str,
+) -> None:
+    """
+    Последовательный пакетный прогон по монетам.
+
+    Три требования, все существенные:
+      * последовательно, а не параллельно — узкое место CPU на кластеризации,
+        два одновременных train просто отнимут память друг у друга;
+      * падение одной монеты НЕ останавливает остальные: прогон помечается
+        failed с диагнозом, цикл идёт дальше, в конце печатается сводка.
+        Это ровно тот случай, ради которого в проекте оставлен except Exception;
+      * ненулевой exit code, если упала хотя бы одна монета — иначе cron будет
+        рапортовать об успехе.
+    """
+    failures: list[tuple[str, str]] = []
+    ok = 0
+
+    for spec in specs:
+        if len(specs) > 1:
+            typer.echo(f"\n=== {spec.ticker} ({what}) ===")
+        try:
+            result = action(spec)
+        except Exception as exc:  # noqa: BLE001 — падение одной монеты не рушит пакет
+            failures.append((spec.ticker, f"{type(exc).__name__}: {exc}"))
+            typer.echo(typer.style(f"  ОШИБКА {spec.ticker}: {exc}", fg=typer.colors.RED))
+            continue
+        ok += 1
+        if result is not None:
+            typer.echo(runs_repo.dumps(result))
+
+    if len(specs) > 1:
+        typer.echo(f"\nИтог: {ok} из {len(specs)} успешно")
+        for ticker, error in failures:
+            typer.echo(f"  {ticker}: {error}")
+
+    if failures:
+        raise typer.Exit(code=1)
+
+
 @app.command("init-db")
 def init_db() -> None:
     """Создать схему processing и таблицы."""
     session.init_schema()
     typer.echo(f"Схема {config.db.schema} готова")
+    # Дефолтная монета, которой нет в реестре, — это дефолт, указывающий
+    # в никуда. Обнаружиться это должно здесь, а не на середине прогона.
+    symbols.validate_default()
+    typer.echo(
+        f"Монеты: {', '.join(symbols.tickers(only_enabled=True))} "
+        f"(по умолчанию {config.data.symbol})"
+    )
 
 
 @app.command()
 def ingest(
-    symbol: str = typer.Option(None, help="Тикер, по умолчанию из .env"),
-    start: str = typer.Option(None, help="Дата начала, YYYY-MM-DD"),
+    symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно указать несколько раз"),
+    all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
+    start: str = typer.Option(None, help="Дата начала, YYYY-MM-DD (перекрывает реестр)"),
     context: bool = typer.Option(True, help="Пересобрать старшие ТФ из базового"),
 ) -> None:
-    """Скачать историю Binance в БД."""
+    """
+    Скачать историю Binance в БД.
+
+    Цикл по монетам живёт в binance.sync_many: он нужен и админке, и обкатке
+    новой монеты, а не только этой команде.
+    """
     from btcproc.ingest import binance
 
-    result = binance.sync_history(
-        symbol, config.data.base_tf, start,
+    specs = _resolve(symbol, all_symbols)
+
+    result = binance.sync_many(
+        [spec.ticker for spec in specs],
+        tf=config.data.base_tf,
+        start=start,
+        context=context,
         progress=lambda i, n, msg: typer.echo(f"  [{i}/{n}] {msg}"),
+        on_symbol=lambda i, n, ticker: typer.echo(
+            f"\n=== {ticker} ({i}/{n}) ===" if n > 1 else f"=== {ticker} ==="
+        ),
     )
-    typer.echo(f"Баров записано: {result['rows']}")
-    if result["missing_months"]:
-        # Текущий месяц в этом списке — норма: месячный архив публикуется
-        # только после его закрытия, до тех пор работают дневные дампы и REST.
-        typer.echo(
-            f"Нет месячных дампов за: {', '.join(result['missing_months'])} "
-            "(текущий месяц добирается дневными архивами и REST — это ожидаемо)"
-        )
-    if context:
-        typer.echo(f"Старшие ТФ: {binance.rebuild_context_timeframes(symbol)}")
+
+    for ticker, report in result["symbols"].items():
+        typer.echo(f"{ticker}: баров записано {report['rows']}")
+        if report["missing_months"]:
+            # Текущий месяц в этом списке — норма: месячный архив публикуется
+            # только после его закрытия, до тех пор работают дневные дампы и REST.
+            # Длинный хвост пропусков В НАЧАЛЕ — признак того, что history_start
+            # монеты занижен: уточни symbols.resolve_history_start(ticker).
+            typer.echo(
+                f"  нет месячных дампов за: {', '.join(report['missing_months'])} "
+                "(текущий месяц добирается дневными архивами и REST — это ожидаемо)"
+            )
+        if report.get("context"):
+            typer.echo(f"  старшие ТФ: {report['context']}")
+
+    for ticker, error in result["failed"].items():
+        typer.echo(typer.style(f"ОШИБКА {ticker}: {error}", fg=typer.colors.RED))
+
+    typer.echo(
+        f"\nИтог: {result['ok']} из {result['total']} монет, "
+        f"всего баров {result['rows_total']}"
+    )
+    if result["failed"]:
+        raise typer.Exit(code=1)
 
 
-def _guard_active_run(force: bool) -> None:
+def _guard_active_run(force: bool, symbol: str) -> None:
     """
-    Два тяжёлых прогона одновременно — это гонка за одни и те же таблицы
-    и вдвое большая нагрузка на БД. Админка такое блокирует, CLI до сих пор
-    молчал: если live висит в cron, ручной train легко попадал на него.
+    Два тяжёлых прогона ОДНОЙ монеты одновременно — это гонка за одни и те же
+    строки и вдвое большая нагрузка на БД. Прогоны разных монет независимы
+    и блокировать друг друга не должны: иначе мультимонетность сводится
+    к очереди из одной монеты за раз.
     """
-    active = runs_repo.active_run()
+    active = runs_repo.active_run(symbol=symbol)
     if active and not force:
         raise typer.BadParameter(
-            f"Уже идёт прогон #{active['run_id']} ({active['kind']}, "
+            f"По {symbol} уже идёт прогон #{active['run_id']} ({active['kind']}, "
             f"стадия {active['stage'] or '—'}, {active['progress']:.0%}). "
             "Дождись окончания или запусти с --force."
         )
@@ -74,8 +166,9 @@ def _guard_active_run(force: bool) -> None:
 
 @app.command()
 def train(
-    symbol: str = typer.Option(None),
-    start: str = typer.Option(None, help="Дата начала истории"),
+    symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно несколько раз"),
+    all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
+    start: str = typer.Option(None, help="Дата начала истории (перекрывает реестр)"),
     end: str = typer.Option(None, help="Дата конца (для воспроизводимых прогонов)"),
     ingest_data: bool = typer.Option(True, "--ingest/--no-ingest", help="Качать историю"),
     emit: bool = typer.Option(True, "--emit/--no-emit", help="Слать кандидатов в btc-graph"),
@@ -87,22 +180,32 @@ def train(
     ВНИМАНИЕ: состояния переобучаются с нуля, поэтому номера group_id
     в новом прогоне не соответствуют старым. Для регулярного обновления
     нужен live, а не train.
+
+    С --all монеты обрабатываются последовательно, каждая своим run_id;
+    падение одной не останавливает остальные.
     """
     from btcproc.pipeline.train import run_train
 
-    _guard_active_run(force)
+    specs = _resolve(symbol, all_symbols)
     typer.echo(
         "Модель состояний будет переобучена: group_id нового прогона "
         "несопоставимы с предыдущими.\n"
     )
-    stats = run_train(
-        symbol=symbol, start=start, end=end, do_ingest=ingest_data, do_emit=emit
-    )
-    typer.echo(runs_repo.dumps(stats))
+
+    def action(spec: symbols.SymbolSpec) -> dict:
+        _guard_active_run(force, spec.ticker)
+        return run_train(
+            symbol=spec.ticker, start=start, end=end,
+            do_ingest=ingest_data, do_emit=emit,
+        )
+
+    _run_for_each(specs, action, "train")
 
 
 @app.command()
 def live(
+    symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно несколько раз"),
+    all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
     model_run: int = typer.Option(None, help="run_id прогона с нужной моделью"),
     lookback: int = typer.Option(
         None,
@@ -118,20 +221,30 @@ def live(
     """
     Инкрементальный прогон по свежим барам.
 
-    Точка продолжения берётся из данных: бары качаются с последнего
-    сохранённого, кандидаты — с последнего выпущенного. Пропуск в несколько
-    дней закрывается одним запуском.
+    Точка продолжения берётся из данных и считается по своей монете: бары
+    качаются с последнего сохранённого, кандидаты — с последнего выпущенного.
+    Пропуск в несколько дней закрывается одним запуском.
     """
     from btcproc.pipeline.live import run_live
 
-    _guard_active_run(force)
-    stats = run_live(
-        model_run_id=model_run,
-        lookback_minutes=lookback,
-        max_lookback_days=max_lookback_days,
-        do_emit=emit,
-    )
-    typer.echo(runs_repo.dumps(stats))
+    specs = _resolve(symbol, all_symbols)
+    if model_run is not None and len(specs) > 1:
+        raise typer.BadParameter(
+            "--model-run задаёт одну конкретную модель и несовместим с несколькими "
+            "монетами: модель состояний применима только к своему инструменту."
+        )
+
+    def action(spec: symbols.SymbolSpec) -> dict:
+        _guard_active_run(force, spec.ticker)
+        return run_live(
+            symbol=spec.ticker,
+            model_run_id=model_run,
+            lookback_minutes=lookback,
+            max_lookback_days=max_lookback_days,
+            do_emit=emit,
+        )
+
+    _run_for_each(specs, action, "live")
 
 
 @app.command()
@@ -143,66 +256,118 @@ def emit(
     Дослать кандидатов прогона в btc-graph.
 
     Отправляются только те, у кого ещё нет отметки об отправке, — повторный
-    запуск безопасен и ничего не дублирует.
+    запуск безопасен и ничего не дублирует. Монета берётся из самого прогона.
     """
     from btcproc.pipeline.train import emit_pending
 
     # Без этой проверки опечатка в номере прогона выглядела как «всё
     # отправлено»: пустая выборка и нули в ответе.
-    if runs_repo.get_run(run) is None:
+    row = runs_repo.get_run(run)
+    if row is None:
         raise typer.BadParameter(
             f"Прогона #{run} нет. Список: python3 -m btcproc.cli status"
         )
-    typer.echo(runs_repo.dumps(emit_pending(run, limit=limit)))
+    typer.echo(f"Прогон #{run} ({row.get('symbol') or '?'})")
+
+    # Исторический бэкфилл разбирается часами. Без прогресса команда
+    # неотличима от зависшей — и выглядит зависшей ровно в тот момент,
+    # когда работает штатно.
+    started = time.time()
+
+    def progress(done: int, total: int) -> None:
+        if total == 0:
+            typer.echo("  выбираю очередь…")
+            return
+        elapsed = time.time() - started
+        rate = done / elapsed if elapsed > 0 else 0
+        eta = (total - done) / rate if rate > 0 else 0
+        typer.echo(
+            f"  {done}/{total} ({done / total:.0%}) · {rate * 60:.0f}/мин · "
+            f"осталось ~{eta / 60:.0f} мин",
+        )
+
+    typer.echo(runs_repo.dumps(emit_pending(run, limit=limit, on_batch=progress)))
 
 
 @app.command()
-def status() -> None:
-    """Что есть в базе: покрытие истории, отставание, прогоны, приёмник."""
+def status(
+    symbol: list[str] = typer.Option(None, "--symbol", help="Только эти монеты"),
+    all_symbols: bool = typer.Option(
+        True, "--all/--default-only",
+        help="Все активные монеты (по умолчанию) или только монета из .env",
+    ),
+) -> None:
+    """
+    Что есть в базе: покрытие истории, отставание, кандидаты, приёмник.
+
+    Строка на монету. Диагностика окружения общая — печатается один раз.
+    """
     from datetime import datetime, timezone
 
-    from btcproc.db.session import fetch_one
+    from btcproc.db.session import fetch_all
     from btcproc.ingest import binance
     from btcproc.sink import graph_sink
 
-    typer.echo("Покрытие истории:")
-    for row in binance.coverage():
-        typer.echo(
-            f"  {row['tf']:>4}: {row['bars']:>8} баров  "
-            f"{row['first_ts']:%Y-%m-%d} … {row['last_ts']:%Y-%m-%d %H:%M}"
+    specs = _resolve(symbol, all_symbols and not symbol)
+    tickers = [spec.ticker for spec in specs]
+    now = datetime.now(timezone.utc)
+
+    # Одним запросом на всё, а не N: страница status не должна линейно
+    # тормозить от числа монет.
+    coverage = {
+        row["symbol"]: row
+        for row in binance.coverage_all(tickers, tf=config.data.base_tf)
+    }
+    cand_rows = {
+        row["symbol"]: row
+        for row in fetch_all(
+            "SELECT symbol, count(*) AS total, "
+            "count(*) FILTER (WHERE emitted_at IS NULL) AS pending, "
+            "max(ts) AS last_ts FROM candidates WHERE symbol = ANY(%s) GROUP BY symbol",
+            (tickers,),
+        )
+    }
+
+    header = (
+        f"{'монета':<10} {'баров':>9} {'история':>23} {'отставание':>11} "
+        f"{'кандидатов':>11} {'в очереди':>10}  последний train"
+    )
+    typer.echo(header)
+    typer.echo("─" * len(header))
+
+    for spec in specs:
+        cov = coverage.get(spec.ticker)
+        cand = cand_rows.get(spec.ticker, {})
+        last_train = runs_repo.latest_completed_run("train", spec.ticker)
+
+        if cov:
+            period = f"{cov['first_ts']:%Y-%m-%d}…{cov['last_ts']:%Y-%m-%d}"
+            lag = f"{(now - cov['last_ts']).total_seconds() / 60:.0f} мин"
+            bars = f"{cov['bars']:,}".replace(",", " ")
+        else:
+            period, lag, bars = "нет данных", "—", "0"
+
+        train_note = (
+            f"#{last_train['run_id']} {last_train['finished_at']:%Y-%m-%d %H:%M}"
+            if last_train and last_train.get("finished_at")
+            else typer.style("нет модели", fg=typer.colors.YELLOW)
         )
 
-    # Главный вопрос к системе в работе — не «сколько всего», а «насколько
-    # отстали»: свежесть баров и очередь неотправленных кандидатов.
-    last_bar = binance.last_ts()
-    if last_bar:
-        lag_min = (datetime.now(timezone.utc) - last_bar).total_seconds() / 60
-        typer.echo(f"\nОтставание баров: {lag_min:.0f} мин от текущего момента")
-
-    stats = fetch_one(
-        "SELECT count(*) AS total, "
-        "count(*) FILTER (WHERE emitted_at IS NULL) AS pending, "
-        "max(ts) AS last_ts FROM candidates WHERE symbol = %s",
-        (config.data.symbol,),
-    ) or {}
-    if stats.get("total"):
         typer.echo(
-            f"Кандидатов: {stats['total']}, в очереди отправки: {stats['pending']}"
+            f"{spec.ticker:<10} {bars:>9} {period:>23} {lag:>11} "
+            f"{cand.get('total', 0):>11} {cand.get('pending', 0):>10}  {train_note}"
         )
-        if stats.get("last_ts"):
-            gap_h = (last_bar - stats["last_ts"]).total_seconds() / 3600 if last_bar else 0
-            typer.echo(
-                f"Последний кандидат: {stats['last_ts']:%Y-%m-%d %H:%M} "
-                f"(следующий live закроет {gap_h:.1f} ч)"
-            )
-    else:
-        typer.echo("\nКандидатов ещё нет — нужен полный прогон (train)")
 
+    disabled = [s.ticker for s in symbols.SYMBOLS if not s.enabled]
+    if disabled and all_symbols:
+        typer.echo(f"\nВыключены в реестре: {', '.join(disabled)}")
+
+    # ── Общая диагностика: одна на все монеты ────────────────────────────────
     typer.echo("\nПоследние прогоны:")
     for row in runs_repo.list_runs(5):
         typer.echo(
-            f"  #{row['run_id']} {row['kind']:<6} {row['status']:<8} "
-            f"{row['progress']:.0%} {row['stage'] or ''}"
+            f"  #{row['run_id']} {row.get('symbol') or '?':<9} {row['kind']:<6} "
+            f"{row['status']:<8} {row['progress']:.0%} {row['stage'] or ''}"
         )
 
     sink = graph_sink.sink_status()
@@ -236,6 +401,7 @@ def admin(
     import uvicorn
 
     config.admin.validate()
+    symbols.validate_default()
     uvicorn.run(
         "btcproc.admin.app:app",
         host=host or config.admin.host,

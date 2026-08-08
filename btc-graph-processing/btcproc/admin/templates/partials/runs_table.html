@@ -1,12 +1,15 @@
 <table class="runs">
   <thead>
-    <tr><th>#</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th>Стадия</th>
+    {# Монета обязана быть в таблице: список сводный по всем монетам, и без
+       колонки «train 38%» не отвечает на вопрос «чей именно train». #}
+    <tr><th>#</th><th>Монета</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th>Стадия</th>
         <th>Начало</th><th>Длительность</th><th></th></tr>
   </thead>
   <tbody>
   {% for run in (runs or recent_runs) %}
     <tr>
       <td>{{ run.run_id }}</td>
+      <td>{{ run.symbol or '—' }}</td>
       <td>{{ run.kind }}</td>
       <td><span class="status {{ run.status }}">{{ run.status }}</span></td>
       <td>
@@ -23,7 +26,7 @@
       <td><a href="/runs/{{ run.run_id }}">лог</a></td>
     </tr>
   {% else %}
-    <tr><td colspan="8" class="muted">Прогонов ещё не было</td></tr>
+    <tr><td colspan="9" class="muted">Прогонов ещё не было</td></tr>
   {% endfor %}
   </tbody>
 </table>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Граф состояний · btc-graph-processing{% endblock %}
+{% block title %}Граф состояний {{ symbol }} · crypto-graph{% endblock %}
 {% block main_class %}wide{% endblock %}
 
 {% block head %}
@@ -7,6 +7,10 @@
 {% endblock %}
 
 {% block content %}
+{# Монета в заголовке обязательна: «состояние 7» существует в графе каждой
+   монеты и означает у каждой свой рынок. Это главный способ запутаться
+   в мультимонетном интерфейсе. #}
+<h1>Граф состояний · {{ symbol }}</h1>
 <form class="toolbar" onsubmit="return false;">
   <label>Прогон
     <select id="run">
@@ -37,6 +41,10 @@
   <label>Мин. случаев перехода
     <input type="number" id="minCount" value="1" min="1" step="1" style="width: 74px">
   </label>
+  {# Имена длинные, а узлов десятки — по умолчанию на самих узлах только номер.
+     Имя всегда доступно в подсказке и в панели справа; переключатель нужен,
+     когда граф отфильтрован до десятка узлов и место есть. #}
+  <label><input type="checkbox" id="showNames"> имена на узлах</label>
   <label>Раскладка
     <select id="layout">
       <option value="cose">силовая</option>
@@ -91,6 +99,9 @@
 {% block scripts %}
 <script>
 const el = (id) => document.getElementById(id);
+// Монета текущей страницы. Нужна подписям: group_id осмыслен только в паре
+// с ней, «состояние 7» без монеты — это состояние неизвестно чего.
+const SYMBOL = {{ symbol | tojson }};
 let raw = { nodes: [], edges: [] };
 
 function palette() {
@@ -104,6 +115,8 @@ function palette() {
     label: cssVar('--node-label'),
     border: cssVar('--node-border'),
     accent: cssVar('--accent'),
+    // Подложка под подписью имён, чтобы текст читался поверх рёбер.
+    bg: cssVar('--bg'),
   };
 }
 
@@ -116,6 +129,15 @@ function styleSheet() {
         'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center',
         'border-width': 1, 'border-color': p.border,
         'transition-property': 'opacity', 'transition-duration': '120ms'
+    }},
+    // Режим «имена на узлах»: подпись уезжает под узел и переносится по
+    // словам. Внутри кружка имя не помещается, а поверх соседей — не читается.
+    { selector: 'node.named', style: {
+        'label': 'data(labelFull)', 'text-valign': 'bottom',
+        'text-margin-y': 4, 'text-wrap': 'wrap', 'text-max-width': 120,
+        'font-size': 10, 'font-weight': 500,
+        'text-background-color': p.bg, 'text-background-opacity': .8,
+        'text-background-padding': 2
     }},
     { selector: 'edge', style: {
         'width': 'data(w)', 'line-color': 'data(color)',
@@ -184,6 +206,9 @@ function render() {
     ...nodes.map(n => ({ data: Object.assign({}, n.data, {
       w: 22 + 44 * Math.sqrt(n.data.size / maxSize),
       color: p[n.data.bias] || p.neutral,
+      // Подпись с именем — отдельным полем: переключатель меняет источник
+      // label, а не пересобирает граф.
+      labelFull: n.data.name ? `${n.data.label}\n${n.data.name}` : n.data.label,
     })})),
     ...edges.map(e => {
       const w = 1 + 6 * Math.sqrt(e.data.count / maxCount);
@@ -195,6 +220,7 @@ function render() {
 
   cy.elements().remove();
   cy.add(elements);
+  applyNames();
   runLayout();
 
   el('graphInfo').textContent =
@@ -203,11 +229,18 @@ function render() {
 }
 
 async function load() {
-  const params = new URLSearchParams({ run: el('run').value, min_count: 1 });
+  const params = new URLSearchParams({
+    run: el('run').value, min_count: 1, symbol: SYMBOL,
+  });
   const rarity = el('rarity').value;
   if (rarity) params.set('rarity', rarity);
   raw = await (await fetch('/api/graph?' + params)).json();
   render();
+}
+
+function applyNames() {
+  const on = el('showNames').checked;
+  cy.nodes().toggleClass('named', on);
 }
 
 function pct(x) { return x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%'; }
@@ -229,7 +262,9 @@ cy.on('tap', 'node', async (evt) => {
   focusOn(node.closedNeighborhood());
 
   const run = el('run').value;
-  const info = await (await fetch(`/api/graph/group/${d.group_id}?run=${run}`)).json();
+  const info = await (await fetch(
+    `/api/graph/group/${d.group_id}?run=${run}&symbol=${encodeURIComponent(SYMBOL)}`
+  )).json();
   const feats = Object.entries(d.top_features || {})
     .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
     .join('');
@@ -240,7 +275,8 @@ cy.on('tap', 'node', async (evt) => {
     '<tr><td class="muted">нет</td></tr>';
 
   el('details').innerHTML = `
-    <h3>Состояние ${d.label}</h3>
+    <h3>${SYMBOL} · состояние ${d.label}</h3>
+    ${d.name ? `<p class="state-name">${d.name}</p>` : ''}
     <p>Баров: <b>${d.size.toLocaleString('ru')}</b> (${pct(d.share)} истории)<br>
        Что бывало дальше: <b>${d.bias === 'long_skew' ? 'чаще рост' : d.bias === 'short_skew' ? 'чаще падение' : 'без перекоса'}</b>,
        рост в ${pct(d.up_share)} случаев<br>
@@ -290,6 +326,9 @@ el('findNode').addEventListener('input', (e) => {
 ['rarity', 'run'].forEach(id => el(id).addEventListener('change', load));
 ['topEdges', 'minCount', 'hideIsolated'].forEach(id => el(id).addEventListener('change', render));
 el('layout').addEventListener('change', runLayout);
+// Переключение имён не трогает раскладку: перестраивать граф ради подписи
+// значило бы каждый раз терять взаимное расположение узлов.
+el('showNames').addEventListener('change', applyNames);
 el('reload').addEventListener('click', load);
 el('fit').addEventListener('click', () => cy.fit(undefined, 30));
 

@@ -320,13 +320,23 @@ def _assemble(
 
     candidate = {
         # Identity
+        #
+        # symbol входит во ВСЕ три идентификатора, и это не косметика.
+        # transition_id, event_block_id и group_id — номера внутри графа одной
+        # монеты: модель состояний обучается на каждую монету отдельно, и
+        # «42->1» у BTC и у ETH — разные переходы. Без символа:
+        #   * configuration_hash совпадёт, и btc-graph отдаст ETH готовую
+        #     оценку BTC (дедуп по хэшу, TTL 30 мин) — кандидат при этом
+        #     выглядит нормально оценённым, по данным это не диагностируется;
+        #   * candidate_family_key совпадёт, и его фильтр схлопнет семьи двух
+        #     монет в одну, погасив кандидата одной из них.
         "candidate_id": _hash(symbol, ts, row["transition_id"], row["event_block_id"],
                               row["offset_min"]),
         "symbol": symbol,
-        "configuration_hash": _hash(row["transition_id"], row["event_block_id"],
+        "configuration_hash": _hash(symbol, row["transition_id"], row["event_block_id"],
                                     row["age_bucket"], row["entropy"], length=16),
         "candidate_family_key": (
-            f"{row['current_group_id']:g}|{row['transition_id']}"
+            f"{symbol}|{row['current_group_id']:g}|{row['transition_id']}"
             f"|{row['event_block_id']}|{bias}"
         ),
         "research_score": research_score(acc, t_rarity, e_rarity),

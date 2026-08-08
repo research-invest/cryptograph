@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}График · btc-graph-processing{% endblock %}
+{% block title %}График {{ symbol }} · crypto-graph{% endblock %}
 {% block main_class %}wide{% endblock %}
 
 {% block head %}
@@ -7,6 +7,9 @@
 {% endblock %}
 
 {% block content %}
+{# Свечи одной монеты, раскрашенные состояниями её же прогона. Несогласованность
+   ловится на стороне API (422), но подписать монету всё равно обязательно. #}
+<h1>График · {{ symbol }}</h1>
 <form class="toolbar" onsubmit="return false;">
   <label>Прогон
     <select id="run">
@@ -35,6 +38,13 @@
       <option value="none">не показывать</option>
     </select>
   </label>
+  <label>Номера состояний
+    <select id="stateLabels">
+      <option value="long" selected>на заметных отрезках</option>
+      <option value="all">на всех сменах</option>
+      <option value="none">не показывать</option>
+    </select>
+  </label>
   <div class="spacer"></div>
   <button id="reload" type="button" class="primary">Показать</button>
 </form>
@@ -54,7 +64,7 @@
   <div class="legend-group"><span class="legend-item" id="chartInfo"></span></div>
 </div>
 
-<div id="chart" class="chart"></div>
+<div id="chart" class="chart"><div id="tooltip" class="chart-tooltip"></div></div>
 <div id="legend" class="legend"></div>
 {% endblock %}
 
@@ -77,8 +87,61 @@ const chart = LightweightCharts.createChart(el('chart'), Object.assign({
 }, chartTheme()));
 const series = chart.addCandlestickSeries();
 
+// Состояния по номеру и бары по времени — для подсказки и подписей.
+let stateNames = new Map();
+let barsByTime = new Map();
+
+// Сколько баров подряд должно держаться состояние, чтобы получить подпись.
+// Порог адаптивный: на 1500 барах смен состояния под две сотни при медианном
+// отрезке в пять баров — подписать все значит залить график номерами. Целимся
+// примерно в 40 подписей независимо от масштаба окна.
+const LABELS_TARGET = 40;
+
+function stateMarkers(bars) {
+  const mode = el('stateLabels').value;
+  if (mode === 'none' || !bars.length) return [];
+
+  // Отрезки одного состояния: подпись ставится на ПЕРВЫЙ бар отрезка,
+  // то есть ровно там, где состояние сменилось.
+  const runs = [];
+  bars.forEach((b, i) => {
+    if (b.group_id === null || b.group_id === undefined) return;
+    const prev = runs[runs.length - 1];
+    if (prev && prev.group_id === b.group_id && prev.end === i - 1) prev.end = i;
+    else runs.push({ group_id: b.group_id, start: i, end: i, bar: b });
+  });
+
+  // Порог берём из фактического распределения длин, а не из «всего баров /
+  // сколько хотим подписей»: отрезки сильно разной длины (медиана около пяти
+  // баров при максимуме в семьдесят), и пропорция дала бы порог в десятки
+  // баров и пяток подписей вместо сорока.
+  let minLength = 1;
+  if (mode !== 'all') {
+    const lengths = runs.map(r => r.end - r.start + 1).sort((a, b) => b - a);
+    minLength = lengths[LABELS_TARGET - 1] || 1;
+  }
+
+  return runs
+    .filter(r => r.end - r.start + 1 >= minLength)
+    .map(r => ({
+      time: r.bar.time,
+      position: 'aboveBar',
+      // Цвет берём у самого состояния: номер и заливка свечей связываются
+      // глазом сразу, без сверки с легендой.
+      color: r.bar.color,
+      shape: 'circle',
+      text: String(r.group_id),
+    }));
+}
+
+// Монета страницы. Идёт в каждый запрос: без неё сервер взял бы прогон
+// монеты по умолчанию и молча раскрасил чужой график.
+const SYMBOL = {{ symbol | tojson }};
+
 async function load() {
-  const params = new URLSearchParams({ run: el('run').value, limit: el('limit').value });
+  const params = new URLSearchParams({
+    run: el('run').value, limit: el('limit').value, symbol: SYMBOL,
+  });
   const start = el('start').value;
   const end = el('end').value;
   const rating = el('rating').value;
@@ -86,12 +149,36 @@ async function load() {
   if (end) params.set('end', end);
   if (rating) params.set('rating', rating);
 
-  const data = await (await fetch('/api/chart?' + params)).json();
+  const response = await fetch('/api/chart?' + params);
+  const data = await response.json();
+  if (!response.ok) {
+    // 422 = монета и прогон не согласованы. Без явного сообщения это выглядит
+    // как «граф ничего не нашёл»: LEFT JOIN просто не совпадает по symbol.
+    el('legend').innerHTML =
+      `<span class="chip warn">${data.detail || 'ошибка запроса'}</span>`;
+    series.setData([]);
+    series.setMarkers([]);
+    return;
+  }
   series.setData(data.bars);
-  series.setMarkers(data.markers);
 
+  // Имена состояний под рукой: и подсказке, и подписям нужен номер → имя,
+  // а приходит он один раз в легенде.
+  stateNames = new Map(data.groups.map(g => [g.group_id, g.name || '']));
+  barsByTime = new Map(data.bars.map(b => [b.time, b]));
+
+  // Маркеры кандидатов и подписи состояний живут в одном списке серии,
+  // и он обязан быть отсортирован по времени.
+  const marks = data.markers.concat(stateMarkers(data.bars));
+  marks.sort((a, b) => a.time - b.time);
+  series.setMarkers(marks);
+
+  // Имя состояния в легенде: «состояние 7» само по себе ничего не значит,
+  // а сверяться с таблицей ради каждого цвета никто не станет.
   el('legend').innerHTML = data.groups.map(g =>
-    `<span class="chip"><i style="background:${g.color}"></i>состояние ${g.group_id}</span>`
+    `<span class="chip" title="состояние ${g.group_id}${g.name ? ': ' + g.name : ''}">` +
+    `<i style="background:${g.color}"></i>${g.group_id}` +
+    `${g.name ? ' <span class="chip-name">(' + g.name + ')</span>' : ''}</span>`
   ).join('');
   // Про обрезку маркеров нужно сказать вслух: иначе «кандидата нет на графике»
   // неотличимо от «кандидат не выпущен».
@@ -103,8 +190,46 @@ async function load() {
   chart.timeScale().fitContent();
 }
 
+// ─── Подсказка при наведении ────────────────────────────────────────────────
+// Цветов на графике десятки, часть похожа между собой, и «угадай состояние
+// по оттенку» — плохая механика. Наведение отвечает точно.
+chart.subscribeCrosshairMove((param) => {
+  const tooltip = el('tooltip');
+  if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+    tooltip.style.display = 'none';
+    return;
+  }
+  const bar = barsByTime.get(param.time);
+  if (!bar || bar.group_id === null || bar.group_id === undefined) {
+    tooltip.style.display = 'none';
+    return;
+  }
+
+  // Одна строка: цвет, номер, имя, переход. Время не дублируем — его и так
+  // показывает подпись оси под крестиком.
+  const name = stateNames.get(bar.group_id) || '';
+  const sep = '<span class="tt-sep">·</span>';
+  tooltip.innerHTML =
+    `<i style="background:${bar.color}"></i><b>${bar.group_id}</b>` +
+    (name ? sep + `<span class="tt-name">${name}</span>` : '') +
+    (bar.transition_id
+      ? sep + `<span class="tt-tr">переход ${bar.transition_id}</span>` : '');
+
+  // Держим подсказку в пределах области графика, иначе у правого края
+  // она уезжает за границу и обрезается. Ширину меряем по факту: содержимое
+  // разной длины, а фиксированная ширина заставила бы текст переноситься —
+  // и высота снова начала бы скакать.
+  tooltip.style.display = 'block';
+  const box = el('chart').getBoundingClientRect();
+  const width = tooltip.offsetWidth;
+  const x = Math.min(Math.max(param.point.x + 16, 8), Math.max(8, box.width - width - 8));
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = Math.max(8, param.point.y - 34) + 'px';
+});
+
 el('reload').addEventListener('click', load);
-['run', 'limit', 'rating'].forEach(id => el(id).addEventListener('change', load));
+['run', 'limit', 'rating', 'stateLabels'].forEach(
+  id => el(id).addEventListener('change', load));
 
 // Тема графика задаётся опциями, а не CSS — перекрашиваем вручную.
 window.addEventListener('btcproc:theme', () => chart.applyOptions(chartTheme()));

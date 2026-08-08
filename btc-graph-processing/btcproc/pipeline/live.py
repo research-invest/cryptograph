@@ -13,7 +13,7 @@ import time
 
 import pandas as pd
 
-from btcproc import config
+from btcproc import config, symbols
 from btcproc.candidates import builder as cand
 from btcproc.candidates.outcomes import compute_outcomes
 from btcproc.db import repo, runs
@@ -86,16 +86,32 @@ def run_live(
     lookback_minutes=None — продолжить с последнего выпущенного кандидата
     (см. resolve_cutoff). Число — жёсткое окно в минутах от последнего бара.
     """
-    symbol = symbol or config.data.symbol
+    spec = symbols.resolve(symbol)
+    symbol = spec.ticker
     started = time.time()
 
+    # Модель ищется среди прогонов ЭТОЙ монеты. Без фильтра live по ETH взял бы
+    # модель последнего train'а вообще — то есть разметил бы бары ETH
+    # состояниями BTC, и обнаружилось бы это только по бессмысленным кандидатам.
     source = (
-        runs.get_run(model_run_id) if model_run_id else runs.latest_completed_run("train")
+        runs.get_run(model_run_id) if model_run_id
+        else runs.latest_completed_run("train", symbol)
     )
     if not source:
         raise RuntimeError(
-            "Нет обученной модели состояний — сначала выполни полный прогон (train)."
+            f"Нет обученной модели состояний для {symbol} — выполни "
+            f"train --symbol {symbol}."
         )
+
+    # Явно переданный model_run обязан принадлежать той же монете: центроиды
+    # обучены в пространстве признаков конкретного инструмента.
+    run_symbol = source.get("symbol")
+    if run_symbol and run_symbol != symbol:
+        raise RuntimeError(
+            f"Прогон #{source['run_id']} обучен на {run_symbol}, а live запущен "
+            f"для {symbol}. Модели состояний между монетами несопоставимы."
+        )
+
     model_run_id = int(source["run_id"])
     model = repo.load_state_model(model_run_id)
     if model is None:
@@ -104,12 +120,14 @@ def run_live(
     run_id = runs.start_run(
         "live",
         {
+            "symbol": symbol,
             "model_run_id": model_run_id,
             "lookback_minutes": lookback_minutes or "auto",
             "max_lookback_days": max_lookback_days,
         },
+        symbol=symbol,
     )
-    stats: dict = {"run_id": run_id, "model_run_id": model_run_id}
+    stats: dict = {"run_id": run_id, "symbol": symbol, "model_run_id": model_run_id}
 
     try:
         runs.log(run_id, "Добор свежих баров", stage="ingest", progress=0.1)

@@ -1,8 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Прогоны · btc-graph-processing{% endblock %}
+{% block title %}Прогоны · crypto-graph{% endblock %}
 
 {% block content %}
 <h1>Прогоны</h1>
+
+{# Один прогон = одна монета: модель состояний обучается на каждую отдельно.
+   «Все активные» разворачивается в последовательность независимых прогонов. #}
+{% macro symbol_field(name='symbol') %}
+  <label>Монета
+    <select name="{{ name }}">
+      {% for ticker in symbols %}
+        <option value="{{ ticker }}" {{ 'selected' if ticker == symbol }}>{{ ticker }}</option>
+      {% endfor %}
+      <option value="all">— все активные —</option>
+    </select>
+  </label>
+{% endmacro %}
 
 <section class="split">
   <form class="panel" method="post" action="/runs/train">
@@ -10,30 +23,36 @@
     <p class="hint">
       Качает историю, считает признаки и события, переобучает состояния,
       строит граф, собирает кандидатов и отправляет их в btc-graph.
-      Занимает десятки минут.
+      Занимает десятки минут <em>на монету</em>.
     </p>
+    {{ symbol_field() }}
     <label><input type="checkbox" name="ingest" value="true" checked> качать историю Binance</label>
     <label><input type="checkbox" name="emit" value="true" checked> отправлять кандидатов в btc-graph</label>
     <label>С даты <input type="date" name="start"></label>
     <label>По дату <input type="date" name="end"></label>
-    <button type="submit" {{ 'disabled' if active_run }}>Запустить</button>
+    <button type="submit" {{ 'disabled' if at_capacity }}>Запустить</button>
   </form>
 
   <form class="panel" method="post" action="/runs/live">
     <h2>Инкрементальный прогон</h2>
     <p class="hint">
-      Добирает свежие бары и размечает их уже обученной моделью. Состояния
-      не переобучаются — граф в btc-graph остаётся сопоставимым.
+      Добирает свежие бары и размечает их уже обученной моделью монеты.
+      Состояния не переобучаются — граф в btc-graph остаётся сопоставимым.
     </p>
+    {{ symbol_field() }}
     <label>Свежесть, минут <input type="number" name="lookback" value="240" min="15" step="15"></label>
     <label><input type="checkbox" name="emit" value="true" checked> отправлять кандидатов</label>
-    <button type="submit" {{ 'disabled' if active_run }}>Запустить</button>
+    <button type="submit" {{ 'disabled' if at_capacity }}>Запустить</button>
   </form>
 </section>
 
-{% if active_run %}
+{% if active_runs %}
 <div class="banner">
-  Идёт прогон #{{ active_run.run_id }} — запуск новых заблокирован.
+  {# Прогоны разных монет идут параллельно и друг другу не мешают. Ограничен
+     только их общий счёт: каждый занимает ядро на кластеризации. #}
+  Идут прогоны: {% for run in active_runs %}#{{ run.run_id }}&nbsp;{{ run.symbol or '?' }}{{ ', ' if not loop.last }}{% endfor %}
+  ({{ active_runs|length }} из {{ max_concurrent }} допустимых одновременно).
+  {% if at_capacity %}Запуск новых заблокирован до окончания.{% endif %}
 </div>
 {% endif %}
 
