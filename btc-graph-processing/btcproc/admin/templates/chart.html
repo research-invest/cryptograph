@@ -93,8 +93,13 @@ async function load() {
   el('legend').innerHTML = data.groups.map(g =>
     `<span class="chip"><i style="background:${g.color}"></i>состояние ${g.group_id}</span>`
   ).join('');
+  // Про обрезку маркеров нужно сказать вслух: иначе «кандидата нет на графике»
+  // неотличимо от «кандидат не выпущен».
+  const cut = data.markers_truncated
+    ? ' — показаны только последние, сузьте период'
+    : '';
   el('chartInfo').textContent =
-    `${data.bars.length} баров, ${data.markers.length} кандидатов, ${data.groups.length} состояний в окне`;
+    `${data.bars.length} баров, ${data.markers.length} кандидатов${cut}, ${data.groups.length} состояний в окне`;
   chart.timeScale().fitContent();
 }
 

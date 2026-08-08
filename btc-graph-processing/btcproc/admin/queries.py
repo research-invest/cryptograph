@@ -12,6 +12,11 @@ from btcproc import config
 from btcproc.db import runs as runs_repo
 from btcproc.db.session import fetch_all, fetch_one
 
+# Потолок маркеров на графике: больше пятисот стрелок всё равно сливаются в
+# кашу и перекрывают раскраску состояний. Факт обрезки отдаётся наружу
+# (`markers_truncated`) — молча терять кандидатов нельзя.
+MARKER_LIMIT = 500
+
 
 def overview() -> dict:
     """Сводка для дашборда."""
@@ -110,16 +115,23 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
     if end:
         sql += " AND o.ts <= %s"
         params.append(end)
-    sql += " ORDER BY o.ts DESC LIMIT %s"
+    # Лимит всегда режет диапазон с одного конца — важно, с какого. Если задана
+    # нижняя граница, окно отсчитывается от неё вперёд: при сортировке DESC
+    # оставались последние N баров диапазона, и начало заданного периода молча
+    # пропадало (запрос с 1 июля отдавал бары с 15-го). Без start смысл обратный
+    # — нужны свежие бары, поэтому берём с конца.
+    sql += " ORDER BY o.ts ASC LIMIT %s" if start else " ORDER BY o.ts DESC LIMIT %s"
     params.append(limit)
 
-    bars = list(reversed(fetch_all(sql, params)))
+    rows = fetch_all(sql, params)
+    bars = rows if start else list(reversed(rows))
     if not bars:
-        return {"bars": [], "markers": [], "groups": []}
+        return {"bars": [], "markers": [], "groups": [], "markers_truncated": False}
 
     first_ts, last_ts = bars[0]["ts"], bars[-1]["ts"]
     # rating="none" — маркеры не нужны вовсе: на длинном окне их сотни,
     # и они перекрывают саму раскраску состояний.
+    truncated = False
     if rating == "none":
         candidates = []
     else:
@@ -131,8 +143,16 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
         if rating:
             sql_c += " AND rating = ANY(%s)"
             params_c.append([r.strip() for r in rating.split(",") if r.strip()])
-        sql_c += " ORDER BY ts LIMIT 500"
-        candidates = fetch_all(sql_c, params_c)
+        # DESC, а не ASC: при сортировке по возрастанию лимит отрезал самые
+        # свежие маркеры — на окне в 5000 баров свечи шли до сегодня, а стрелки
+        # обрывались двумя неделями раньше, и выглядело это как «кандидатов нет».
+        # Берём последние MARKER_LIMIT, лишнюю строку — чтобы знать про обрезку.
+        sql_c += " ORDER BY ts DESC LIMIT %s"
+        params_c.append(MARKER_LIMIT + 1)
+        rows_c = fetch_all(sql_c, params_c)
+        truncated = len(rows_c) > MARKER_LIMIT
+        # lightweight-charts требует маркеры по возрастанию времени.
+        candidates = list(reversed(rows_c[:MARKER_LIMIT]))
 
     group_ids = sorted({b["group_id"] for b in bars if b["group_id"] is not None})
     palette = {gid: _color(i, len(group_ids)) for i, gid in enumerate(group_ids)}
@@ -164,6 +184,7 @@ def chart_data(run_id: int, start: str | None = None, end: str | None = None,
         "bars": out_bars,
         "markers": markers,
         "groups": [{"group_id": gid, "color": palette[gid]} for gid in group_ids],
+        "markers_truncated": truncated,
     }
 
 
