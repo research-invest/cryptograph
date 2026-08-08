@@ -83,6 +83,16 @@ class DataConfig:
     history_start: str = _env("HISTORY_START", "2017-08-01")
     horizon: str = _env("HORIZON", "24h")
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "./data")))
+    # Эндпоинт для добора свежего хвоста баров. Вынесен в окружение, потому
+    # что api.binance.com отвечает 451 Unavailable For Legal Reasons из ряда
+    # юрисдикций (в частности из США), и на таком хосте live не работает вовсе:
+    # месячные дампы с data.binance.vision качаются, а последние часы — нет.
+    # Замена — data-api.binance.vision: тот же /api/v3/klines, публичный,
+    # без ключей, отвечает отовсюду. Дефолт оставлен прежним, чтобы уже
+    # работающие установки не поменяли источник данных молча.
+    binance_rest_url: str = _env(
+        "BINANCE_REST_URL", "https://api.binance.com/api/v3/klines"
+    )
 
     @property
     def base_minutes(self) -> int:

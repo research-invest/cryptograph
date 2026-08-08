@@ -9,9 +9,10 @@
 klines. Это на порядок быстрее REST (вся история 15m с 2017 — несколько минут
 против часов постраничного опроса) и не упирается в rate-limit.
 
-Свежий хвост (текущий месяц и последние часы) добирается через REST
-api.binance.com, потому что месячный дамп появляется только после закрытия
-месяца.
+Свежий хвост (текущий месяц и последние часы) добирается через REST, потому
+что месячный дамп появляется только после закрытия месяца. Адрес REST задаётся
+переменной BINANCE_REST_URL: api.binance.com отвечает 451 из ряда юрисдикций,
+и там его меняют на data-api.binance.vision.
 
 Старшие таймфреймы не качаются отдельно — они агрегируются из базового.
 Так исключены расхождения между ТФ на границах баров.
@@ -36,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 VISION_URL = "https://data.binance.vision/data/spot/monthly/klines/{sym}/{tf}/{sym}-{tf}-{ym}.zip"
 DAILY_URL = "https://data.binance.vision/data/spot/daily/klines/{sym}/{tf}/{sym}-{tf}-{ymd}.zip"
-REST_URL = "https://api.binance.com/api/v3/klines"
+# Адрес настраиваемый: из США api.binance.com отвечает 451, и хвост баров
+# не добирается вовсе. Подробности и альтернатива — в DataConfig.
+REST_URL = config.data.binance_rest_url
 
 # Порядок колонок в CSV Binance.
 KLINE_COLUMNS = [
