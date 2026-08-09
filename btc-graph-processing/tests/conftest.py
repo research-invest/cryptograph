@@ -139,3 +139,20 @@ def states_and_features(pipeline_data) -> tuple:
         pipeline_data["features"],
         pipeline_data["outcomes"],
     )
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    """
+    monkeypatch на весь модуль.
+
+    Штатный `monkeypatch` пофункционный, а сборка признаков со включённым SMC
+    достаточно дорога, чтобы делать её один раз на файл. Отмена в конце
+    обязательна: `config.smc` — глобальный объект, и утёкшая подмена включила
+    бы SMC остальным тестам сессии, причём молча.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    patcher = MonkeyPatch()
+    yield patcher
+    patcher.undo()

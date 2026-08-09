@@ -11,6 +11,7 @@ import pandas as pd
 from btcproc import config
 from btcproc.db import runs as runs_repo
 from btcproc.db.session import fetch_all, fetch_one
+from btcproc.states import naming
 
 # Потолок маркеров на графике: больше пятисот стрелок всё равно сливаются в
 # кашу и перекрывают раскраску состояний. Факт обрезки отдаётся наружу
@@ -376,6 +377,99 @@ def transitions_table(run_id: int, limit: int = 200) -> list[dict]:
     )
 
 
+# ─── Фон состояния: контекстные атомы ───────────────────────────────────────
+#
+# Зачем это отдельно от top_features. Контекстные атомы (16 из них — SMC:
+# структура, имбалансы, блоки заказов, зоны ликвидности) в вектор признаков не
+# входят и в кластеризации не участвуют, поэтому в имя состояния и в
+# `top_features` попасть не могут в принципе — это другой канал. Но состояния
+# по ним всё равно различаются, и различие содержательное: «здесь цена втрое
+# чаще обычного сидит в премиальной зоне» — это про то же состояние, просто
+# сказанное другими словами.
+#
+# Считается как лифт: доля баров состояния с атомом, делённая на долю по всей
+# истории. 1.0 — атом встречается ровно как обычно, 2.0 — вдвое чаще.
+
+#: Атом показывается, только если он и заметен, и выражен. Пороги отсекают
+#: две разные ерунды: редкий атом даёт огромный лифт на десятке баров, а
+#: вездесущий (in_breaker сидит на 83% истории) даёт лифт 1.02 и не значит
+#: ничего.
+CONTEXT_MIN_SHARE = 0.05
+CONTEXT_MIN_LIFT = 1.25
+CONTEXT_TOP_N = 6
+
+_CONTEXT_SQL = """
+WITH labeled AS (
+    SELECT s.group_id, e.context_atoms
+    FROM bar_states s
+    JOIN bar_events e ON e.symbol = s.symbol AND e.ts = s.ts
+    WHERE s.symbol = %s AND s.run_id = %s AND e.context_atoms IS NOT NULL
+),
+per_group AS (SELECT group_id, count(*) AS bars FROM labeled GROUP BY 1),
+atom_group AS (
+    SELECT l.group_id, a.atom, count(*) AS n
+    FROM labeled l, unnest(l.context_atoms) AS a(atom)
+    GROUP BY 1, 2
+),
+-- Общая частота считается из уже посчитанного atom_group, а не вторым
+-- unnest'ом по всей истории: тот удваивал время запроса на ровном месте.
+atom_total AS (SELECT atom, sum(n) AS n FROM atom_group GROUP BY 1),
+totals AS (SELECT sum(bars) AS bars FROM per_group)
+SELECT ag.group_id,
+       ag.atom,
+       ag.n::float / pg.bars AS share,
+       (ag.n::float / pg.bars) / NULLIF(at.n::float / t.bars, 0) AS lift
+FROM atom_group ag
+JOIN per_group pg ON pg.group_id = ag.group_id
+JOIN atom_total at ON at.atom = ag.atom
+CROSS JOIN totals t
+ORDER BY ag.group_id, lift DESC
+"""
+
+#: Кэш «монета+модель → фон по состояниям». Запрос разворачивает массивы атомов
+#: на всей размеченной истории — около четырёх секунд на 300 тыс. баров, что
+#: недопустимо на каждый клик по узлу. Кэшировать при этом безопасно: разметка
+#: train-прогона после его завершения не меняется, и ключ включает run_id.
+_CONTEXT_CACHE: dict[tuple[str, int], dict[float, list[dict]]] = {}
+_CONTEXT_CACHE_LIMIT = 8
+
+
+def state_context_atoms(run_id: int, symbol: str) -> dict[float, list[dict]]:
+    """
+    Чем фон каждого состояния отличается от фона рынка в целом.
+
+    Возвращает {group_id: [{atom, share, lift}, ...]} — только выделяющиеся
+    атомы, от сильнейшего лифта. Состояния без выраженного фона в словаре
+    отсутствуют: пустой список и отсутствие ключа для UI одно и то же, а
+    хранить сорок пустых списков незачем.
+    """
+    key = (symbol, run_id)
+    if key in _CONTEXT_CACHE:
+        return _CONTEXT_CACHE[key]
+
+    result: dict[float, list[dict]] = {}
+    for row in fetch_all(_CONTEXT_SQL, (symbol, run_id)):
+        if row["share"] < CONTEXT_MIN_SHARE or (row["lift"] or 0) < CONTEXT_MIN_LIFT:
+            continue
+        bucket = result.setdefault(float(row["group_id"]), [])
+        if len(bucket) < CONTEXT_TOP_N:
+            bucket.append({
+                "atom": row["atom"],
+                # Подпись проставляется здесь, а не в шаблоне: словарь
+                # формулировок один на проект и живёт в naming.py.
+                "label": naming.label_for_atom(row["atom"]),
+                "share": float(row["share"]),
+                "lift": float(row["lift"]),
+            })
+
+    # Простое вытеснение вместо LRU: ключей единицы (монета × модель), а
+    # неограниченный рост в долгоживущем процессе админки — это утечка.
+    if len(_CONTEXT_CACHE) >= _CONTEXT_CACHE_LIMIT:
+        _CONTEXT_CACHE.pop(next(iter(_CONTEXT_CACHE)))
+    _CONTEXT_CACHE[key] = result
+    return result
+
+
 def group_detail(run_id: int, group_id: float) -> dict | None:
     """
     Узел графа. Монета не аргумент: run_id уже однозначно её задаёт
@@ -401,5 +495,11 @@ def group_detail(run_id: int, group_id: float) -> dict | None:
         "SELECT * FROM transitions WHERE run_id = %s AND prev_group_id = %s "
         "ORDER BY count DESC LIMIT 20",
         (run_id, group_id),
+    )
+    # Фон состояния. Отдаётся здесь, а не в graph_payload: запрос тяжёлый,
+    # а панель узла и так грузится по клику отдельным вызовом.
+    symbol = run_symbol(run_id)
+    node["context_atoms"] = (
+        state_context_atoms(run_id, symbol).get(float(group_id), []) if symbol else []
     )
     return node

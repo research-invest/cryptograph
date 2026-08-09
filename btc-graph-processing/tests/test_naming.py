@@ -80,15 +80,74 @@ def test_label_format():
     assert naming.label_for(7.0, "") == "7"
 
 
-def test_vocabulary_covers_only_real_features(features):
+@pytest.fixture(scope="module")
+def all_features(bars, context, monkeypatch_module):
+    """
+    Полный набор признаков — базовый плюс SMC.
+
+    Словарь имён обязан покрывать и то, и другое, поэтому сверяться с
+    набором, собранным при выключенном SMC, нельзя: половина проверки
+    просто не состоится. Флаги задаются ЯВНО — дефолты SMCConfig читаются
+    из окружения, и на сервере с SMC_ENABLED=true «умолчание» означает
+    другое (см. смысл фикстуры smc_off в test_smc.py).
+    """
+    from btcproc import config
+    from btcproc.features.builder import build_features
+
+    monkeypatch_module.setattr(
+        config, "smc", config.SMCConfig(enabled=True, features_enabled=True)
+    )
+    return build_features(bars, context)
+
+
+def test_vocabulary_covers_only_real_features(all_features):
     """
     Опечатка в имени признака делает строку словаря мёртвой: она никогда
     не совпадёт с ключом top_features, и это никак не проявится — просто
     подпись станет беднее. Сверяемся с настоящим набором признаков.
     """
     vocabulary = {f for _axis, mapping in naming.AXES for f in mapping}
-    unknown = vocabulary - set(features.columns)
+    unknown = vocabulary - set(all_features.columns)
     assert not unknown, f"словарь ссылается на несуществующие признаки: {sorted(unknown)}"
+
+
+def test_every_feature_has_a_phrase(all_features):
+    """
+    Обратное направление, и оно важнее первого.
+
+    Признак без формулировки не даёт ни ошибки, ни предупреждения — он просто
+    не участвует в подписи. Состояние, выделяющееся именно им, получает
+    «рынок около среднего», то есть подпись врёт: отличие есть, а сказано,
+    что его нет. Ровно так двенадцать SMC-признаков были бы невидимы в графе
+    после включения SMC_FEATURES_ENABLED.
+
+    Поэтому новый признак обязан либо получить формулировку, либо осознанно
+    попасть в _UNNAMED — молча остаться без имени он не может.
+    """
+    vocabulary = {f for _axis, mapping in naming.AXES for f in mapping}
+    uncovered = set(all_features.columns) - vocabulary - naming._UNNAMED
+
+    assert not uncovered, (
+        "признаки без формулировки — они молча выпадут из подписи состояния: "
+        f"{sorted(uncovered)}. Добавь их в naming.AXES или, если это осознанно, "
+        "в naming._UNNAMED с объяснением."
+    )
+
+
+def test_smc_features_are_named(all_features):
+    """
+    Проверка не ради полноты словаря (её делает тест выше), а ради того,
+    что подпись действительно собирается из SMC-величин, а не откатывается
+    в «рынок около среднего».
+    """
+    from btcproc.features import smc
+
+    name = naming.describe_state(
+        {"near_liquidity": 2.1, "premium_discount": -1.8, "ob_age_norm": 1.5}
+    )
+
+    assert name != "рынок около среднего"
+    assert set(smc.FEATURE_CANDIDATES) <= set(all_features.columns)
 
 
 def test_group_stats_produces_names(states_and_features):
@@ -101,3 +160,40 @@ def test_group_stats_produces_names(states_and_features):
     assert "name" in groups.columns
     assert groups["name"].notna().all()
     assert (groups["name"].str.len() > 0).all()
+
+
+# ── Подписи атомов ──────────────────────────────────────────────────────────
+
+
+def test_atom_labels_cover_all_atoms():
+    """
+    Атом без подписи уходит в интерфейс сырым идентификатором.
+
+    Это не падение и не ошибка — просто рядом с состоянием появляется
+    `sweep_low_reclaim`, и оператор читает его ровно так же, как читал бы
+    `group_id 42`. Ради этого всё и затевалось, поэтому проверяем полноту,
+    а не наличие «хоть каких-то» подписей.
+    """
+    from btcproc.features import events
+
+    uncovered = set(events.ATOM_FAMILY) - set(naming.ATOM_LABELS)
+
+    assert not uncovered, (
+        f"атомы без русской подписи: {sorted(uncovered)}. "
+        "Добавь их в naming.ATOM_LABELS."
+    )
+
+
+def test_atom_labels_have_no_strays():
+    """Обратное направление: опечатка в ключе делает подпись мёртвой."""
+    from btcproc.features import events
+
+    stray = set(naming.ATOM_LABELS) - set(events.ATOM_FAMILY)
+
+    assert not stray, f"подписи для несуществующих атомов: {sorted(stray)}"
+
+
+def test_unknown_atom_falls_back_to_its_id():
+    """Незнакомый атом не должен ломать панель — показываем как есть."""
+    assert naming.label_for_atom("нет_такого_атома") == "нет_такого_атома"
+    assert naming.label_for_atom("in_premium") == "в премиальной зоне"

@@ -485,6 +485,26 @@ def api_group(request: Request, group_id: float, run: str | None = None):
     return node
 
 
+@app.get("/api/graph/context")
+def api_graph_context(request: Request, run: str | None = None):
+    """
+    Фон состояний целиком: {group_id: [атомы]}.
+
+    Существует ради прогрева. Агрегат разворачивает массивы атомов по всей
+    размеченной истории и считается секундами; в панели узла он нужен сразу
+    по клику, поэтому страница графа дёргает эту ручку сразу после отрисовки
+    и результат выбрасывает. Дальше всё берётся из кэша.
+    """
+    symbol = current_symbol(request)
+    run_id = opt_int(run) or _latest_train_id(symbol)
+    if run_id is None:
+        return {}
+    root = runs_repo.model_root(run_id)
+    owner = queries.run_symbol(root) or symbol
+    return {str(gid): atoms
+            for gid, atoms in queries.state_context_atoms(root, owner).items()}
+
+
 @app.get("/api/chart")
 def api_chart(request: Request, run: str | None = None, start: str | None = None,
               end: str | None = None, limit: str | None = None,

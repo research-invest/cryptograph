@@ -246,6 +246,11 @@ async function load() {
   if (rarity) params.set('rarity', rarity);
   raw = await (await fetch('/api/graph?' + params)).json();
   render();
+  // Прогрев фона состояний: он считается секундами, а нужен по первому клику
+  // на узел. Намеренно без await и без обработки результата — граф уже
+  // отрисован, а сорвавшийся прогрев означает лишь ожидание при клике.
+  fetch(`/api/graph/context?run=${el('run').value}&symbol=${encodeURIComponent(SYMBOL)}`)
+    .catch(() => {});
 }
 
 function applyNames() {
@@ -278,6 +283,13 @@ cy.on('tap', 'node', async (evt) => {
   const feats = Object.entries(d.top_features || {})
     .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
     .join('');
+  // Атомы приходят из того же вызова, что и переходы: запрос тяжёлый, и в
+  // payload графа ему делать нечего. Подпись уже русская — словарь один на
+  // проект и живёт в naming.py, дублировать его в шаблоне нельзя.
+  const atoms = (info.context_atoms || [])
+    .map(a => `<li>${a.label} <span class="up">×${a.lift.toFixed(2)}</span>
+               <span class="muted">${pct(a.share)} баров</span></li>`)
+    .join('');
   const rows = (list) => list.map(t => `
     <tr><td><code>${t.transition_id}</code></td><td class="num">${t.count}</td>
         <td><span class="tag ${t.rarity}">${t.rarity}</span></td>
@@ -294,6 +306,10 @@ cy.on('tap', 'node', async (evt) => {
     <h4>Чем отличается от рынка в среднем</h4>
     <p class="muted" style="font-size:11px;margin:2px 0">Отклонение признака в стандартных отклонениях</p>
     <ul class="feats">${feats || '<li class="muted">нет данных</li>'}</ul>
+    <h4>Фон состояния</h4>
+    <p class="muted" style="font-size:11px;margin:2px 0">Контекстные атомы, включая Smart Money.
+       Во сколько раз чаще, чем в среднем по истории</p>
+    <ul class="feats">${atoms || '<li class="muted">фон как у рынка в целом</li>'}</ul>
     <h4>Входящие переходы</h4>
     <table><tbody>${rows(info.incoming || [])}</tbody></table>
     <h4>Исходящие переходы</h4>
