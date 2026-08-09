@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from src.config.profiles import ScoringProfile, get_profile
 from src.models.candidate import Candidate, ContextStatus, AgeBucket
-from src.scorer.candidate_scorer import score_candidate
+from src.scorer.candidate_scorer import ScoreBreakdown, score_candidate
 
 
 @dataclass
@@ -22,6 +22,35 @@ class ConflictReport:
     conflict_type: str
     candidate_ids: list[str]
     description: str
+
+
+def score_and_filter(
+    candidates: list[Candidate],
+    min_quality_score: float | None = None,
+    profiles: dict[str, ScoringProfile] | None = None,
+) -> list[tuple[Candidate, ScoreBreakdown]]:
+    """
+    То же, что `filter_candidates`, но отдаёт полную разбивку оценки.
+
+    Нужна батчевому pipeline: он всё равно посчитает выжившим тот же score
+    ещё раз внутри `_evaluate`, а скоринг не бесплатный — у монеты со своим
+    профилем он делает два прохода по осям (профильный и baseline). На батче
+    в тысячи кандидатов это ровно вдвое больше работы, чем требуется.
+    """
+    scored = []
+    for c in candidates:
+        profile = (profiles or {}).get(c.symbol) or get_profile(c.symbol)
+        threshold = (
+            min_quality_score
+            if min_quality_score is not None
+            else profile.batch.min_quality_score
+        )
+        breakdown = score_candidate(c, profile)
+        if breakdown.total >= threshold:
+            scored.append((c, breakdown))
+
+    scored.sort(key=lambda x: x[1].total, reverse=True)
+    return scored
 
 
 def filter_candidates(
@@ -40,20 +69,10 @@ def filter_candidates(
     profiles — заранее отрезолвленные профили по символу; pipeline передаёт их,
     чтобы перезагрузка конфига посреди батча не смешала две калибровки.
     """
-    scored = []
-    for c in candidates:
-        profile = (profiles or {}).get(c.symbol) or get_profile(c.symbol)
-        threshold = (
-            min_quality_score
-            if min_quality_score is not None
-            else profile.batch.min_quality_score
-        )
-        breakdown = score_candidate(c, profile)
-        if breakdown.total >= threshold:
-            scored.append((c, breakdown.total))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored
+    return [
+        (c, b.total)
+        for c, b in score_and_filter(candidates, min_quality_score, profiles)
+    ]
 
 
 def _fresh_bonus(candidate: Candidate, profiles: dict[str, ScoringProfile] | None) -> float:

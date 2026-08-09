@@ -45,8 +45,10 @@ def _entropy_to_float(entropy: TrajectoryEntropy) -> float:
 
 def build_embedding(candidate: Candidate) -> list[float]:
     """
-    Возвращает список из 384 float для хранения в pgvector.
+    Возвращает список из VECTOR_DIM (=32) float для хранения в pgvector.
     Порядок признаков фиксирован — нельзя менять без пересчёта всех embeddings.
+    Размерность когда-то была 384; её ужала миграция
+    alembic/versions/003_shrink_embedding_dim.py.
     """
     features = [
         candidate.research_score,

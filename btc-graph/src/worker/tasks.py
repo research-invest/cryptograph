@@ -60,9 +60,19 @@ def process_stream_batch(batch_size: int = 50) -> dict:
     резолвится уже внутри pipeline.
     """
     try:
-        from src.cache.redis_cache import read_pending_candidates, ack_candidate
+        from src.cache.redis_cache import (
+            ack_candidate,
+            read_pending_candidates,
+            reclaim_stale_candidates,
+        )
 
-        messages = read_pending_candidates(count=batch_size)
+        # Сначала PEL: сообщения, выданные группе, но не подтверждённые, через
+        # «>» не придут больше никогда. Диспетчер ACK-ает после apply_async, и
+        # падение между этими шагами роняло кандидата в PEL навсегда.
+        reclaimed = reclaim_stale_candidates(count=batch_size)
+        messages = reclaimed + read_pending_candidates(
+            count=max(batch_size - len(reclaimed), 1)
+        )
         if not messages:
             return {"dispatched": 0}
 
@@ -75,8 +85,11 @@ def process_stream_batch(batch_size: int = 50) -> dict:
             ack_candidate(msg["id"])
             dispatched += 1
 
-        logger.info("Dispatched %d candidates from stream", dispatched)
-        return {"dispatched": dispatched}
+        logger.info(
+            "Dispatched %d candidates from stream (из них %d из PEL)",
+            dispatched, len(reclaimed),
+        )
+        return {"dispatched": dispatched, "reclaimed": len(reclaimed)}
     except Exception as exc:
         logger.error("Stream batch processing failed: %s", exc)
         return {"dispatched": 0, "error": str(exc)}

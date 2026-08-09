@@ -1,7 +1,8 @@
 """
 Neo4j репозиторий: граф состояний рынка.
 Узлы: MarketGroup (symbol, group_id)
-Рёбра: TRANSITION (symbol, transition_id, rarity, count, avg_return)
+Рёбра: TRANSITION (symbol, transition_id, rarity, count, avg_win_rate,
+        avg_quality_score)
 
 Ключ узла — ПАРА (symbol, group_id), и это не украшательство. `group_id`
 осмыслен только внутри графа одной монеты: генератор обучает модель состояний
@@ -110,6 +111,14 @@ def _upsert_tx(tx, candidate: Candidate, evaluation: CandidateEvaluation) -> Non
     #
     # symbol дублируется на ребро: так запросы «все переходы монеты» не обязаны
     # обходить узлы, а данные остаются читаемыми при взгляде на одно ребро.
+    #
+    # avg_win_rate называется так, потому что в нём лежит именно win rate.
+    # До 2026-08-09 свойство называлось avg_horizon_return, а значение
+    # подставлялось то же самое: любой Cypher-запрос «средний исход на
+    # горизонте» молча получал не ту величину. Переименовано вместе с
+    # миграцией существующих рёбер (scripts/migrate_graph_avg_win_rate.cypher).
+    # Настоящего среднего исхода на ребре нет — если понадобится, это новое
+    # свойство и новое значение из evaluation, а не переиспользование этого.
     tx.run(
         """
         MATCH (src:MarketGroup {symbol: $symbol, group_id: $from_id})
@@ -118,11 +127,11 @@ def _upsert_tx(tx, candidate: Candidate, evaluation: CandidateEvaluation) -> Non
         ON CREATE SET
             t.rarity = $rarity,
             t.count = 1,
-            t.avg_horizon_return = $win_rate,
+            t.avg_win_rate = $win_rate,
             t.avg_quality_score = $qs
         ON MATCH SET
             t.count = t.count + 1,
-            t.avg_horizon_return = (t.avg_horizon_return * t.count + $win_rate) / (t.count + 1),
+            t.avg_win_rate       = (t.avg_win_rate       * t.count + $win_rate) / (t.count + 1),
             t.avg_quality_score  = (t.avg_quality_score  * t.count + $qs)       / (t.count + 1),
             t.rarity = $rarity
         """,
@@ -175,7 +184,7 @@ def _find_transitions_tx(
         WHERE t.rarity IN $rarity_filter
         RETURN src.group_id AS from_group, t.transition_id AS transition_id,
                t.rarity AS rarity, t.count AS count,
-               t.avg_horizon_return AS avg_return,
+               t.avg_win_rate AS avg_win_rate,
                t.avg_quality_score AS avg_quality_score
         ORDER BY t.count DESC
         """,

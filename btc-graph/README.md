@@ -688,7 +688,7 @@ curl -X POST http://localhost:8000/evaluate/json \
 | **`hourly_candidate_stats`, `daily_group_stats`** | Continuous aggregates поверх `candidate_events` | Быстрая аналитика без сканирования сырых данных |
 | **PostgreSQL `market_events`** | Hypertable под сырые рыночные события | Создана миграцией, но **кодом не используется** — задел на будущее |
 | **pgvector `candidates.embedding`** | Вектор 32 (значимы первые 18 признаков, остальное — запас), HNSW-индекс, cosine | Поиск исторических аналогов текущего кандидата |
-| **Neo4j** | Узлы `MarketGroup {group_id}`, рёбра `TRANSITION {transition_id, rarity, count, avg_horizon_return, avg_quality_score}` | Топология рынка: какие переходы куда ведут и насколько они хороши |
+| **Neo4j** | Узлы `MarketGroup {group_id}`, рёбра `TRANSITION {transition_id, rarity, count, avg_win_rate, avg_quality_score}` | Топология рынка: какие переходы куда ведут и насколько они хороши |
 | **Redis** | `{symbol}:candidate:hash:*` (dedup, TTL 30 мин), `{symbol}:evaluation:*` (кэш оценок, TTL 30 мин), каналы `candidates:strong:{symbol}` и `candidates:strong:all`, стрим `candidates:stream` | Скорость, защита от повторной обработки, приём потока |
 
 Дедупликация работает так: при `save=true` и наличии `configuration_hash` pipeline

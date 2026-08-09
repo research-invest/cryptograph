@@ -65,7 +65,11 @@ services:
       # Именно поэтому пороги живут в YAML, а не в коде.
       - ./config:/app/config:ro
     ports:
-      - "8000:8000"
+      # Только петля, как у postgres/redis/neo4j: API без аутентификации и
+      # rate-limit, а use_llm=true тратит токены Anthropic по анонимному
+      # запросу. Публикация на 0.0.0.0 отдавала всё это в интернет на любой
+      # машине, развёрнутой мимо deploy-скриптов. Наружу — только через прокси.
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -130,7 +134,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       NEO4J_URI: bolt://neo4j:7687
     ports:
-      - "5555:5555"
+      # Flower тоже без аутентификации — см. комментарий у api.
+      - "127.0.0.1:5555:5555"
     depends_on:
       - redis
     restart: unless-stopped

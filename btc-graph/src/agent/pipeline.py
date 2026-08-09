@@ -12,7 +12,7 @@ from src.config.profiles import ScoringProfile, get_profile
 from src.models.candidate import Candidate, CandidateEvaluation
 from src.parser.candidate_parser import parse_candidate, parse_candidates
 from src.validator.candidate_validator import validate_candidate
-from src.scorer.candidate_scorer import score_candidate
+from src.scorer.candidate_scorer import ScoreBreakdown, score_candidate
 from src.agent.deterministic import deterministic_evaluation
 from src.agent.report_formatter import format_report
 
@@ -31,6 +31,7 @@ def _evaluate(
     use_llm: bool,
     llm_model: str,
     profile: ScoringProfile | None = None,
+    score: ScoreBreakdown | None = None,
 ) -> CandidateEvaluation:
     """
     Валидация → скоринг → объяснение (LLM или детерминированное).
@@ -38,11 +39,18 @@ def _evaluate(
     Профиль резолвится ОДИН раз и прокидывается во все узлы. Иначе
     POST /config/reload посреди батча дал бы кандидата, у которого score
     посчитан одной версией калибровки, а rating и тексты — другой.
+
+    `score` — уже посчитанная разбивка. Её передаёт батчевый путь: фильтр
+    считает score всем кандидатам, и пересчитывать его выжившим значит делать
+    двойную работу (у монеты со своим профилем скоринг ещё и двухпроходный —
+    профильный плюс baseline). Передавать сюда разбивку, посчитанную ДРУГИМ
+    профилем, нельзя: rating и тексты разъедутся со score.
     """
     profile = profile if profile is not None else get_profile(candidate.symbol)
 
     warning_flags = validate_candidate(candidate, profile)
-    score = score_candidate(candidate, profile)
+    if score is None:
+        score = score_candidate(candidate, profile)
 
     if use_llm:
         # Импорт ленивый: без use_llm пакет anthropic не нужен вовсе.
@@ -104,20 +112,28 @@ def run_batch_pipeline(
     до первой оценки: hot-reload конфига посреди батча не должен приводить
     к тому, что часть кандидатов посчитана старой калибровкой, часть новой.
     """
-    from src.filters.candidate_filter import filter_candidates, select_best_per_family
+    from src.filters.candidate_filter import score_and_filter, select_best_per_family
 
     candidates = parse_candidates(raw)
     profiles = {c.symbol: get_profile(c.symbol) for c in candidates}
 
-    scored = filter_candidates(
+    scored = score_and_filter(
         candidates, min_quality_score=min_quality_score, profiles=profiles
     )
-    best = select_best_per_family(scored, profiles=profiles)
+    # Разбивки, посчитанные фильтром, переиспользуются в _evaluate. Ключ —
+    # candidate_id: он уникален в пределах монеты, symbol добавлен потому, что
+    # батч бывает мультимонетным.
+    breakdowns = {(c.symbol, c.candidate_id): b for c, b in scored}
+    best = select_best_per_family(
+        [(c, b.total) for c, b in scored], profiles=profiles
+    )
 
     results = []
     for candidate, _ in best:
         evaluation = _evaluate(
-            candidate, use_llm, llm_model, profile=profiles.get(candidate.symbol)
+            candidate, use_llm, llm_model,
+            profile=profiles.get(candidate.symbol),
+            score=breakdowns.get((candidate.symbol, candidate.candidate_id)),
         )
         if save:
             _persist(candidate, evaluation)

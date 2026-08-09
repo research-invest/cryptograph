@@ -170,6 +170,67 @@ def _ensure_group() -> None:
             raise
 
 
+# Сколько сообщение может числиться выданным, но не подтверждённым, прежде чем
+# считать читателя мёртвым. Диспетчер ACK-ает сразу после apply_async, то есть
+# нормальный цикл занимает миллисекунды; минута — заведомо больше него и
+# заведомо меньше того, чтобы кандидат протух.
+STALE_PENDING_MS = 60_000
+
+
+def _parse_entries(entries) -> list[dict]:
+    """Пары (id, fields) из стрима → список {"id", "payload"}."""
+    result = []
+    for msg_id, fields in entries:
+        try:
+            payload = json.loads(fields["payload"])
+        except (KeyError, ValueError, TypeError):
+            logger.error("Битое сообщение %s в стриме — удаляем", msg_id)
+            ack_candidate(msg_id)
+            continue
+        result.append({"id": msg_id, "payload": payload})
+    return result
+
+
+def reclaim_stale_candidates(count: int = 10) -> list[dict]:
+    """
+    Забирает сообщения, зависшие в Pending Entries List.
+
+    XREADGROUP с «>» отдаёт только НОВЫЕ сообщения. Всё, что группа уже выдала,
+    но не получила XACK, остаётся в PEL и через «>» не придёт больше никогда.
+    А выдача и подтверждение у диспетчера разнесены: он читает, ставит задачу
+    в очередь Celery и только потом ACK-ает. Падение процесса между этими
+    шагами — и кандидаты теряются молча, ни в одной очереди их уже нет.
+
+    XAUTOCLAIM переназначает такие сообщения тому же консюмеру: повторный
+    диспатч безопаснее потери, оценка кандидата идемпотентна (candidate_id
+    детерминирован, запись идёт upsert'ом).
+    """
+    try:
+        _ensure_group()
+        response = get_client().xautoclaim(
+            STREAM_KEY, STREAM_GROUP, STREAM_CONSUMER,
+            min_idle_time=STALE_PENDING_MS, start_id="0-0", count=count,
+        )
+        # Ответ — (next_start_id, entries) в redis-py 4.x и
+        # (next_start_id, entries, deleted) в 5.x/Redis 7.
+        entries = response[1] if isinstance(response, (tuple, list)) and len(response) > 1 else []
+        reclaimed = _parse_entries(entries)
+        if reclaimed:
+            logger.warning(
+                "Возвращено %d зависших сообщений из PEL — предыдущий "
+                "диспетчер умер между чтением и подтверждением",
+                len(reclaimed),
+            )
+        return reclaimed
+    except redis.RedisError:
+        logger.warning("Не удалось забрать зависшие сообщения", exc_info=True)
+        return []
+    except AttributeError:
+        # Очень старый клиент без xautoclaim: не повод ронять диспетчер.
+        logger.warning("Клиент Redis не умеет XAUTOCLAIM — PEL не разбирается")
+        return []
+
+
 def read_pending_candidates(count: int = 10, block_ms: int = 0) -> list[dict]:
     """
     Читает до count кандидатов из стрима через consumer group.
@@ -188,14 +249,7 @@ def read_pending_candidates(count: int = 10, block_ms: int = 0) -> list[dict]:
             return []
         result = []
         for _, entries in messages:
-            for msg_id, fields in entries:
-                try:
-                    payload = json.loads(fields["payload"])
-                except (KeyError, ValueError):
-                    logger.error("Битое сообщение %s в стриме — удаляем", msg_id)
-                    ack_candidate(msg_id)
-                    continue
-                result.append({"id": msg_id, "payload": payload})
+            result.extend(_parse_entries(entries))
         return result
     except redis.RedisError:
         logger.warning("Не удалось прочитать очередь кандидатов", exc_info=True)
