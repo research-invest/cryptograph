@@ -39,6 +39,18 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw else default
 
 
+def _env_float_optional(name: str) -> float | None:
+    """
+    Как `_env_float`, но умеет вернуть «не задано».
+
+    Обычный `_env_float` всегда отдаёт число, и через окружение невозможно
+    выразить «пусть решает приёмник». Для порогов, у которых `None` — это
+    самостоятельный режим (а не синоним нуля), нужен именно такой парсер.
+    """
+    raw = _env(name)
+    return float(raw) if raw else None
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = _env(name).lower()
     if not raw:
@@ -121,6 +133,19 @@ class DBConfig:
     )
     schema: str = _env("PG_SCHEMA", "processing")
     redis_url: str = _env("REDIS_URL", "redis://localhost:6379/1")
+
+
+@dataclass(frozen=True)
+class RunsConfig:
+    """Учёт прогонов: как отличить идущий прогон от убитого."""
+
+    # Сколько прогон может молчать, прежде чем считаться мёртвым.
+    # `update_run` трогает heartbeat на каждой стадии, а самая долгая стадия
+    # (кластеризация в train на полной истории) укладывается в десятки минут.
+    # Два часа — заведомо больше неё и заведомо меньше получасового интервала
+    # крона, помноженного на терпение оператора. Занижать опасно: живой train
+    # будет объявлен мёртвым и его слот отдадут второму прогону той же монеты.
+    stale_after_minutes: int = _env_int("RUN_STALE_AFTER_MINUTES", 120)
 
 
 @dataclass(frozen=True)
@@ -299,7 +324,15 @@ class SinkConfig:
     btc_graph_redis_url: str = _env("BTC_GRAPH_REDIS_URL", "redis://localhost:6379/0")
     use_llm: bool = _env_bool("SINK_USE_LLM", False)
     batch_size: int = _env_int("SINK_BATCH_SIZE", 200)
-    min_quality_score: float = _env_float("SINK_MIN_QUALITY", 0.0)
+    # Порог качества, с которым кандидаты уходят в btc-graph.
+    # `None` (дефолт) = «решает btc-graph»: он применит порог
+    # `batch.min_quality_score` из профиля КАЖДОЙ монеты — те самые
+    # калиброванные значения, ради которых профили и заводились.
+    # Число = единая абсолютная линейка на весь батч, перекрывающая профили;
+    # это режим разовых экспериментов, а не регулярной работы.
+    # Раньше здесь стоял дефолт 0.0, и он молча отключал профильные пороги:
+    # фильтр btc-graph пропускал всех, WEAK составлял основную массу базы.
+    min_quality_score: float | None = _env_float_optional("SINK_MIN_QUALITY")
 
 
 @dataclass(frozen=True)
@@ -315,6 +348,13 @@ class AdminConfig:
     )
     host: str = _env("ADMIN_HOST", "127.0.0.1")
     port: int = _env_int("ADMIN_PORT", 8100)
+    # Доверять ли заголовку X-Forwarded-For при определении адреса клиента.
+    # Включать ТОЛЬКО если перед админкой действительно стоит прокси, который
+    # этот заголовок перезаписывает. Иначе его ставит сам клиент и получает
+    # право выбрать себе адрес: обойти ADMIN_IP_ALLOWLIST и обнулять счётчик
+    # неудачных входов новым фейковым IP на каждую попытку. В штатной схеме
+    # развёртывания прокси нет — отсюда дефолт false.
+    trust_proxy: bool = _env_bool("ADMIN_TRUST_PROXY", False)
     # Сколько прогонов админка готова вести одновременно. Прогоны разных монет
     # независимы и блокировать друг друга не должны, но идут они BackgroundTasks
     # в процессе админки: три одновременных train займут три ядра на
@@ -344,6 +384,7 @@ class AdminConfig:
 
 data = DataConfig()
 db = DBConfig()
+runs = RunsConfig()
 states = StatesConfig()
 candidates = CandidateConfig()
 smc = SMCConfig()

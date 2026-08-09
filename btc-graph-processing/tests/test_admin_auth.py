@@ -96,3 +96,52 @@ def test_ip_allowlist(monkeypatch):
     assert auth.ip_allowed("10.4.5.6")
     assert not auth.ip_allowed("203.0.113.7")
     assert not auth.ip_allowed("не-адрес")
+
+
+# ── Доверие к X-Forwarded-For (B6) ──────────────────────────────────────────
+#
+# Без прокси заголовок ставит сам клиент. Раньше он читался безусловно, и это
+# давало атакующему право выбрать себе адрес: подставить разрешённый в
+# ADMIN_IP_ALLOWLIST и обнулять brute-force lockout новым фейковым IP на
+# каждую попытку — блокировка не накапливалась никогда.
+
+
+class _FakeClient:
+    host = "203.0.113.9"
+
+
+class _FakeRequest:
+    def __init__(self, forwarded: str | None = None):
+        self.headers = {"x-forwarded-for": forwarded} if forwarded else {}
+        self.client = _FakeClient()
+
+
+def test_forwarded_header_is_ignored_without_proxy(monkeypatch):
+    monkeypatch.setattr(config, "admin", _admin(trust_proxy=False))
+
+    ip = auth.client_ip(_FakeRequest("10.0.0.1, 198.51.100.7"))
+
+    assert ip == "203.0.113.9", "подделанный заголовок не должен подменять адрес"
+
+
+def test_forwarded_header_is_used_behind_trusted_proxy(monkeypatch):
+    monkeypatch.setattr(config, "admin", _admin(trust_proxy=True))
+
+    ip = auth.client_ip(_FakeRequest("10.0.0.1, 198.51.100.7"))
+
+    assert ip == "10.0.0.1", "за доверенным прокси берём первый адрес цепочки"
+
+
+def test_missing_header_falls_back_to_socket(monkeypatch):
+    monkeypatch.setattr(config, "admin", _admin(trust_proxy=True))
+
+    assert auth.client_ip(_FakeRequest()) == "203.0.113.9"
+
+
+def test_spoofed_header_cannot_bypass_allowlist(monkeypatch):
+    """Сценарий обхода целиком: allowlist + подделанный заголовок."""
+    monkeypatch.setattr(
+        config, "admin", _admin(trust_proxy=False, ip_allowlist=["10.0.0.1"])
+    )
+
+    assert auth.ip_allowed(auth.client_ip(_FakeRequest("10.0.0.1"))) is False

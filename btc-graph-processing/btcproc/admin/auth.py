@@ -70,11 +70,20 @@ guard = LoginGuard()
 
 
 def client_ip(request: Request) -> str:
-    # X-Forwarded-For учитываем только первым значением и только если
-    # админка стоит за доверенным прокси; иначе заголовок легко подделать.
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """
+    Адрес клиента для allowlist и счётчика неудачных входов.
+
+    X-Forwarded-For читается ТОЛЬКО при ADMIN_TRUST_PROXY=true. Без прокси
+    заголовок ставит сам клиент, то есть атакующий выбирает себе «IP»: любой
+    адрес из ADMIN_IP_ALLOWLIST открывает дверь, а новый фейковый адрес на
+    каждую попытку сводит на нет brute-force lockout — блокировка не
+    накапливается никогда. Штатная схема развёртывания (deploy/README.md) —
+    админка смотрит наружу напрямую, поэтому дефолт false.
+    """
+    if config.admin.trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 

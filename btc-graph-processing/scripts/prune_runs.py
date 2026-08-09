@@ -120,6 +120,80 @@ def delete(run_ids: list[int]) -> dict[str, int]:
     return removed
 
 
+# ── Разметка live-прогонов ──────────────────────────────────────────────────
+#
+# До 2026-08-09 `live` писал в `bar_states` ВСЮ размеченную историю под свежим
+# run_id: PK там `(symbol, ts, run_id)`, то есть каждый прогон — чистые вставки
+# на весь объём, а не upsert. Retention у таблицы нет, а `plan()` выше
+# сознательно бережёт live-прогоны действующей модели — значит эти строки не
+# удалял никто и никогда. Теперь live пишет только хвост
+# (`pipeline.live.bar_states_window`), но накопленное надо убрать отдельно:
+# сами строки `runs` при этом остаются, на них ссылаются `candidates.run_id`.
+
+BAR_STATES_KEEP_LIVE = 4  # последние N live-прогонов монеты оставляем целиком
+
+
+def fat_live_runs(symbol: str, keep_live: int) -> list[dict]:
+    """
+    live-прогоны монеты, чью разметку можно удалить.
+
+    Раскраска графика в админке живёт в train-прогоне (полная история) плюс
+    несколько последних live — их и бережём. Train не трогаем вообще.
+    """
+    rows = fetch_all(
+        """
+        SELECT r.run_id, r.started_at,
+               (SELECT count(*) FROM bar_states s WHERE s.run_id = r.run_id) AS bars
+        FROM runs r
+        WHERE r.kind = 'live' AND r.symbol = %s
+        ORDER BY r.started_at DESC
+        """,
+        (symbol,),
+    )
+    return [r for r in rows[keep_live:] if r["bars"]]
+
+
+def delete_bar_states(run_ids: list[int]) -> int:
+    """Удаляет только разметку, оставляя сами прогоны и их кандидатов."""
+    if not run_ids:
+        return 0
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM bar_states WHERE run_id = ANY(%s)", (run_ids,))
+        return cur.rowcount
+
+
+def prune_bar_states(targets: list[str], keep_live: int, apply: bool) -> int:
+    total_runs, total_rows = 0, 0
+    doomed: list[int] = []
+    for symbol in targets:
+        fat = fat_live_runs(symbol, keep_live)
+        rows = sum(r["bars"] for r in fat)
+        print(f"\n=== {symbol} ===")
+        print(f"  live-прогонов с разметкой к очистке: {len(fat)}, строк {rows}")
+        if fat:
+            oldest, newest = fat[-1], fat[0]
+            print(f"  прогоны #{oldest['run_id']}..#{newest['run_id']}, "
+                  f"последние {keep_live} live оставлены")
+        doomed.extend(r["run_id"] for r in fat)
+        total_runs += len(fat)
+        total_rows += rows
+
+    if not doomed:
+        print("\nНакопленной разметки live-прогонов нет.")
+        return 0
+
+    print(f"\nВсего: {total_runs} прогонов, ~{total_rows} строк bar_states")
+    if not apply:
+        print("Это сухой прогон. Чтобы удалить, добавь --apply")
+        return 0
+
+    removed = delete_bar_states(doomed)
+    print(f"\nУдалено строк bar_states: {removed}")
+    print("Прогоны и их кандидаты не тронуты.")
+    print(f"\nБаза: {config.db.url.rsplit('@', 1)[-1]}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Оставить по одной модели на монету")
     parser.add_argument("--symbol", action="append")
@@ -127,10 +201,23 @@ def main() -> int:
                         help="Номер прогона, который сохранить дополнительно")
     parser.add_argument("--apply", action="store_true",
                         help="Действительно удалить; без него — только показать")
+    parser.add_argument(
+        "--bar-states", action="store_true",
+        help="Вместо прогонов чистить накопленную разметку live-прогонов "
+             "(сами прогоны и кандидаты остаются)",
+    )
+    parser.add_argument(
+        "--bar-states-keep", type=int, default=BAR_STATES_KEEP_LIVE,
+        help=f"Сколько последних live-прогонов монеты оставить целиком "
+             f"(по умолчанию {BAR_STATES_KEEP_LIVE})",
+    )
     args = parser.parse_args()
 
     targets = args.symbol or symbols.tickers(only_enabled=True)
     keep_extra = set(args.keep or [])
+
+    if args.bar_states:
+        return prune_bar_states(targets, args.bar_states_keep, args.apply)
 
     all_doomed: list[int] = []
     for symbol in targets:

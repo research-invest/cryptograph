@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import psycopg2
@@ -45,6 +46,14 @@ def start_run(
 
 
 def _autocommit_execute(sql: str, params: tuple) -> None:
+    """
+    Отдельное autocommit-соединение, намеренно мимо пула из `session.connect`.
+
+    Прогресс и лог прогона обязаны быть видны админке ДО того, как завершится
+    длинная транзакция самого прогона. Соединений тут единицы за прогон (по
+    одному на стадию), поэтому экономить на них нечего, а вот перепутать
+    транзакционный контекст — легко.
+    """
     conn = psycopg2.connect(config.db.url)
     conn.autocommit = True
     try:
@@ -90,6 +99,10 @@ def update_run(
         params.append(log_line.rstrip() + "\n")
     if not sets:
         return
+    # Heartbeat: отметка живости прогона. Пишется при любом обновлении, потому
+    # что смысл её именно в том, что процесс дошёл до следующей стадии. По ней
+    # guard-ы отличают идущий прогон от убитого (см. stale_running_runs).
+    sets.append("updated_at = NOW()")
     params.append(run_id)
     _autocommit_execute(f"UPDATE runs SET {', '.join(sets)} WHERE run_id = %s", tuple(params))
 
@@ -182,6 +195,55 @@ def active_run(kind: str | None = None, symbol: str | None = None) -> dict | Non
     )
 
 
+def is_stale(run: dict, stale_after_minutes: int | None = None) -> bool:
+    """
+    Прогон висит в `running`, но процесс за ним уже мёртв?
+
+    Признак — молчащий heartbeat: `update_run` трогает `updated_at` на каждой
+    стадии, поэтому живой прогон не молчит дольше своей самой долгой стадии.
+    Старые строки, заведённые до появления колонки, сравниваются по
+    `started_at` — для них это тот же смысл.
+    """
+    if run.get("status") != "running":
+        return False
+    minutes = (
+        config.runs.stale_after_minutes
+        if stale_after_minutes is None else stale_after_minutes
+    )
+    beat = run.get("updated_at") or run.get("started_at")
+    if beat is None:
+        return False
+    now = datetime.now(beat.tzinfo) if beat.tzinfo else datetime.now()
+    return (now - beat).total_seconds() > minutes * 60
+
+
+def reap_if_stale(run: dict | None, stale_after_minutes: int | None = None) -> bool:
+    """
+    Помечает мёртвый прогон failed. Возвращает True, если прогон был убран.
+
+    Вызывается из guard-ов: без этого убитый процесс (OOM на расчёте
+    признаков, ребут VPS) навсегда останавливает live своей монеты — крон с
+    --skip-if-busy молча пропускает каждый следующий запуск, а админка
+    отвечает 409 «нет свободных слотов».
+    """
+    if not run or not is_stale(run, stale_after_minutes):
+        return False
+    minutes = (
+        config.runs.stale_after_minutes
+        if stale_after_minutes is None else stale_after_minutes
+    )
+    fail_run(
+        int(run["run_id"]),
+        f"прерван: нет heartbeat дольше {minutes} мин "
+        "(процесс убит — OOM, ребут или kill)",
+    )
+    logger.warning(
+        "Прогон #%s (%s %s) помечен failed: молчал дольше %s мин",
+        run["run_id"], run.get("kind"), run.get("symbol"), minutes,
+    )
+    return True
+
+
 def active_runs(kind: str | None = None) -> list[dict]:
     """Все идущие прогоны — для лимита одновременных расчётов в админке."""
     sql = "SELECT * FROM runs WHERE status = 'running'"
@@ -208,7 +270,26 @@ def latest_completed_run(kind: str = "train", symbol: str | None = None) -> dict
     return fetch_one(sql + " ORDER BY finished_at DESC LIMIT 1", tuple(params))
 
 
-def model_run_scope(run_id: int) -> tuple[str, list[Any]]:
+def model_root(run_id: int) -> int:
+    """
+    Прогон, обучивший модель, которой посчитан `run_id`.
+
+    Для `train` это он сам, для `live` — его `params.model_run_id`. Нужен там,
+    где пользователь выбирает прогон из списка, а показать надо всё, что
+    посчитано ЕГО моделью: выбор live-прогона иначе сузил бы выборку до
+    одного получасового окна.
+    """
+    row = fetch_one("SELECT params->>'model_run_id' AS model FROM runs WHERE run_id = %s",
+                    (run_id,))
+    if row and row["model"]:
+        try:
+            return int(row["model"])
+        except (TypeError, ValueError):
+            pass
+    return run_id
+
+
+def model_run_scope(run_id: int, alias: str | None = None) -> tuple[str, list[Any]]:
     """
     SQL-условие «строки, посчитанные ЭТОЙ моделью состояний».
 
@@ -230,9 +311,13 @@ def model_run_scope(run_id: int) -> tuple[str, list[Any]]:
     Связь live → модель хранится в `runs.params.model_run_id`; сравнение идёт
     с текстом, а не с числом, чтобы отсутствующий или нечисловой ключ не ронял
     запрос приведением типа.
+
+    `alias` квалифицирует колонку — нужен внутри подзапросов, где без префикса
+    `run_id` разрешился бы в чужую таблицу.
     """
+    column = f"{alias}.run_id" if alias else "run_id"
     return (
-        "(run_id = %s OR run_id IN ("
+        f"({column} = %s OR {column} IN ("
         " SELECT run_id FROM runs WHERE params->>'model_run_id' = %s))",
         [run_id, str(run_id)],
     )

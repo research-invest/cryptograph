@@ -365,7 +365,12 @@ def _guard_capacity(tickers: list[str]) -> None:
     идут BackgroundTasks в процессе админки, и каждый занимает ядро под
     кластеризацию и заметный кусок памяти.
     """
-    active = runs_repo.active_runs()
+    # Мёртвый прогон (процесс убит OOM-killer'ом или ребутом) остаётся
+    # `running` навсегда и занимает слот лимита + блокирует свою монету
+    # ответом 409. Снимаем такие перед проверкой, а не после.
+    active = [
+        run for run in runs_repo.active_runs() if not runs_repo.reap_if_stale(run)
+    ]
     busy = {run["symbol"] for run in active if run.get("symbol")}
 
     clash = sorted(busy & set(tickers))
@@ -392,8 +397,12 @@ def _guard_capacity(tickers: list[str]) -> None:
 def start_train(
     background: BackgroundTasks,
     symbol: str = Form(""),
-    ingest: bool = Form(True),
-    emit: bool = Form(True),
+    # Дефолт False, а не True, — это не опечатка: снятый чекбокс браузер не
+    # отправляет ВОВСЕ, и FastAPI подставил бы дефолт. С Form(True) галки были
+    # декорацией — выключить ingest/emit из админки было невозможно.
+    # Состояние «включено по умолчанию» задаёт `checked` в шаблоне.
+    ingest: bool = Form(False),
+    emit: bool = Form(False),
     start: str = Form(""),
     end: str = Form(""),
 ):
@@ -413,7 +422,16 @@ def start_train(
 
 @app.post("/runs/live")
 def start_live(background: BackgroundTasks, symbol: str = Form(""),
-               emit: bool = Form(True), lookback: int = Form(240)):
+               emit: bool = Form(False), lookback: str = Form("")):
+    """
+    Пустой lookback = авто-режим: продолжить с последнего выпущенного
+    кандидата (`resolve_cutoff`). Раньше поле было `int = Form(240)` и пустым
+    быть не могло в принципе, то есть админка ВСЕГДА задавала окно явно.
+    Это оставляло невосполнимую дыру: после паузы длиннее окна запуск из
+    админки выпускал кандидатов только за последние 240 минут, но двигал
+    `last_candidate_ts` в свежее время — и следующий крон-live продолжал уже
+    с него. Пропущенный интервал не закрывал никто.
+    """
     from btcproc.pipeline.live import run_live
 
     tickers = _form_symbols(symbol)
@@ -422,7 +440,7 @@ def start_live(background: BackgroundTasks, symbol: str = Form(""),
     for ticker in tickers:
         background.add_task(
             _safe_run, run_live,
-            symbol=ticker, lookback_minutes=lookback, do_emit=emit,
+            symbol=ticker, lookback_minutes=opt_int(lookback), do_emit=emit,
         )
     return RedirectResponse("/runs", status_code=303)
 

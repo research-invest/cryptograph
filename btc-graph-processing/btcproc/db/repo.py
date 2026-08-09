@@ -221,6 +221,21 @@ def save_outcomes(outcomes: pd.DataFrame, symbol: str | None = None,
 
 # ─── Кандидаты ──────────────────────────────────────────────────────────────
 def save_candidates(run_id: int, candidates: Iterable[dict]) -> int:
+    """
+    Пишет кандидатов прогона. Повтор безопасен: `candidate_id` детерминирован,
+    запись идёт upsert'ом.
+
+    `run_id` — прогон, ВПЕРВЫЕ выпустивший кандидата, и при повторной встрече
+    он не переписывается. Окна live намеренно перекрываются, поэтому одного и
+    того же кандидата видят несколько прогонов подряд; пока `run_id` был в
+    `update_columns`, каждый такой прогон «перевозил» его к себе. Выборка
+    «кандидаты прогона N» от этого худела со временем сама по себе, а
+    счётчики `prune_runs.models()` плыли. Ни то, ни другое не выглядело
+    ошибкой — просто числа медленно становились неправильными.
+
+    Кандидатов одной МОДЕЛИ (а не одного запуска) выбирают через
+    `runs.model_run_scope`.
+    """
     rows = []
     for c in candidates:
         meta = c.get("_meta", {})
@@ -237,7 +252,8 @@ def save_candidates(run_id: int, candidates: Iterable[dict]) -> int:
          "family_key", "research_side", "research_score", "sample_size", "payload"],
         rows,
         conflict_columns=["candidate_id"],
-        update_columns=["payload", "research_score", "sample_size", "run_id"],
+        # run_id намеренно НЕ обновляется — см. docstring.
+        update_columns=["payload", "research_score", "sample_size"],
     )
 
 

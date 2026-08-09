@@ -236,3 +236,21 @@ ALTER TABLE market_groups ADD COLUMN IF NOT EXISTS name TEXT;
 -- («контекст посчитан, активных атомов нет»). Задним числом не заполняется —
 -- значения появятся на барах по мере train/live.
 ALTER TABLE bar_events ADD COLUMN IF NOT EXISTS context_atoms TEXT[];
+
+-- ─── Heartbeat прогона ──────────────────────────────────────────────────────
+-- Статус `running` снимает только сам процесс (finish_run / fail_run). Если
+-- процесс убит — OOM killer на расчёте признаков, ребут, kill -9, — строка
+-- остаётся `running` НАВСЕГДА: механизма протухания у неё нет.
+--
+-- Дальше отказ становится тихим: крон стоит с --skip-if-busy, поэтому каждый
+-- следующий live этой монеты молча пропускается (это штатное поведение skip,
+-- оно не даёт ни ошибки, ни ненулевого кода возврата), а в админке мёртвый
+-- прогон навсегда занимает слот ADMIN_MAX_CONCURRENT_RUNS. Обновление данных
+-- по монете просто прекращается, и заметно это только по растущему отставанию.
+--
+-- Де-факто heartbeat уже был: update_run пишет progress и лог на каждой
+-- стадии. Не хватало отметки времени этой записи — её и заводим.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS runs_running_idx ON runs (status, updated_at DESC)
+    WHERE status = 'running';

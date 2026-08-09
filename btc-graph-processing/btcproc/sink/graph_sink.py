@@ -112,6 +112,9 @@ def emit_direct(batch: Sequence[dict], use_llm: bool | None = None) -> list[dict
     evaluations = pipeline.run_batch_pipeline(
         payload,
         use_llm=config.sink.use_llm if use_llm is None else use_llm,
+        # None доезжает до btc-graph именно как None: это его штатный режим
+        # «порог из профиля каждой монеты». Любое число (включая 0.0)
+        # перекрыло бы профили на весь батч.
         min_quality_score=config.sink.min_quality_score,
         save=True,
     )
@@ -123,7 +126,14 @@ def emit_http(batch: Sequence[dict], use_llm: bool | None = None) -> list[dict]:
         "candidates": [strip_meta(c) for c in batch],
         "use_llm": config.sink.use_llm if use_llm is None else use_llm,
         "save": True,
-        "min_quality_score": config.sink.min_quality_score,
+        # Ключ добавляется только при явно заданном пороге — см. emit_direct.
+        # `BatchInput.min_quality_score` в btc-graph по умолчанию None, то есть
+        # отсутствие ключа и есть «пороги профилей».
+        **(
+            {"min_quality_score": config.sink.min_quality_score}
+            if config.sink.min_quality_score is not None
+            else {}
+        ),
     }
     url = config.sink.btc_graph_url.rstrip("/") + "/evaluate/batch"
     with httpx.Client(timeout=300.0) as client:
@@ -141,7 +151,9 @@ def emit_batch(batch: Sequence[dict], mode: str | None = None, use_llm: bool | N
     Отправляет пачку кандидатов и возвращает оценки.
 
     Оценок может прийти меньше, чем кандидатов: btc-graph отбрасывает слабых
-    по min_quality_score и оставляет по одному на candidate_family_key.
+    по порогу качества и оставляет по одному на candidate_family_key. Порог по
+    умолчанию — профильный, свой у каждой монеты (`SINK_MIN_QUALITY` не задан);
+    заданный `SINK_MIN_QUALITY` перекрывает профили одним числом на весь батч.
     """
     mode = mode or config.sink.mode
     if not batch or mode == "none":

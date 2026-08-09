@@ -30,6 +30,36 @@ DEFAULT_LOOKBACK_MINUTES = 240
 MAX_LOOKBACK_DAYS = 30
 
 
+def bar_states_window(states: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
+    """
+    Какой кусок разметки live-прогон записывает в `bar_states`.
+
+    Размечается по-прежнему вся история — это нужно аккумуляторам кандидатов,
+    сглаживанию и энтропии траектории. А вот ПИСАТЬ всю историю под каждый
+    свежий run_id нельзя: PK таблицы — `(symbol, ts, run_id)`, то есть каждый
+    live делает не upsert поверх старого, а чистые вставки на весь объём.
+    При ~300 тыс. баров и прогоне раз в полчаса на три монеты это порядка
+    30 млн строк в сутки, которые не удаляет никто: retention у таблицы нет,
+    а `prune_runs` сознательно бережёт live-прогоны действующей модели.
+
+    Технологический запас перед cutoff нужен, чтобы записанный кусок был
+    самодостаточен для чтения: сглаживание переписывает начало серии задним
+    числом (`smoothing_bars`), энтропия считается по окну траектории
+    (`trajectory_window`), а снимки кандидатов смотрят назад на максимальный
+    офсет (`SNAPSHOT_OFFSETS_MIN`).
+    """
+    from btcproc.candidates.builder import SNAPSHOT_OFFSETS_MIN
+
+    base_minutes = config.data.base_minutes
+    margin_bars = (
+        config.states.smoothing_bars
+        + config.states.trajectory_window
+        + -(-max(SNAPSHOT_OFFSETS_MIN) // base_minutes)  # ceil
+    )
+    start = cutoff - pd.Timedelta(minutes=margin_bars * base_minutes)
+    return states[states.index >= start]
+
+
 def resolve_cutoff(
     last_bar: pd.Timestamp,
     last_candidate: pd.Timestamp | None,
@@ -51,10 +81,19 @@ def resolve_cutoff(
     Возвращает границу и причину — она пишется в лог прогона.
     """
     if lookback_minutes is not None:
-        return (
-            last_bar - pd.Timedelta(minutes=lookback_minutes),
-            f"окно задано явно: {lookback_minutes} мин",
-        )
+        cutoff = last_bar - pd.Timedelta(minutes=lookback_minutes)
+        # Явное окно короче фактического пропуска = дыра, которую не закроет
+        # уже никто: кандидаты за интервал не выпустятся, но last_candidate_ts
+        # уедет в свежее время, и следующий запуск продолжит с него.
+        if last_candidate is not None and last_candidate < cutoff:
+            return cutoff, (
+                f"окно задано явно: {lookback_minutes} мин. "
+                f"ВНИМАНИЕ: последний кандидат от {last_candidate:%Y-%m-%d %H:%M} "
+                f"старше начала окна ({cutoff:%Y-%m-%d %H:%M}) — интервал между "
+                f"ними останется без кандидатов навсегда. Для «догнать пропуск» "
+                f"запусти live без явного окна."
+            )
+        return cutoff, f"окно задано явно: {lookback_minutes} мин"
 
     limit = last_bar - pd.Timedelta(days=max_lookback_days)
     if last_candidate is None:
@@ -159,19 +198,24 @@ def run_live(
         blocks = ev.block_statistics(events)
         outcomes = compute_outcomes(base).reindex(features.index)
 
+        # Cutoff нужен раньше записи разметки: под свежий run_id пишется только
+        # окно от него (см. bar_states_window), а не вся размеченная история.
+        cutoff, reason = resolve_cutoff(
+            features.index[-1], repo.last_candidate_ts(symbol),
+            lookback_minutes, max_lookback_days,
+        )
+        stats["cutoff"] = cutoff.isoformat()
+
         runs.log(run_id, "Разметка и граф", stage="states", progress=0.5)
-        repo.save_bar_states(run_id, states, symbol)
+        written = bar_states_window(states, cutoff)
+        repo.save_bar_states(run_id, written, symbol)
+        stats["bar_states"] = len(written)
         transitions = graph.transition_stats(states, outcomes)
         rarity_map = dict(zip(transitions["transition_id"], transitions["rarity"]))
         block_map = blocks.set_index("event_block_id").to_dict("index")
 
         runs.log(run_id, "Сборка кандидатов", stage="candidates", progress=0.7)
         snapshots = cand.build_snapshots(states, events, outcomes)
-        cutoff, reason = resolve_cutoff(
-            features.index[-1], repo.last_candidate_ts(symbol),
-            lookback_minutes, max_lookback_days,
-        )
-        stats["cutoff"] = cutoff.isoformat()
         runs.log(run_id, f"Кандидаты начиная с {cutoff:%Y-%m-%d %H:%M} — {reason}")
 
         # Граница включающая: перекрытие с прошлым запуском безопаснее дыры.

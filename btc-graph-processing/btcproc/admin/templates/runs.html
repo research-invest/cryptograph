@@ -40,7 +40,13 @@
       Состояния не переобучаются — граф в btc-graph остаётся сопоставимым.
     </p>
     {{ symbol_field() }}
-    <label>Свежесть, минут <input type="number" name="lookback" value="240" min="15" step="15"></label>
+    {# Пустое поле = авто: продолжить с последнего выпущенного кандидата.
+       Явное окно короче фактического пропуска оставляет дыру, которую уже
+       никто не закроет: точка продолжения берётся из данных. #}
+    <label>Свежесть, минут
+      <input type="number" name="lookback" value="" min="15" step="15"
+             placeholder="авто: с последнего кандидата"></label>
+    <p class="hint">Пусто — продолжить с последнего выпущенного кандидата.</p>
     <label><input type="checkbox" name="emit" value="true" checked> отправлять кандидатов</label>
     <button type="submit" {{ 'disabled' if at_capacity }}>Запустить</button>
   </form>

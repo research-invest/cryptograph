@@ -266,6 +266,7 @@ def emit_pending(
     min_quality: float | None = None,
     limit: int | None = None,
     on_batch: Callable[[int, int], None] | None = None,
+    retry_failed: bool = True,
 ) -> dict:
     """
     Отправляет в btc-graph кандидатов прогона, которые ещё не отправлялись.
@@ -274,18 +275,43 @@ def emit_pending(
     и схлопывает дубликаты по family_key. Отправленным считается весь батч —
     повторно слать отсеянных смысла нет.
 
+    `min_quality` — ЛОКАЛЬНЫЙ порог поверх чужого фильтра, он влияет только на
+    статистику прогона. Оценки сохраняются до него: кандидат, которого
+    btc-graph принял и сохранил у себя, обязан иметь свою оценку и в
+    `processing.candidates`, иначе базы расходятся. Причина в
+    `mark_emit_error` у таких кандидатов своя — путать её с «отсеян фильтром
+    btc-graph» нельзя, это разные события.
+
     on_batch(готово, всего) зовётся после каждой пачки. Для исторического
     бэкфилла это не украшательство: очередь в десятки тысяч разбирается часами,
     и без обратной связи команда неотличима от зависшей.
+
+    `retry_failed` — добирать кандидатов ТОЙ ЖЕ модели, у которых прошлая
+    отправка сорвалась (`emit_error` есть, `emitted_at` нет). Раньше их
+    подхватывало само собой: перекрывающиеся окна live «перевозили» кандидата
+    в свежий `run_id`, и следующий прогон видел его как своего. С тех пор как
+    `run_id` перестал переписываться (кандидат остаётся за прогоном, который
+    его впервые выпустил), этот путь исчез — сорвавшаяся отправка залипала бы
+    навсегда, а заметить это можно было бы только глазами в админке.
+
+    Добираются именно СОРВАВШИЕСЯ, а не все неотправленные: `train --no-emit`
+    накапливает десятки тысяч кандидатов без `emit_error`, и первый же live
+    после него принялся бы разгребать этот бэкфилл без спроса, часами.
     """
     from btcproc.db.session import fetch_all
+    from btcproc.db.runs import model_root, model_run_scope
 
     batch_size = batch_size or config.sink.batch_size
-    sql = (
-        "SELECT payload FROM candidates "
-        "WHERE run_id = %s AND emitted_at IS NULL ORDER BY ts"
-    )
     params: list = [run_id]
+    where = "run_id = %s"
+    if retry_failed:
+        scope_sql, scope_params = model_run_scope(model_root(run_id))
+        where = f"({where} OR (emit_error IS NOT NULL AND {scope_sql}))"
+        params.extend(scope_params)
+    sql = (
+        f"SELECT payload FROM candidates "
+        f"WHERE {where} AND emitted_at IS NULL ORDER BY ts"
+    )
     if limit:
         sql += " LIMIT %s"
         params.append(limit)
@@ -305,18 +331,42 @@ def emit_pending(
         ids = [c["candidate_id"] for c in batch]
         try:
             results = graph_sink.emit_batch(batch)
-            if min_quality is not None:
-                results = [r for r in results if (r.get("quality_score") or 0) >= min_quality]
+            # Сохраняем оценки ВСЕХ вернувшихся, до локального порога. Каждая
+            # такая запись у btc-graph уже есть; отбросив её здесь, мы бы
+            # развели базы и потеряли готовую оценку без возможности
+            # восстановить (повторно кандидат не отправляется).
             repo.save_evaluations(results)
-            # Кандидаты, которых btc-graph отсеял, тоже помечаются обработанными.
             evaluated_ids = {r["candidate_id"] for r in results}
+
+            # Две разные судьбы с разными причинами. Смешивать их нельзя:
+            # «отсеян фильтром btc-graph» на кандидате, которого btc-graph
+            # как раз принял и сохранил, — ложный диагноз.
             rejected = [cid for cid in ids if cid not in evaluated_ids]
             if rejected:
                 repo.mark_emit_error(
                     rejected, "отсеян фильтром btc-graph", mark_emitted=True
                 )
+
+            accepted = results
+            if min_quality is not None:
+                weak_ids = [
+                    r["candidate_id"] for r in results
+                    if (r.get("quality_score") or 0) < min_quality
+                ]
+                if weak_ids:
+                    repo.mark_emit_error(
+                        weak_ids,
+                        f"оценён btc-graph, но ниже локального "
+                        f"emit_min_quality={min_quality}",
+                        mark_emitted=True,
+                    )
+                weak_set = set(weak_ids)
+                accepted = [r for r in results if r["candidate_id"] not in weak_set]
+
             sent += len(batch)
-            evaluated += len(results)
+            # Успешно отправленными считаются те, что прошли и чужой фильтр,
+            # и локальный порог, — по ним и считается статистика прогона.
+            evaluated += len(accepted)
         except Exception as exc:  # noqa: BLE001
             errors += len(batch)
             repo.mark_emit_error(ids, f"{type(exc).__name__}: {exc}")

@@ -177,6 +177,15 @@ def _guard_active_run(force: bool, symbol: str, skip_if_busy: bool = False) -> N
     active = runs_repo.active_run(symbol=symbol)
     if not active or force:
         return
+    # Прогон, убитый насмерть, остаётся `running` навсегда — сам он статус уже
+    # не снимет. Без этой проверки крон с --skip-if-busy молча пропускал бы
+    # каждый следующий live монеты, и обновление данных прекращалось бы тихо.
+    if runs_repo.reap_if_stale(active):
+        typer.echo(
+            f"Прогон #{active['run_id']} по {symbol} признан мёртвым "
+            f"(нет heartbeat) и помечен failed — продолжаю."
+        )
+        return
     detail = (f"#{active['run_id']} ({active['kind']}, стадия "
               f"{active['stage'] or '—'}, {active['progress']:.0%})")
     if skip_if_busy:
@@ -396,10 +405,17 @@ def status(
     # ── Общая диагностика: одна на все монеты ────────────────────────────────
     typer.echo("\nПоследние прогоны:")
     for row in runs_repo.list_runs(5):
-        typer.echo(
+        line = (
             f"  #{row['run_id']} {row.get('symbol') or '?':<9} {row['kind']:<6} "
             f"{row['status']:<8} {row['progress']:.0%} {row['stage'] or ''}"
         )
+        # Молчащий running — почти наверняка убитый процесс. Пока он числится
+        # идущим, крон с --skip-if-busy пропускает live этой монеты молча,
+        # поэтому в status это единственное место, где симптом виден заранее.
+        if runs_repo.is_stale(row):
+            line += "  ← нет heartbeat, прогон скорее всего мёртв"
+            line = typer.style(line, fg=typer.colors.YELLOW)
+        typer.echo(line)
 
     sink = graph_sink.sink_status()
     typer.echo(f"\nПриёмник ({sink['mode']}): "

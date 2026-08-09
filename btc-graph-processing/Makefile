@@ -1,5 +1,5 @@
 .PHONY: help setup install init-db ingest ingest-all train train-all train-fast \
-        live live-all status admin test docker-up docker-down docker-logs
+        live live-all status admin maintenance test docker-up docker-down docker-logs
 
 PY ?= python3
 
@@ -16,6 +16,7 @@ help:
 	@echo "live-all   — инкрементальный прогон по всем активным монетам"
 	@echo "status     — таблица по монетам: покрытие, отставание, очередь"
 	@echo "admin      — запустить админку"
+	@echo "maintenance— недельная уборка: разметка старых live + вакуум"
 	@echo "test       — тесты"
 	@echo "docker-up  — поднять админку в docker (нужен запущенный btc-graph)"
 
@@ -56,6 +57,10 @@ live-all:
 
 status:
 	$(PY) -m btcproc.cli status
+
+# Стоит в кроне раз в неделю; руками полезен --dry-run, чтобы сперва посмотреть.
+maintenance:
+	$(PY) scripts/maintenance.py
 
 admin:
 	$(PY) -m btcproc.cli admin --reload

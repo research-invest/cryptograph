@@ -161,3 +161,33 @@ def test_signature_bits_are_pinned(bars):
     # Ни один атом не может быть одновременно фоном и происшествием.
     assert not (set(events.SIGNATURE_ATOMS) & events.CONTEXT_ATOMS)
     assert len(events.SIGNATURE_ATOMS) + len(events.CONTEXT_ATOM_LIST) == len(events.ATOMS)
+
+
+def test_round_level_touch_is_known_dead_for_cheap_coins():
+    """
+    Фиксируем известное вырождение, а не чиним его.
+
+    Порог атома задан в долларах (`close % 1000`), поэтому на монете из
+    диапазона $100–200 он не срабатывает никогда — бит 19 маски у SOL
+    постоянно нулевой. Правка формулы на месте недопустима: атом signature,
+    и смена семантики переопределила бы смысл всех исторических
+    event_block_id задним числом. Тест падает, если кто-то всё же поправит
+    формулу, — и заставляет прочитать комментарий в events.py.
+    """
+    import numpy as np
+    import pandas as pd
+
+    index = pd.date_range("2026-01-01", periods=200, freq="15min", tz="UTC")
+    close = pd.Series(np.linspace(100.0, 200.0, len(index)), index=index)
+    sol = pd.DataFrame(
+        {"open": close, "high": close * 1.002, "low": close * 0.998,
+         "close": close, "volume": 1000.0},
+        index=index,
+    )
+
+    atoms = events.detect_atoms(sol)
+
+    assert not atoms["round_level_touch"].any(), (
+        "атом ожидаемо мёртв на дешёвой монете; если он ожил — значит формулу "
+        "поменяли на месте, а это ломает смысл исторических event_block_id"
+    )

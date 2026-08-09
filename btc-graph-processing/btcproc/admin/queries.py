@@ -92,7 +92,14 @@ def rating_distribution(run_id: int | None = None, symbol: str | None = None) ->
 
 
 def graph_payload(run_id: int, min_count: int = 1, rarity: str | None = None) -> dict:
-    """Узлы и рёбра графа состояний в формате Cytoscape."""
+    """
+    Узлы и рёбра графа состояний в формате Cytoscape.
+
+    `market_groups` и `transitions` пишет только train, поэтому выбранный в
+    селекторе live-прогон разыменовывается в свой train через `model_root` —
+    иначе граф для него был бы пуст. Раскраска `/chart` устроена так же.
+    """
+    run_id = runs_repo.model_root(run_id)
     groups = fetch_all(
         "SELECT group_id, size AS count, share, dominant_bias, up_share, avg_ret_pct, "
         "top_features, name FROM market_groups WHERE run_id = %s ORDER BY group_id",
@@ -150,30 +157,50 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
             f"Выбери прогон этой монеты — состояния между монетами несопоставимы."
         )
 
-    sql = (
-        "SELECT o.ts, o.open, o.high, o.low, o.close, s.group_id, s.is_transition, "
-        "s.transition_id, s.age_bucket, s.entropy "
-        "FROM ohlcv o LEFT JOIN bar_states s "
-        "  ON s.symbol = o.symbol AND s.ts = o.ts AND s.run_id = %s "
-        "WHERE o.symbol = %s AND o.tf = %s"
-    )
-    params: list[Any] = [run_id, symbol, config.data.base_tf]
-    if start:
-        sql += " AND o.ts >= %s"
-        params.append(start)
-    if end:
-        sql += " AND o.ts <= %s"
-        params.append(end)
+    # Раскраска берётся не по одному run_id, а по всей МОДЕЛИ: train размечает
+    # историю раз в неделю, а всё, что появилось после него, размечено только
+    # live-прогонами. При join по единственному run_id дефолтный вид графика
+    # (последний train) показывал серым хвост длиной до недели — выглядело как
+    # «состояния пропали». Маркеры кандидатов на этой же странице через scope
+    # уже ходили, то есть источники расходились.
+    #
+    # Свежая разметка побеждает: LATERAL берёт строку с наибольшим run_id.
+    # Это же и дедуплицирует join — прямой join по нескольким run_id размножил
+    # бы бары.
+    root = runs_repo.model_root(run_id)
+    scope_sql, scope_params = model_run_scope(root, alias="b")
+
     # Лимит всегда режет диапазон с одного конца — важно, с какого. Если задана
     # нижняя граница, окно отсчитывается от неё вперёд: при сортировке DESC
     # оставались последние N баров диапазона, и начало заданного периода молча
     # пропадало (запрос с 1 июля отдавал бары с 15-го). Без start смысл обратный
     # — нужны свежие бары, поэтому берём с конца.
-    sql += " ORDER BY o.ts ASC LIMIT %s" if start else " ORDER BY o.ts DESC LIMIT %s"
-    params.append(limit)
+    inner = "SELECT ts, symbol, open, high, low, close FROM ohlcv WHERE symbol = %s AND tf = %s"
+    inner_params: list[Any] = [symbol, config.data.base_tf]
+    if start:
+        inner += " AND ts >= %s"
+        inner_params.append(start)
+    if end:
+        inner += " AND ts <= %s"
+        inner_params.append(end)
+    inner += " ORDER BY ts ASC LIMIT %s" if start else " ORDER BY ts DESC LIMIT %s"
+    inner_params.append(limit)
 
-    rows = fetch_all(sql, params)
-    bars = rows if start else list(reversed(rows))
+    # Окно баров отбирается ДО lateral-джойна: иначе поиск разметки шёл бы по
+    # всей истории, а не по показанным полутора тысячам баров.
+    sql = (
+        "SELECT o.ts, o.open, o.high, o.low, o.close, s.group_id, s.is_transition, "
+        "s.transition_id, s.age_bucket, s.entropy "
+        f"FROM ({inner}) o "
+        "LEFT JOIN LATERAL ("
+        "  SELECT b.group_id, b.is_transition, b.transition_id, b.age_bucket, b.entropy "
+        "  FROM bar_states b "
+        f"  WHERE b.symbol = o.symbol AND b.ts = o.ts AND {scope_sql} "
+        "  ORDER BY b.run_id DESC LIMIT 1"
+        ") s ON true "
+        "ORDER BY o.ts ASC"
+    )
+    bars = fetch_all(sql, [*inner_params, *scope_params])
     if not bars:
         return {"bars": [], "markers": [], "groups": [], "markers_truncated": False}
 
@@ -184,7 +211,9 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     if rating == "none":
         candidates = []
     else:
-        scope_sql, scope_params = model_run_scope(run_id)
+        # Тот же корень модели, что и у раскраски: выбор live-прогона в
+        # селекторе не должен сужать маркеры до одного получасового окна.
+        scope_sql, scope_params = model_run_scope(root)
         sql_c = (
             "SELECT candidate_id, ts, research_side, rating, quality_score, transition_id "
             "FROM candidates "
@@ -208,11 +237,12 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     group_ids = sorted({b["group_id"] for b in bars if b["group_id"] is not None})
     palette = {gid: _color(i, len(group_ids)) for i, gid in enumerate(group_ids)}
     # Имена состояний для легенды: без них «состояние 7» ничего не говорит,
-    # а сверяться с таблицей ради каждого цвета никто не будет.
+    # а сверяться с таблицей ради каждого цвета никто не будет. Ключ — root,
+    # а не run_id: имена, как и сам граф, пишет только train.
     names = {
         float(r["group_id"]): r["name"] or ""
         for r in fetch_all(
-            "SELECT group_id, name FROM market_groups WHERE run_id = %s", (run_id,)
+            "SELECT group_id, name FROM market_groups WHERE run_id = %s", (root,)
         )
     }
 
@@ -351,7 +381,11 @@ def group_detail(run_id: int, group_id: float) -> dict | None:
     Узел графа. Монета не аргумент: run_id уже однозначно её задаёт
     (один прогон = одна монета). Но подписать её в UI обязательно —
     «group_id 7» без монеты бессмысленен.
+
+    `model_root` — по той же причине, что в `graph_payload`: узлы и переходы
+    есть только у train-прогона.
     """
+    run_id = runs_repo.model_root(run_id)
     node = fetch_one(
         "SELECT * FROM market_groups WHERE run_id = %s AND group_id = %s",
         (run_id, group_id),

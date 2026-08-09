@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 from btcproc import config
 
@@ -21,12 +23,70 @@ logger = logging.getLogger(__name__)
 SCHEMA_SQL = Path(__file__).with_name("schema.sql")
 
 
+# Пул соединений вместо connect/close на каждый запрос.
+#
+# Раньше каждый fetch_one / fetch_all / bulk_upsert открывал новое соединение
+# и закрывал его, плюс отдельным round-trip'ом выставлял search_path. На
+# тяжёлом пути (bulk-вставка сотен тысяч строк) это тонет в самой вставке, но
+# на путях с множеством мелких запросов — `cli.status`, страницы админки,
+# `runs.log` на каждой стадии — накладные расходы доминируют.
+#
+# Threaded, потому что админка многопоточна: uvicorn отдаёт синхронные
+# обработчики в пул потоков.
+_pool = None
+_pool_lock = threading.Lock()
+
+# maxconn держим заметно ниже дефолтных 100 у postgres: тут же живут btc-graph,
+# celery и neo4j, а параллельных потребителей у нас единицы.
+POOL_MIN, POOL_MAX = 1, 16
+
+# На исчерпании пул psycopg2 не ждёт, а кидает PoolError. Для админки это
+# значило бы 500-е при всплеске: thread-pool uvicorn — 40 потоков, соединений
+# 16. Семафор превращает исчерпание в ожидание свободного слота. Таймаут —
+# страховка от вечного зависания, если кто-то не вернул соединение: заметно
+# дольше любого страничного запроса, но не бесконечность.
+POOL_WAIT_SECONDS = 30
+_pool_slots = threading.BoundedSemaphore(POOL_MAX)
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    POOL_MIN, POOL_MAX, config.db.url
+                )
+    return _pool
+
+
+def close_pool() -> None:
+    """Закрывает все соединения пула. Нужен тестам и корректному выходу."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            _pool = None
+
+
 @contextmanager
 def connect(autocommit: bool = False) -> Iterator[psycopg2.extensions.connection]:
     """Соединение с выставленным search_path на нашу схему."""
-    conn = psycopg2.connect(config.db.url)
-    conn.autocommit = autocommit
+    if not _pool_slots.acquire(timeout=POOL_WAIT_SECONDS):
+        raise TimeoutError(
+            f"Свободное соединение с БД не дождалось за {POOL_WAIT_SECONDS} с: "
+            f"все {POOL_MAX} заняты. Либо всплеск параллельных запросов, либо "
+            f"кто-то держит соединение и не возвращает."
+        )
     try:
+        pool = _get_pool()
+        conn = pool.getconn()
+    except Exception:
+        _pool_slots.release()
+        raise
+    broken = False
+    try:
+        conn.autocommit = autocommit
         with conn.cursor() as cur:
             cur.execute(f"SET search_path TO {config.db.schema}, public")
         if not autocommit:
@@ -35,11 +95,28 @@ def connect(autocommit: bool = False) -> Iterator[psycopg2.extensions.connection
         if not autocommit:
             conn.commit()
     except Exception:
-        if not autocommit:
-            conn.rollback()
+        # Соединение могло остаться в незавершённой транзакции или вовсе
+        # оборваться. Откатываем, а на ошибке отката — выбрасываем из пула:
+        # вернуть в оборот битое соединение хуже, чем открыть новое.
+        try:
+            if not autocommit:
+                conn.rollback()
+        except psycopg2.Error:
+            broken = True
         raise
     finally:
-        conn.close()
+        # autocommit — свойство соединения, а не запроса: следующий, кто
+        # возьмёт его из пула, не должен унаследовать чужой режим.
+        try:
+            conn.autocommit = False
+        except psycopg2.Error:
+            broken = True
+        # Слот освобождается даже если putconn упал (например, пул закрыли
+        # параллельно): потерянный слот — это навсегда уменьшившийся лимит.
+        try:
+            pool.putconn(conn, close=broken)
+        finally:
+            _pool_slots.release()
 
 
 def init_schema() -> None:

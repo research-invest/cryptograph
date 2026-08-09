@@ -353,14 +353,55 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
     return rows
 
 
-def rebuild_context_timeframes(symbol: str | None = None, tfs: list[str] | None = None) -> dict:
-    """Пересобирает старшие ТФ из базового и складывает в ту же таблицу."""
+def rebuild_context_timeframes(
+    symbol: str | None = None,
+    tfs: list[str] | None = None,
+    full: bool = False,
+) -> dict:
+    """
+    Пересобирает старшие ТФ из базового и складывает в ту же таблицу.
+
+    По умолчанию инкрементально: базовые бары читаются не с 2017 года, а от
+    последнего уже сохранённого бара старшего ТФ. Этот последний бар обязан
+    попасть в пересчёт заново — на момент прошлого запуска он мог быть
+    недособран (метка бара — время открытия, а окно ещё не закрылось).
+
+    Полный пересчёт (`full=True`) нужен, только если базовые бары правились
+    задним числом: обычная догрузка хвоста этого не делает.
+
+    Раньше `live` каждые полчаса читал всю историю базового ТФ и перезаписывал
+    upsert'ом ВСЕ старшие — сотни тысяч строк ради нескольких свежих.
+    """
     symbol = symbol or config.data.symbol
     tfs = tfs or config.data.context_tfs
-    base = load_ohlcv(symbol, config.data.base_tf)
+
+    # Граница пересчёта — самый ранний хвост среди всех ТФ: базовые бары
+    # читаются один раз на всех, а недельный ТФ отступает назад дальше
+    # четырёхчасового.
+    starts: dict[str, pd.Timestamp | None] = {}
+    for tf in tfs:
+        if full:
+            starts[tf] = None
+            continue
+        row = fetch_one(
+            "SELECT max(ts) AS t FROM ohlcv WHERE symbol = %s AND tf = %s",
+            (symbol, tf),
+        )
+        starts[tf] = pd.Timestamp(row["t"]) if row and row["t"] is not None else None
+
+    earliest = None if any(v is None for v in starts.values()) else min(starts.values())
+    base = load_ohlcv(symbol, config.data.base_tf, start=earliest)
+
     out = {}
     for tf in tfs:
-        agg = resample(base, tf)
+        # Срез строго от границы своего ТФ: она совпадает с открытием бара
+        # (label=left), поэтому агрегация от неё даёт тот же результат, что и
+        # агрегация всей истории — просто без лишней работы.
+        window = base if starts[tf] is None else base[base.index >= starts[tf]]
+        if window.empty:
+            out[tf] = 0
+            continue
+        agg = resample(window, tf)
         agg = agg.reset_index().rename(columns={"index": "ts"})
         agg["symbol"], agg["tf"] = symbol, tf
         out[tf] = _store(agg[OHLCV_COLUMNS])
@@ -379,6 +420,18 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
     return out.dropna(subset=["open", "close"])
 
 
+def _as_utc(value: str | datetime | pd.Timestamp) -> pd.Timestamp:
+    """
+    Границу диапазона принимаем и наивной, и с зоной.
+
+    `pd.Timestamp(x, tz="UTC")` на уже локализованном значении бросает
+    ValueError — а границы приходят из обоих источников: наивные строки от
+    оператора и tz-aware метки из БД (`max(ts)`).
+    """
+    ts = pd.Timestamp(value)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
 def load_ohlcv(
     symbol: str | None = None,
     tf: str | None = None,
@@ -395,10 +448,10 @@ def load_ohlcv(
     params: list = [symbol, tf]
     if start is not None:
         sql += " AND ts >= %s"
-        params.append(pd.Timestamp(start, tz="UTC"))
+        params.append(_as_utc(start))
     if end is not None:
         sql += " AND ts <= %s"
-        params.append(pd.Timestamp(end, tz="UTC"))
+        params.append(_as_utc(end))
     sql += " ORDER BY ts"
 
     rows = fetch_all(sql, params)
