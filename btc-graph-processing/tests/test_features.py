@@ -74,3 +74,90 @@ def test_block_statistics_shares_sum_to_one(bars):
     stats = events.block_statistics(blocks)
     assert abs(stats["row_share"].sum() - 1.0) < 1e-9
     assert stats["rarity"].isin(["rare", "uncommon", "common"]).all()
+
+
+def test_context_atoms_survive_to_the_output(bars):
+    """
+    Регрессия: контекстные атомы считались и молча выбрасывались.
+
+    До правки build_event_blocks срезал detect_atoms по SIGNATURE_ATOMS, и
+    девять фоновых атомов не доходили ни до выдачи, ни до bar_events — мерить
+    лифт по фону было не по чему.
+    """
+    blocks = events.build_event_blocks(bars)
+    assert "context_atoms" in blocks.columns
+
+    seen = {atom for row in blocks["context_atoms"] for atom in row}
+    assert seen, "ни одного контекстного атома не сохранилось"
+    assert seen <= events.CONTEXT_ATOMS
+
+    # Сессии покрывают сутки целиком, поэтому на любой истории обязаны быть.
+    assert seen & {"asia_session", "europe_session", "us_session"}
+
+    # Обратное разделение: в atoms контекст протечь не должен.
+    in_atoms = {atom for row in blocks["atoms"] for atom in row}
+    assert not (in_atoms & events.CONTEXT_ATOMS)
+
+
+def test_context_atoms_do_not_change_block_id(bars):
+    """
+    event_block_id — функция только от signature-атомов.
+
+    Бары с одинаковым набором signature-атомов обязаны получить один и тот же
+    блок, как бы ни различался их контекст. Иначе добавление любого фонового
+    атома дробило бы историческую выборку.
+    """
+    blocks = events.build_event_blocks(bars)
+    frame = pd.DataFrame({
+        "signature": blocks["atoms"].map(tuple),
+        "context": blocks["context_atoms"].map(tuple),
+        "block": blocks["event_block_id"],
+    })
+
+    grouped = frame.groupby("signature")
+    assert (grouped["block"].nunique() == 1).all()
+
+    # Проверка, что тест не вырожден: контекст внутри групп реально различается.
+    assert (grouped["context"].nunique() > 1).any()
+
+
+def test_signature_bits_are_pinned(bars):
+    """
+    Номера битов существующих атомов зафиксированы навсегда.
+
+    Вставка нового signature-атома в середину ATOM_FAMILY сдвинула бы биты, и
+    все исторические event_block_id сменили бы смысл — молча, без единой
+    ошибки. Новые атомы добавляются только в конец словаря.
+    """
+    assert events.SIGNATURE_ATOMS[:20] == [
+        "breakout_1d_high",
+        "breakdown_1d_low",
+        "breakout_1w_high",
+        "breakdown_1w_low",
+        "wide_range_bar",
+        "inside_bar",
+        "vol_expansion",
+        "vol_contraction",
+        "atr_spike",
+        "volume_spike",
+        "volume_dry",
+        "ema_cross_up",
+        "ema_cross_down",
+        "rsi_overbought",
+        "rsi_oversold",
+        "momentum_reversal_up",
+        "momentum_reversal_down",
+        "at_range_high",
+        "at_range_low",
+        "round_level_touch",
+    ]
+    assert [events.ATOM_BIT[a] for a in events.SIGNATURE_ATOMS[:20]] == list(range(20))
+    # Ровно двадцать: всё, что добавлялось после, — контекстное. Смена этого
+    # числа означает решение платить дроблением блоков и принимается отдельно
+    # (фаза 4 задачи SMC), а не заезжает попутной правкой.
+    assert len(events.SIGNATURE_ATOMS) == 20
+    # Знаковый int64 в build_event_blocks: 62 бита — потолок без переполнения.
+    assert len(events.SIGNATURE_ATOMS) <= 62
+    # Ни один атом не может быть одновременно фоном и происшествием.
+    assert not (set(events.SIGNATURE_ATOMS) & events.CONTEXT_ATOMS)
+    assert len(events.SIGNATURE_ATOMS) + len(events.CONTEXT_ATOM_LIST) == len(events.ATOMS)

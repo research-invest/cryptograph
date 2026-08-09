@@ -199,6 +199,86 @@ class CandidateConfig:
 
 
 @dataclass(frozen=True)
+class SMCConfig:
+    """
+    Параметры детекторов Smart Money (docs/task_smc_integration.md, раздел 9).
+
+    Все пороги заданы в ATR или в барах, ни один — в долларах: детектор,
+    зависящий от абсолютной цены, на истории с 2017 года измеряет эпоху,
+    а не рынок, и на SOL означает не то же, что на BTC.
+    """
+
+    # Выключателя ДВА, потому что у двух половин SMC разная цена.
+    #
+    # enabled — контекстные атомы. Дёшево и обратимо: в маску они не входят,
+    # event_block_id не меняют, переобучения не требуют. live со старой
+    # моделью просто пишет их в bar_events.context_atoms, и по ним можно
+    # мерить лифт.
+    #
+    # features_enabled — двенадцать величин в векторе признаков. Дорого:
+    # FEATURE_VERSION становится v2, нужен полный train, group_id
+    # перенумеровываются. И, по замеру, вредно: добавление двенадцати
+    # признаков любой природы обрушивает число состояний (у BTC 43 → 31, у
+    # чистого шума той же формы 43 → 22), потому что пороги дробления
+    # калибровались на 32 измерениях. Включать только вместе с
+    # перекалибровкой split_gain и merge_separation.
+    #
+    # Раздельно — чтобы включение атомов в бою не делало следующий train
+    # молча сорокачетырёхмерным. Один флаг на обе половины ровно это и
+    # означал бы.
+    enabled: bool = _env_bool("SMC_ENABLED", False)
+    features_enabled: bool = _env_bool("SMC_FEATURES_ENABLED", False)
+
+    @property
+    def features_on(self) -> bool:
+        """Признаки считаются, только если включены обе половины."""
+        return self.enabled and self.features_enabled
+
+    # Баров слева и справа для подтверждения свинга. right задаёт лаг ВСЕХ
+    # структурных детекторов: свинг на баре i становится известен только на
+    # баре i + right. Это не недостаток, а условие честности — центрированное
+    # окно без сдвига читает будущее.
+    swing_left: int = _env_int("SMC_SWING_LEFT", 3)
+    swing_right: int = _env_int("SMC_SWING_RIGHT", 3)
+
+    # Порог «крупного» FVG в ATR. Значение измерено в фазе 2, а не выбрано:
+    # при 0.5 детектор срабатывает на 4.6–5.1% баров и в signature не проходит
+    # (бюджет — 3%), при 0.7 выходит 2.7–2.9% на всех трёх монетах.
+    # Распределение размера разрыва в ATR у BTC, ETH и SOL совпадает с точностью
+    # до второго знака (p50 = 0.24 / 0.25 / 0.27), поэтому порог общий и
+    # помонетных переопределений не требует.
+    fvg_min_atr: float = _env_float("SMC_FVG_MIN_ATR", 0.7)
+
+    # Возраст выбывания из реестров. Нужен не для точности, а чтобы реестры
+    # не росли неограниченно: без него один проход по 300k баров деградирует
+    # в квадратичный.
+    fvg_max_age_bars: int = _env_int("SMC_FVG_MAX_AGE_BARS", 672)      # неделя
+    ob_max_age_bars: int = _env_int("SMC_OB_MAX_AGE_BARS", 672)        # неделя
+    level_max_age_bars: int = _env_int("SMC_LEVEL_MAX_AGE_BARS", 2688)  # месяц
+
+    # Допуск, в пределах которого два свинга считаются одним уровнем.
+    eq_tolerance_atr: float = _env_float("SMC_EQ_TOLERANCE_ATR", 0.15)
+    level_tolerance_atr: float = _env_float("SMC_LEVEL_TOLERANCE_ATR", 0.25)
+
+    # Окно возврата после снятия ликвидности. Снятие без возврата — обычный
+    # пробой; именно возврат отличает sweep от breakout.
+    reclaim_bars: int = _env_int("SMC_RECLAIM_BARS", 4)
+
+    # Сколько баров назад искать свечу ордер-блока от слома структуры.
+    ob_lookback_bars: int = _env_int("SMC_OB_LOOKBACK_BARS", 20)
+
+    # Границы premium/discount. 0.382 и 0.618 — числа Фибоначчи, в SMC
+    # используются по соглашению; проверять их осмысленность — задача замера,
+    # а не кода.
+    discount_below: float = _env_float("SMC_DISCOUNT_BELOW", 0.382)
+    premium_above: float = _env_float("SMC_PREMIUM_ABOVE", 0.618)
+
+    # Нормировка счётчиков: log1p(x) / log1p(этого). Десять касаний одного
+    # уровня — уже «много», дальше разница несущественна.
+    count_norm_scale: float = _env_float("SMC_COUNT_NORM_SCALE", 10.0)
+
+
+@dataclass(frozen=True)
 class SinkConfig:
     mode: str = _env("SINK_MODE", "direct")  # direct | http | none
     # Каталог соседнего проекта btc-graph. Дефолт вычисляется от расположения
@@ -266,5 +346,6 @@ data = DataConfig()
 db = DBConfig()
 states = StatesConfig()
 candidates = CandidateConfig()
+smc = SMCConfig()
 sink = SinkConfig()
 admin = AdminConfig()

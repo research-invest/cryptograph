@@ -68,13 +68,14 @@ def save_events(events: pd.DataFrame, symbol: str | None = None) -> int:
         (
             symbol, ts.to_pydatetime(), r.event_block_id, list(r.atoms), list(r.families),
             int(r.atom_count), int(r.family_count), r.intensity, r.primary_family,
+            list(r.context_atoms),
         )
         for ts, r in events.iterrows()
     ]
     return bulk_upsert(
         "bar_events",
         ["symbol", "ts", "event_block_id", "atoms", "families", "atom_count",
-         "family_count", "intensity", "primary_family"],
+         "family_count", "intensity", "primary_family", "context_atoms"],
         rows,
         conflict_columns=["symbol", "ts"],
     )

@@ -56,7 +56,10 @@
 </div>
 {% endif %}
 
-<div hx-get="/runs" hx-trigger="every 3s" hx-target="this">
+{# Автообновление несёт текущую страницу и фильтр — иначе таблица
+   возвращалась бы на первую страницу каждые три секунды. #}
+<div hx-get="/runs?page_no={{ page_no }}{% if kind %}&kind={{ kind }}{% endif %}"
+     hx-trigger="every 3s" hx-target="this">
   {% include "partials/runs_table.html" %}
 </div>
 {% endblock %}

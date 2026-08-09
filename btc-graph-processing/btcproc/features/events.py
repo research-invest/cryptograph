@@ -62,9 +62,47 @@ ATOM_FAMILY: dict[str, str] = {
     "europe_session": "session_events",
     "us_session": "session_events",
     "weekend": "session_events",
+
+    # ─── Smart Money, добавлены 2026-08-09 ──────────────────────────────────
+    # Все шестнадцать — контекстные, то есть в маску не входят и биты 0–19 не
+    # сдвигают. Это сознательный порядок работы: сначала завести детекторы
+    # фоном и измерить лифт бесплатно, и только потом двигать выжившие в
+    # signature, платя дроблением блоков. Обратный порядок означал бы платить
+    # за атомы до того, как выяснится, что они дают.
+    #
+    # Считаются только при SMC_ENABLED=true; иначе колонки есть, но всегда
+    # False — набор имён не должен зависеть от флага, иначе CONTEXT_ATOMS
+    # описывал бы то одно, то другое.
+    "bos_up": "structure_events",
+    "bos_down": "structure_events",
+    "choch_up": "structure_events",
+    "choch_down": "structure_events",
+    "structure_bullish": "structure_events",
+
+    "fvg_formed_large": "imbalance_events",
+    "in_unfilled_fvg": "imbalance_events",
+
+    "sweep_high": "liquidity_events",
+    "sweep_low": "liquidity_events",
+    "sweep_high_reclaim": "liquidity_events",
+    "sweep_low_reclaim": "liquidity_events",
+
+    "in_bullish_ob": "zone_events",
+    "in_bearish_ob": "zone_events",
+    "in_breaker": "zone_events",
+    "in_discount": "zone_events",
+    "in_premium": "zone_events",
 }
 
 ATOMS = list(ATOM_FAMILY)
+
+# Что из smc.BOOLEAN_COLUMNS сюда НЕ попало и почему (замер — фаза 2,
+# development_log.md, раздел 14):
+#   eqh_above, eql_below  — истинны на 95–98% баров, вырождены;
+#   structure_bearish     — точное отрицание structure_bullish, лишний бит.
+SMC_ATOMS = [a for a, family in ATOM_FAMILY.items()
+             if family in {"structure_events", "imbalance_events",
+                           "liquidity_events", "zone_events"}]
 
 # В блок событий входят только «происшествия» — пробой, всплеск, кросс,
 # разворот. Атомы вроде trend_up_align или us_session описывают не событие,
@@ -73,7 +111,11 @@ ATOMS = list(ATOM_FAMILY)
 # конкретному блоку никогда не набирается.
 #
 # Фоновые атомы не пропадают: они уже учтены в векторе признаков (а значит,
-# в самом group_id) и остаются в bar_events для разбора.
+# в самом group_id) и сохраняются отдельной колонкой — context_atoms в выдаче
+# build_event_blocks и одноимённая колонка bar_events. Отдельной, а не общей
+# с atoms, именно чтобы их нельзя было случайно подмешать в маску: atoms,
+# atom_count, families и primary_family описывают ровно то, что закодировано
+# в event_block_id, и это свойство держит связку «блок ↔ его расшифровка».
 CONTEXT_ATOMS = {
     "trend_up_align",
     "trend_down_align",
@@ -84,10 +126,16 @@ CONTEXT_ATOMS = {
     "europe_session",
     "us_session",
     "weekend",
+    *SMC_ATOMS,
 }
 
 SIGNATURE_ATOMS = [a for a in ATOMS if a not in CONTEXT_ATOMS]
 ATOM_BIT = {atom: i for i, atom in enumerate(SIGNATURE_ATOMS)}
+
+# Порядок берётся из ATOM_FAMILY, а не из множества CONTEXT_ATOMS: у множества
+# порядок обхода не гарантирован между запусками.
+CONTEXT_ATOM_LIST = [a for a in ATOMS if a in CONTEXT_ATOMS]
+CONTEXT_BIT = {atom: i for i, atom in enumerate(CONTEXT_ATOM_LIST)}
 
 # Порог редкости блока по доле баров, в которых он встречался.
 RARE_SHARE = 0.002
@@ -171,11 +219,42 @@ def detect_atoms(base: pd.DataFrame) -> pd.DataFrame:
     a["us_session"] = pd.Series((hour >= 14) & (hour < 22), index=base.index)
     a["weekend"] = pd.Series(dow >= 5, index=base.index)
 
+    _attach_smc(a, base)
+
     return a[ATOMS].fillna(False).astype(bool)
+
+
+def _attach_smc(a: pd.DataFrame, base: pd.DataFrame) -> None:
+    """
+    Шестнадцать SMC-атомов — или шестнадцать пустых колонок, если выключено.
+
+    Колонки заводятся в обоих случаях: ATOMS перечисляет их безусловно, и
+    отсутствие колонки при выключенном флаге уронило бы срез `a[ATOMS]`.
+    Пустые колонки в блок не попадают (все атомы контекстные) и в
+    bar_events.context_atoms не пишутся, потому что там хранятся только
+    активные имена.
+
+    Импорт внутри функции: smc.py тянет тяжёлый расчёт, а detect_atoms зовут
+    и из мест, где SMC выключен.
+    """
+    from btcproc.features import smc
+
+    if not config.smc.enabled:
+        for name in SMC_ATOMS:
+            a[name] = False
+        return
+
+    values = smc.build_smc_cached(base)
+    for name in SMC_ATOMS:
+        a[name] = values[name]
 
 
 def _mask_to_atoms(mask: int) -> list[str]:
     return [atom for atom, bit in ATOM_BIT.items() if mask >> bit & 1]
+
+
+def _mask_to_context_atoms(mask: int) -> list[str]:
+    return [atom for atom, bit in CONTEXT_BIT.items() if mask >> bit & 1]
 
 
 def block_id(mask: int) -> str:
@@ -213,22 +292,33 @@ def build_event_blocks(base: pd.DataFrame, window_bars: int | None = None) -> pd
     (по умолчанию час). Внутри окна атомы объединяются по ИЛИ: событие часовой
     давности всё ещё описывает контекст текущего бара.
 
-    Возвращает: event_block_id, atoms, families, atom_count, family_count,
-    intensity, primary_family.
+    Возвращает: event_block_id, atoms, context_atoms, families, atom_count,
+    family_count, intensity, primary_family.
+
+    В маску (а значит, в event_block_id, atoms, families, atom_count и
+    primary_family) входят только SIGNATURE_ATOMS. Контекстные атомы едут
+    отдельной колонкой context_atoms: на идентификатор блока они не влияют,
+    но нужны для разбора — без них лифт по фоновым признакам не измерить.
     """
     if base.empty:
         return pd.DataFrame()
 
     window_bars = window_bars or config.data.bars_per("1h")
-    atoms = detect_atoms(base)[SIGNATURE_ATOMS]
-    # Скользящее ИЛИ по окну.
-    active = atoms.rolling(window_bars, min_periods=1).max().astype(bool)
+    detected = detect_atoms(base)
+    # Скользящее ИЛИ по окну. Считается сразу по всем атомам: max по окну
+    # берётся поколоночно, поэтому срез до или после роллинга даёт одно и то же.
+    rolled = detected.rolling(window_bars, min_periods=1).max().astype(bool)
+    active = rolled[SIGNATURE_ATOMS]
+    context = rolled[CONTEXT_ATOM_LIST]
 
     bits = np.arange(len(SIGNATURE_ATOMS), dtype=np.int64)
     masks = (active.to_numpy(dtype=np.int64) << bits).sum(axis=1)
+    context_bits = np.arange(len(CONTEXT_ATOM_LIST), dtype=np.int64)
+    context_masks = (context.to_numpy(dtype=np.int64) << context_bits).sum(axis=1)
 
     out = pd.DataFrame(index=base.index)
     out["mask"] = masks
+    out["context_mask"] = context_masks
     out["atom_count"] = active.sum(axis=1).astype(int)
 
     # Уникальных масок на порядки меньше, чем баров, — расшифровываем их
@@ -254,8 +344,14 @@ def build_event_blocks(base: pd.DataFrame, window_bars: int | None = None) -> pd
         out[field] = out["mask"].map(lambda m, f=field: meta[int(m)][f])
     out["intensity"] = out["atom_count"].map(intensity_bucket)
 
+    # Контекстных комбинаций максимум 2^9 — расшифровываем так же, по маскам.
+    context_meta = {
+        int(m): _mask_to_context_atoms(int(m)) for m in pd.unique(context_masks)
+    }
+    out["context_atoms"] = out["context_mask"].map(lambda m: context_meta[int(m)])
+
     logger.info("Блоков событий: %d уникальных на %d баров", len(unique), len(out))
-    return out.drop(columns=["mask"])
+    return out.drop(columns=["mask", "context_mask"])
 
 
 def block_statistics(events: pd.DataFrame) -> pd.DataFrame:

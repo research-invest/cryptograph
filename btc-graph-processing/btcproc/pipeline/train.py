@@ -144,10 +144,10 @@ def run_train(
         if features.empty:
             raise RuntimeError("Признаки не посчитались — слишком короткая история.")
         repo.save_feature_set(
-            feat.FEATURE_VERSION, list(features.columns),
+            feat.feature_version(), list(features.columns),
             {"base_tf": config.data.base_tf, "context": config.data.context_tfs},
         )
-        repo.save_features(features, feat.FEATURE_VERSION, symbol)
+        repo.save_features(features, feat.feature_version(), symbol)
         stats["features"] = {"rows": len(features), "columns": features.shape[1]}
         progress.finish(f"{features.shape[1]} признаков × {len(features)} строк")
 
@@ -182,7 +182,7 @@ def run_train(
             progress=lambda msg, frac: progress.within(frac, msg),
         )
         states = assign.assign_states(features.index, raw_labels)
-        repo.save_state_model(run_id, model, feat.FEATURE_VERSION)
+        repo.save_state_model(run_id, model, feat.feature_version())
         repo.save_bar_states(run_id, states, symbol)
         stats["states"] = {
             "groups": model.n_groups,

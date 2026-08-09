@@ -24,7 +24,26 @@ from btcproc.features import indicators as ind
 
 logger = logging.getLogger(__name__)
 
-FEATURE_VERSION = "v1"
+# Версия помечает НАБОР признаков, а наборов теперь два: 32 базовых и они же
+# плюс 12 SMC-величин. Одна метка на оба набора означала бы, что feature_sets
+# .names перезаписывается при смене флага, а старые строки features остаются
+# массивами прежней длины — молча, до первого чтения.
+#
+# Отсюда же следует, что версия не константа, а функция флага: константу
+# пришлось бы держать синхронной с окружением вручную.
+BASE_FEATURE_VERSION = "v1"
+SMC_FEATURE_VERSION = "v2"
+
+
+def feature_version() -> str:
+    """
+    Метка текущего набора признаков.
+
+    Зависит от SMC_FEATURES_ENABLED, а не от SMC_ENABLED: атомы можно включить
+    отдельно, и они на состав вектора не влияют.
+    """
+    return SMC_FEATURE_VERSION if config.smc.features_on else BASE_FEATURE_VERSION
+
 
 # Окна в базовых барах при base_tf=15m.
 W_1H, W_4H, W_1D, W_1W, W_1M = 4, 16, 96, 672, 2688
@@ -131,6 +150,15 @@ def build_features(
         if ctx is None or ctx.empty:
             continue
         f = f.join(_context_features(base.index, ctx, tf))
+
+    # ── Smart Money ─────────────────────────────────────────────────────────
+    # Двенадцать величин: расстояния в ATR, возрасты и доли. Все стационарны
+    # по построению и проверены замером (фаза 2): ни одна не коррелирует с
+    # существующими выше 0.75, дубликатов нет.
+    if config.smc.features_on:
+        from btcproc.features import smc
+
+        f = f.join(smc.build_smc_cached(base)[smc.FEATURE_CANDIDATES])
 
     f = f.replace([np.inf, -np.inf], np.nan).dropna()
     logger.info("Признаков: %d, строк после прогрева: %d", f.shape[1], len(f))

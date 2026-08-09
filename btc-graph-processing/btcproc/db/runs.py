@@ -114,16 +114,47 @@ def get_run(run_id: int) -> dict | None:
     return fetch_one("SELECT * FROM runs WHERE run_id = %s", (run_id,))
 
 
-def list_runs(limit: int = 50, symbol: str | None = None) -> list[dict]:
-    """Последние прогоны. symbol=None — по всем монетам."""
+def list_runs(limit: int = 50, symbol: str | None = None,
+              offset: int = 0, kind: str | None = None) -> list[dict]:
+    """
+    Прогоны от свежих к старым. symbol=None — по всем монетам.
+
+    Сортировка по `started_at DESC`, а не по `run_id`: при `--all` монеты идут
+    последовательно и номера растут вместе со временем, но прогон, запущенный
+    из админки во время крон-прогона, может получить номер меньше при более
+    позднем старте.
+    """
     sql = "SELECT * FROM runs"
+    conditions: list[str] = []
     params: list[Any] = []
     if symbol:
-        sql += " WHERE symbol = %s"
+        conditions.append("symbol = %s")
         params.append(symbol)
-    sql += " ORDER BY started_at DESC LIMIT %s"
-    params.append(limit)
+    if kind:
+        conditions.append("kind = %s")
+        params.append(kind)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY started_at DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
     return fetch_all(sql, params)
+
+
+def count_runs(symbol: str | None = None, kind: str | None = None) -> int:
+    """Сколько всего прогонов подходит под фильтр — для пагинации."""
+    sql = "SELECT count(*) AS n FROM runs"
+    conditions: list[str] = []
+    params: list[Any] = []
+    if symbol:
+        conditions.append("symbol = %s")
+        params.append(symbol)
+    if kind:
+        conditions.append("kind = %s")
+        params.append(kind)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    row = fetch_one(sql, params)
+    return int(row["n"]) if row else 0
 
 
 def active_run(kind: str | None = None, symbol: str | None = None) -> dict | None:
@@ -175,6 +206,36 @@ def latest_completed_run(kind: str = "train", symbol: str | None = None) -> dict
         sql += " AND symbol = %s"
         params.append(symbol)
     return fetch_one(sql + " ORDER BY finished_at DESC LIMIT 1", tuple(params))
+
+
+def model_run_scope(run_id: int) -> tuple[str, list[Any]]:
+    """
+    SQL-условие «строки, посчитанные ЭТОЙ моделью состояний».
+
+    Одна модель живёт во многих прогонах: сам `train`, который её обучил, и все
+    последующие `live`, которые её загрузили. Поэтому фильтр `run_id = N`
+    означает не «эта модель», а «этот запуск» — куда более узкое множество.
+
+    Пренебрежение этим различием даёт две разные беды, и обе тихие:
+
+    * **в админке** — страницы замирают на моменте последнего обучения, потому
+      что всё выпущенное краном лежит под другими `run_id`. Выглядит как
+      «кандидаты пропали», хотя они на месте и исправно оценены;
+    * **в замерах** — если, наоборот, взять всех кандидатов монеты, в выборку
+      попадут записи от прежних моделей. `group_id` и `transition_id` у них из
+      чужой нумерации, а на базе разработчика с несколькими частичными
+      прогонами такие записи ещё и скапливаются в свежем периоде, ломая
+      разбиение на обучение и holdout.
+
+    Связь live → модель хранится в `runs.params.model_run_id`; сравнение идёт
+    с текстом, а не с числом, чтобы отсутствующий или нечисловой ключ не ронял
+    запрос приведением типа.
+    """
+    return (
+        "(run_id = %s OR run_id IN ("
+        " SELECT run_id FROM runs WHERE params->>'model_run_id' = %s))",
+        [run_id, str(run_id)],
+    )
 
 
 def symbols_with_runs() -> list[str]:

@@ -39,6 +39,10 @@ def _resolve(symbol: list[str] | None, all_symbols: bool) -> list[symbols.Symbol
         raise typer.BadParameter(str(exc)) from exc
 
 
+class SkipBusy(Exception):
+    """Прогон пропущен, потому что по монете уже идёт другой. Не ошибка."""
+
+
 def _run_for_each(
     specs: list[symbols.SymbolSpec],
     action,
@@ -57,6 +61,7 @@ def _run_for_each(
         рапортовать об успехе.
     """
     failures: list[tuple[str, str]] = []
+    skipped: list[str] = []
     ok = 0
 
     for spec in specs:
@@ -64,6 +69,12 @@ def _run_for_each(
             typer.echo(f"\n=== {spec.ticker} ({what}) ===")
         try:
             result = action(spec)
+        except SkipBusy as skip:
+            # Не провал: монета занята другим прогоном, и так и задумано.
+            # В failures не попадает, значит exit code остаётся нулевым.
+            skipped.append(spec.ticker)
+            typer.echo(typer.style(f"  пропуск: {skip}", fg=typer.colors.YELLOW))
+            continue
         except Exception as exc:  # noqa: BLE001 — падение одной монеты не рушит пакет
             failures.append((spec.ticker, f"{type(exc).__name__}: {exc}"))
             typer.echo(typer.style(f"  ОШИБКА {spec.ticker}: {exc}", fg=typer.colors.RED))
@@ -73,7 +84,8 @@ def _run_for_each(
             typer.echo(runs_repo.dumps(result))
 
     if len(specs) > 1:
-        typer.echo(f"\nИтог: {ok} из {len(specs)} успешно")
+        tail = f", пропущено {len(skipped)}" if skipped else ""
+        typer.echo(f"\nИтог: {ok} из {len(specs)} успешно{tail}")
         for ticker, error in failures:
             typer.echo(f"  {ticker}: {error}")
 
@@ -148,20 +160,31 @@ def ingest(
         raise typer.Exit(code=1)
 
 
-def _guard_active_run(force: bool, symbol: str) -> None:
+def _guard_active_run(force: bool, symbol: str, skip_if_busy: bool = False) -> None:
     """
     Два тяжёлых прогона ОДНОЙ монеты одновременно — это гонка за одни и те же
     строки и вдвое большая нагрузка на БД. Прогоны разных монет независимы
     и блокировать друг друга не должны: иначе мультимонетность сводится
     к очереди из одной монеты за раз.
+
+    skip_if_busy меняет реакцию, а не саму проверку. Для человека за
+    клавиатурой «идёт другой прогон» — ошибка: он хотел запустить и не
+    запустил. Для расписания это норма: раз в неделю `train` занимает монету
+    на полчаса, и попавший на него получасовой `live` должен молча уступить,
+    а не сыпать в лог ошибками до конца обучения. Догонит на следующем
+    запуске — точка продолжения берётся из данных, а не из календаря.
     """
     active = runs_repo.active_run(symbol=symbol)
-    if active and not force:
-        raise typer.BadParameter(
-            f"По {symbol} уже идёт прогон #{active['run_id']} ({active['kind']}, "
-            f"стадия {active['stage'] or '—'}, {active['progress']:.0%}). "
-            "Дождись окончания или запусти с --force."
-        )
+    if not active or force:
+        return
+    detail = (f"#{active['run_id']} ({active['kind']}, стадия "
+              f"{active['stage'] or '—'}, {active['progress']:.0%})")
+    if skip_if_busy:
+        raise SkipBusy(f"по {symbol} идёт прогон {detail} — пропускаю")
+    raise typer.BadParameter(
+        f"По {symbol} уже идёт прогон {detail}. "
+        "Дождись окончания или запусти с --force."
+    )
 
 
 @app.command()
@@ -173,6 +196,10 @@ def train(
     ingest_data: bool = typer.Option(True, "--ingest/--no-ingest", help="Качать историю"),
     emit: bool = typer.Option(True, "--emit/--no-emit", help="Слать кандидатов в btc-graph"),
     force: bool = typer.Option(False, "--force", help="Запустить, даже если идёт другой прогон"),
+    skip_if_busy: bool = typer.Option(
+        False, "--skip-if-busy",
+        help="Занятую монету пропустить без ошибки — для расписания",
+    ),
 ) -> None:
     """
     Полный прогон истории: от баров до кандидатов в btc-graph.
@@ -193,7 +220,7 @@ def train(
     )
 
     def action(spec: symbols.SymbolSpec) -> dict:
-        _guard_active_run(force, spec.ticker)
+        _guard_active_run(force, spec.ticker, skip_if_busy)
         return run_train(
             symbol=spec.ticker, start=start, end=end,
             do_ingest=ingest_data, do_emit=emit,
@@ -217,6 +244,10 @@ def live(
     ),
     emit: bool = typer.Option(True, "--emit/--no-emit"),
     force: bool = typer.Option(False, "--force", help="Запустить, даже если идёт другой прогон"),
+    skip_if_busy: bool = typer.Option(
+        False, "--skip-if-busy",
+        help="Занятую монету пропустить без ошибки — для расписания",
+    ),
 ) -> None:
     """
     Инкрементальный прогон по свежим барам.
@@ -235,7 +266,7 @@ def live(
         )
 
     def action(spec: symbols.SymbolSpec) -> dict:
-        _guard_active_run(force, spec.ticker)
+        _guard_active_run(force, spec.ticker, skip_if_busy)
         return run_live(
             symbol=spec.ticker,
             model_run_id=model_run,

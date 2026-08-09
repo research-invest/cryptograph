@@ -243,6 +243,19 @@ td.flags { color: var(--muted); font-size: 11.5px; max-width: 230px;
 
 .pager { display: flex; gap: 6px; margin-bottom: 12px; }
 
+/* Пагинация прогонов: три группы — счётчик, фильтр по типу, шаги. Растянуты
+   по ширине, потому что счётчик слева и навигация справа читаются быстрее,
+   чем всё в одну кучу. nav.pager, а не .pager — чтобы не задеть пагинацию
+   кандидатов, у которой другая разметка. */
+nav.pager {
+  justify-content: space-between; align-items: center;
+  flex-wrap: wrap; margin: 10px 0 0;
+}
+nav.pager .kinds, nav.pager .steps { display: flex; gap: 10px; }
+nav.pager a { text-decoration: none; }
+nav.pager a.on { font-weight: 600; color: var(--fg); }
+nav.pager .muted { opacity: .45; }
+
 /* ─── Панель инструментов ───────────────────────────────────────────────── */
 .toolbar {
   display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;

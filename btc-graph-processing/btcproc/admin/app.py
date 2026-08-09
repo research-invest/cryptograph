@@ -285,19 +285,45 @@ def help_page(request: Request):
     return page(request, "help.html", active="help")
 
 
+RUNS_PER_PAGE = 50
+
+
 @app.get("/runs", response_class=HTMLResponse)
-def runs_page(request: Request):
+def runs_page(request: Request, page_no: str | None = None, kind: str | None = None):
+    """
+    Список прогонов с пагинацией.
+
+    Пагинация появилась не для красоты: `live` идёт по крону каждые полчаса на
+    три монеты, то есть полторы сотни прогонов в сутки. Одним списком это
+    перестаёт быть читаемым за пару дней.
+
+    Номер страницы обязан переживать автообновление таблицы (оно раз в три
+    секунды), иначе пролистать список невозможно в принципе — он будет
+    прыгать на первую страницу быстрее, чем читаешь. Поэтому и hx-get в
+    шаблоне несёт текущие page и kind.
+    """
     template = "partials/runs_table.html" if request.headers.get("hx-request") \
         else "runs.html"
     # Прогоны показываем по всем монетам: это страница про загрузку машины,
     # а не про конкретный инструмент.
     active_runs = runs_repo.active_runs()
     limit = config.admin.max_concurrent_runs
-    return page(request, template, active="runs", runs=runs_repo.list_runs(50),
+
+    kind = opt_str(kind)
+    current = max(1, opt_int(page_no) or 1)
+    total = runs_repo.count_runs(kind=kind)
+    pages = max(1, -(-total // RUNS_PER_PAGE))       # деление вверх
+    current = min(current, pages)
+
+    return page(request, template, active="runs",
+                runs=runs_repo.list_runs(
+                    RUNS_PER_PAGE, offset=(current - 1) * RUNS_PER_PAGE, kind=kind,
+                ),
                 active_run=runs_repo.active_run(),
                 active_runs=active_runs,
                 max_concurrent=limit,
-                at_capacity=len(active_runs) >= limit)
+                at_capacity=len(active_runs) >= limit,
+                page_no=current, pages=pages, total_runs=total, kind=kind)
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)

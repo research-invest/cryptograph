@@ -30,3 +30,45 @@
   {% endfor %}
   </tbody>
 </table>
+
+{# Пагинация и фильтр.
+
+   Весь блок под `pages is defined`: этот же шаблон включает дашборд — там
+   таблица показывает шесть последних прогонов и пагинация не нужна, а
+   контекста для неё нет. Без проверки `{% if page_no > 1 %}` сравнивает
+   Undefined с числом и роняет страницу целиком. Ровно так и случилось:
+   упали обе страницы сразу, потому что шаблон общий.
+
+   Ссылки обычные, не hx: htmx здесь обновляет таблицу по таймеру, и если бы
+   переход по странице шёл тем же механизмом, следующий же тик вернул бы
+   на первую страницу. #}
+{% if pages is defined %}
+<nav class="pager">
+  <span class="muted">
+    Всего прогонов: {{ total_runs }}{% if kind %} (только {{ kind }}){% endif %},
+    страница {{ page_no }} из {{ pages }}
+  </span>
+
+  <span class="kinds">
+    <a href="/runs{% if not kind %}" class="on{% else %}{% endif %}">все</a>
+    <a href="/runs?kind=train{% if kind == 'train' %}" class="on{% else %}{% endif %}">train</a>
+    <a href="/runs?kind=live{% if kind == 'live' %}" class="on{% else %}{% endif %}">live</a>
+  </span>
+
+  <span class="steps">
+    {% set q = '&kind=' ~ kind if kind else '' %}
+    {% if page_no > 1 %}
+      <a href="/runs?page_no=1{{ q }}">« в начало</a>
+      <a href="/runs?page_no={{ page_no - 1 }}{{ q }}">‹ новее</a>
+    {% else %}
+      <span class="muted">« в начало</span><span class="muted">‹ новее</span>
+    {% endif %}
+    {% if page_no < pages %}
+      <a href="/runs?page_no={{ page_no + 1 }}{{ q }}">старее ›</a>
+      <a href="/runs?page_no={{ pages }}{{ q }}">в конец »</a>
+    {% else %}
+      <span class="muted">старее ›</span><span class="muted">в конец »</span>
+    {% endif %}
+  </span>
+</nav>
+{% endif %}

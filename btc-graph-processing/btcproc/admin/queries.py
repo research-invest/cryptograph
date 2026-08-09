@@ -18,6 +18,12 @@ from btcproc.db.session import fetch_all, fetch_one
 MARKER_LIMIT = 500
 
 
+# Область видимости прогонов живёт в db/runs.py: ею пользуется не только
+# админка, но и замеры в scripts/, а дублировать такое условие нельзя —
+# разъедутся молча.
+model_run_scope = runs_repo.model_run_scope
+
+
 def overview(symbol: str | None = None) -> dict:
     """
     Сводка для дашборда по выбранной монете.
@@ -37,6 +43,7 @@ def overview(symbol: str | None = None) -> dict:
     # Фильтр по монете нужен даже при фильтре по run_id: run_id уже задаёт
     # монету, но без symbol запрос без прогона (run_id=None) посчитал бы
     # кандидатов всех монет сразу.
+    scope_sql, scope_params = model_run_scope(run_id) if run_id else ("", [])
     totals = fetch_one(
         "SELECT count(*) AS candidates, "
         "count(*) FILTER (WHERE emitted_at IS NOT NULL) AS emitted, "
@@ -44,8 +51,8 @@ def overview(symbol: str | None = None) -> dict:
         "count(*) FILTER (WHERE rating = 'MODERATE') AS moderate, "
         "count(*) FILTER (WHERE rating = 'WEAK') AS weak, "
         "avg(quality_score) AS avg_quality "
-        "FROM candidates WHERE symbol = %s" + (" AND run_id = %s" if run_id else ""),
-        (symbol, run_id) if run_id else (symbol,),
+        "FROM candidates WHERE symbol = %s" + (f" AND {scope_sql}" if run_id else ""),
+        [symbol, *scope_params],
     ) or {}
 
     graph_size = fetch_one(
@@ -77,8 +84,9 @@ def rating_distribution(run_id: int | None = None, symbol: str | None = None) ->
         sql += " AND symbol = %s"
         params.append(symbol)
     if run_id:
-        sql += " AND run_id = %s"
-        params.append(run_id)
+        scope_sql, scope_params = model_run_scope(run_id)
+        sql += f" AND {scope_sql}"
+        params.extend(scope_params)
     sql += " GROUP BY rating, direction ORDER BY rating, direction"
     return fetch_all(sql, params)
 
@@ -176,11 +184,13 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     if rating == "none":
         candidates = []
     else:
+        scope_sql, scope_params = model_run_scope(run_id)
         sql_c = (
             "SELECT candidate_id, ts, research_side, rating, quality_score, transition_id "
-            "FROM candidates WHERE run_id = %s AND ts BETWEEN %s AND %s"
+            "FROM candidates "
+            f"WHERE symbol = %s AND ts BETWEEN %s AND %s AND {scope_sql}"
         )
-        params_c: list[Any] = [run_id, first_ts, last_ts]
+        params_c: list[Any] = [symbol, first_ts, last_ts, *scope_params]
         if rating:
             sql_c += " AND rating = ANY(%s)"
             params_c.append([r.strip() for r in rating.split(",") if r.strip()])
