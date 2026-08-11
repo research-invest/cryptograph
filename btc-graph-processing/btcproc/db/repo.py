@@ -62,38 +62,56 @@ def load_features(version: str, symbol: str | None = None) -> pd.DataFrame:
 
 
 # ─── События ────────────────────────────────────────────────────────────────
-def save_events(events: pd.DataFrame, symbol: str | None = None) -> int:
+def save_events(events: pd.DataFrame, symbol: str | None = None,
+                version: str | None = None) -> int:
+    """
+    Разметка баров атомами.
+
+    `version` — метка НАБОРА атомов (`events.event_version()`), а не формата
+    таблицы. Без неё строки прогонов с разным составом детекторов внешне
+    неотличимы, а смысл `event_block_id` у них разный. Дефолт берётся из
+    текущей конфигурации: вызывающему не надо помнить про параметр, но
+    подменить его (бэкфилл, сверка) можно.
+    """
+    from btcproc.features import events as ev
+
     symbol = symbol or config.data.symbol
+    version = version or ev.event_version()
     rows = [
         (
             symbol, ts.to_pydatetime(), r.event_block_id, list(r.atoms), list(r.families),
             int(r.atom_count), int(r.family_count), r.intensity, r.primary_family,
-            list(r.context_atoms),
+            list(r.context_atoms), version,
         )
         for ts, r in events.iterrows()
     ]
     return bulk_upsert(
         "bar_events",
         ["symbol", "ts", "event_block_id", "atoms", "families", "atom_count",
-         "family_count", "intensity", "primary_family", "context_atoms"],
+         "family_count", "intensity", "primary_family", "context_atoms", "version"],
         rows,
         conflict_columns=["symbol", "ts"],
     )
 
 
-def save_event_blocks(run_id: int, blocks: pd.DataFrame) -> int:
+def save_event_blocks(run_id: int, blocks: pd.DataFrame,
+                      version: str | None = None) -> int:
+    from btcproc.features import events as ev
+
+    version = version or ev.event_version()
     rows = [
         (
             run_id, r.event_block_id, int(r.total_rows), float(r.row_share), r.rarity,
             r.intensity, int(r.atom_count), int(r.family_count), r.primary_family,
             list(r.families) if isinstance(r.families, (list, tuple)) else None,
+            version,
         )
         for _, r in blocks.iterrows()
     ]
     return bulk_upsert(
         "event_blocks",
         ["run_id", "event_block_id", "total_rows", "row_share", "rarity", "intensity",
-         "atom_count", "family_count", "primary_family", "families"],
+         "atom_count", "family_count", "primary_family", "families", "version"],
         rows,
         conflict_columns=["run_id", "event_block_id"],
     )

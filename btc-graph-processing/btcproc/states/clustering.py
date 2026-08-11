@@ -5,9 +5,12 @@
 
   1. стартовое грубое разбиение на несколько крупных облаков;
   2. **дробление**: группа делится надвое, если внутри неё есть структура —
-     проверяется силуэтом разбиения против силуэта случайной равномерной
-     выборки той же формы (gap-критерий). Без такой поправки KMeans всегда
-     «находит» два кластера даже в однородном шаре;
+     проверяется силуэтом разбиения против силуэта нескольких случайных
+     равномерных выборок той же формы (gap statistic), с порогом в сигмах
+     этих выборок. Без такой поправки KMeans всегда «находит» два кластера
+     даже в однородном шаре; без сигм порог зависел бы от размерности, и
+     каждый новый источник признаков менял бы гранулярность графа сам по
+     себе (см. `_split_gain`);
   3. **слияние**: пара групп схлопывается, если расстояние между центроидами
      меньше их собственного разброса — то есть различие между ними меньше
      внутреннего шума.
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -82,8 +86,41 @@ def _split_gain(x: np.ndarray, rng: np.random.Generator, cfg: config.StatesConfi
     """
     Насколько разбиение надвое лучше, чем то же разбиение случайного облака.
 
-    Положительный результат = внутри группы действительно две структуры,
-    а не просто произвольный разрез однородного множества.
+    Полная форма gap statistic Тибширани: референсов несколько, а порог
+    выражен в их собственных сигмах, а не в абсолютных долях силуэта.
+    Возвращает уже величину со ВЗЯТЫМ порогом, поэтому решение о дроблении —
+    это просто `gain > 0`.
+
+        gain = silhouette(real) − mean(silhouette(refs)) − k·σ(refs)
+
+    Почему не «real − ref» с абсолютным порогом, как было до 2026-08-11:
+
+    * **B = 1.** Силуэт случайного облака — случайная величина со своей
+      дисперсией. Сравнение с одним draw при пороге 0.02 означало, что
+      решения вблизи границы определял шум этого draw. `rng` засеян, поэтому
+      на идентичных данных всё воспроизводилось, — но лишняя неделя баров
+      меняла подвыборку, меняла draw, и решения переворачивались. Отсюда
+      разброс числа состояний у ETH 29 → 26 → 42 между прогонами.
+    * **Абсолютный порог зависит от размерности.** В 44 измерениях
+      концентрация расстояний сжимает и real, и ref, но неодинаково, и
+      константа, подобранная на 32, означает там другую строгость. Из-за
+      этого граф обрушивали двенадцать признаков ЛЮБОЙ природы, включая
+      случайные, — свойство калибровки, а не источника.
+
+    Порог в сигмах самонормируется: сигма меряется в тех же единицах, в
+    которых сжался силуэт. Стоимость — B прогонов KMeans по референсу вместо
+    одного, но с `n_init=1`: референс однороден, множественные старты ему
+    ничего не дают, а B прогонов по три старта утроили бы счёт.
+
+    **Чего это НЕ чинит.** Замер 2026-08-11: на крупных группах BTC `gain`
+    по восьми разным подвыборкам силуэта даёт +0.032 ± 0.007 (решение
+    «дробить» 8 из 8) и −0.019 ± 0.010 (1 из 8). То есть сам критерий вдали
+    от границы воспроизводим уверенно, а у границы переворачивается — и
+    дальше рекурсия усиливает единственный перевёрнутый выбор во всё
+    поддерево. Поэтому число состояний остаётся чувствительным к малым
+    изменениям данных у монет, чьё дерево упирается в `max_depth` (у SOL —
+    упирается). Лечится это не порогом, а `states_overrides` монеты; разбор —
+    development_log.md, 21.14.
     """
     sample = _subsample(x, cfg.silhouette_sample, rng)
     if len(sample) < 50:
@@ -94,13 +131,30 @@ def _split_gain(x: np.ndarray, rng: np.random.Generator, cfg: config.StatesConfi
         return -1.0
     real = silhouette_score(sample, labels)
 
-    # Референс: равномерное облако в том же bounding box.
+    # Референсы: равномерные облака в том же bounding box.
     low, high = sample.min(axis=0), sample.max(axis=0)
-    reference = rng.uniform(low, high, size=sample.shape)
-    ref_labels = KMeans(n_clusters=2, n_init=3, random_state=cfg.random_state).fit_predict(reference)
-    ref = silhouette_score(reference, ref_labels)
+    draws = max(1, cfg.split_reference_draws)
+    refs = np.empty(draws, dtype=float)
+    for i in range(draws):
+        reference = rng.uniform(low, high, size=sample.shape)
+        ref_labels = KMeans(
+            n_clusters=2, n_init=1, random_state=cfg.random_state + i
+        ).fit_predict(reference)
+        if len(np.unique(ref_labels)) < 2:
+            refs[i] = 0.0
+            continue
+        refs[i] = silhouette_score(reference, ref_labels)
 
-    return float(real - ref)
+    if draws < 2:
+        # Один референс — сигму оценить не по чему; ведём себя как старая
+        # реализация, чтобы конфигурация с B=1 хотя бы не врала знаком.
+        return float(real - refs.mean())
+
+    # Поправка √(1 + 1/B) — стандартная у Тибширани: сигма референса сама
+    # оценена по B наблюдениям, и её собственная неопределённость входит
+    # в порог.
+    sigma = float(refs.std(ddof=1)) * math.sqrt(1.0 + 1.0 / draws)
+    return float(real - refs.mean() - cfg.split_gain_sigma * sigma)
 
 
 def effective_min_group_size(cfg: config.StatesConfig, n_samples: int) -> int:
@@ -136,8 +190,9 @@ def _recursive_split(
         return
 
     subset = x[indices]
+    # Порог уже внутри gain (в сигмах референса), поэтому сравнение с нулём.
     gain = _split_gain(subset, rng, cfg)
-    if gain < cfg.split_gain:
+    if gain <= 0.0:
         trace.append({"depth": depth, "size": size, "gain": round(gain, 4), "action": "keep"})
         out.append(indices)
         return
@@ -287,7 +342,8 @@ def fit_states(
             "min_group_size": cfg.min_group_size,
             "min_group_share": cfg.min_group_share,
             "max_depth": cfg.max_depth,
-            "split_gain": cfg.split_gain,
+            "split_reference_draws": cfg.split_reference_draws,
+            "split_gain_sigma": cfg.split_gain_sigma,
             "merge_separation": cfg.merge_separation,
             "n_samples": int(len(x)),
             "trace": trace[-200:],

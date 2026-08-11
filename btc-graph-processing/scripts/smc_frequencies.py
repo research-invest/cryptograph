@@ -25,6 +25,7 @@ signature-атомы, в context-атомы, в признаки или нику
   freq      частоты булевых детекторов и вердикт по бюджету signature
   years     частота по годам — проверка, что детектор не измеряет эпоху
   corr      максимальная корреляция с существующими атомами и признаками
+  mirror    зеркальные пары ВНУТРИ набора — что считать одной гипотезой
   cond      условные вероятности для пар, которые заведомо пересекаются
   fvg       распределение размера разрыва в ATR по монетам (калибровка порога)
   swings    развёртка окна подтверждения свинга — открытый вопрос 1 ТЗ
@@ -49,6 +50,11 @@ from btcproc.ingest import binance  # noqa: E402
 SIGNATURE_MAX_SHARE = 0.03
 DUPLICATE_CORRELATION = 0.9
 DUPLICATE_CONDITIONAL = 0.8
+# Порог, с которого два ДЕТЕКТОРА НАБОРА считаются одной гипотезой.
+# Ниже 0.9, чем порог дубликата: зеркальные пары вроде in_discount /
+# in_premium строгими дополнениями не являются (между 0.382 и 0.618 есть
+# полоса), но независимыми свидетельствами от этого не становятся.
+MIRROR_CORRELATION = 0.5
 
 # Пары «новый детектор → существующий атом», которые пересекаются по смыслу
 # и потому проверяются отдельно (открытый вопрос 3 ТЗ).
@@ -191,6 +197,47 @@ def section_conditionals(values: pd.DataFrame, atoms: pd.DataFrame) -> None:
         print(f"{new_name:<22} {old_name:<22} {p:>12.3f} {n:>8}  {verdict}")
 
 
+def section_mirror(values: pd.DataFrame) -> None:
+    """
+    Зеркальные пары ВНУТРИ самого набора детекторов.
+
+    `section_correlations` намеренно исключает SMC-величины из списка
+    «существующих», иначе каждая нашла бы соседом саму себя. Из-за этого
+    оттуда не видно другого: пары вроде `in_discount` / `in_premium` — это
+    один эффект, измеренный с двух сторон.
+
+    Почему это важно именно для замера лифта. Два зеркальных атома дают два
+    теста с противоположными знаками, и оба «подтверждаются». Считать это
+    двумя независимыми свидетельствами нельзя — ровно по той же причине, по
+    которой `structure_bearish` в своё время отвергли как точное отрицание
+    `structure_bullish`. Строгими дополнениями зеркальные пары могут и не
+    быть (между 0.382 и 0.618 остаётся полоса), но антикоррелированы они
+    сильно, и в поправку на множественные сравнения обязаны входить как
+    ОДНА гипотеза.
+
+    Печатаются пары с |r| выше порога — их список идёт в шапку замера, где
+    гипотезы фиксируются до подсчёта.
+    """
+    print("\n── Зеркальные и дублирующие пары внутри набора ────────────────────")
+    print(f"{'детектор A':<24} {'детектор B':<24} {'r':>7}  вердикт")
+    print("─" * 78)
+
+    booleans = [c for c in smc.BOOLEAN_COLUMNS if values[c].astype(float).std() > 0]
+    found = False
+    for i, left in enumerate(booleans):
+        for right in booleans[i + 1:]:
+            r = _correlation(values[left].astype(float), values[right].astype(float))
+            if abs(r) < MIRROR_CORRELATION:
+                continue
+            found = True
+            verdict = ("зеркало — считать ОДНОЙ гипотезой" if r < 0
+                       else "дубликат — считать ОДНОЙ гипотезой")
+            print(f"{left:<24} {right:<24} {r:>+7.3f}  {verdict}")
+    if not found:
+        print(f"Пар с |r| ≥ {MIRROR_CORRELATION} нет — каждый детектор "
+              "тестируется как отдельная гипотеза.")
+
+
 def section_fvg(base: pd.DataFrame, symbol: str) -> None:
     """
     Распределение размера разрыва в ATR — калибровка SMC_FVG_MIN_ATR.
@@ -248,7 +295,7 @@ def main() -> int:
     parser.add_argument("--all", action="store_true")
     parser.add_argument(
         "--section", action="append",
-        choices=["freq", "years", "corr", "cond", "fvg", "swings"],
+        choices=["freq", "years", "corr", "mirror", "cond", "fvg", "swings"],
         help="Только эти разделы; по умолчанию все, кроме swings",
     )
     args = parser.parse_args()
@@ -260,7 +307,7 @@ def main() -> int:
     else:
         targets = [config.data.symbol]
 
-    sections = set(args.section or ["freq", "years", "corr", "cond", "fvg"])
+    sections = set(args.section or ["freq", "years", "corr", "mirror", "cond", "fvg"])
 
     for symbol in targets:
         print(f"\n{'=' * 78}\n=== {symbol}\n{'=' * 78}")
@@ -274,6 +321,8 @@ def main() -> int:
             section_years(values)
         if "corr" in sections:
             section_correlations(values, atoms, features)
+        if "mirror" in sections:
+            section_mirror(values)
         if "cond" in sections:
             section_conditionals(values, atoms)
         if "fvg" in sections:

@@ -163,31 +163,60 @@ def test_signature_bits_are_pinned(bars):
     assert len(events.SIGNATURE_ATOMS) + len(events.CONTEXT_ATOM_LIST) == len(events.ATOMS)
 
 
-def test_round_level_touch_is_known_dead_for_cheap_coins():
-    """
-    Фиксируем известное вырождение, а не чиним его.
-
-    Порог атома задан в долларах (`close % 1000`), поэтому на монете из
-    диапазона $100–200 он не срабатывает никогда — бит 19 маски у SOL
-    постоянно нулевой. Правка формулы на месте недопустима: атом signature,
-    и смена семантики переопределила бы смысл всех исторических
-    event_block_id задним числом. Тест падает, если кто-то всё же поправит
-    формулу, — и заставляет прочитать комментарий в events.py.
-    """
+def _synthetic_walk(level: float, n: int = 20000, seed: int = 1):
+    """Случайное блуждание вокруг заданного уровня цены."""
     import numpy as np
     import pandas as pd
 
-    index = pd.date_range("2026-01-01", periods=200, freq="15min", tz="UTC")
-    close = pd.Series(np.linspace(100.0, 200.0, len(index)), index=index)
-    sol = pd.DataFrame(
+    index = pd.date_range("2024-01-01", periods=n, freq="15min", tz="UTC")
+    rng = np.random.default_rng(seed)
+    close = pd.Series(level * np.exp(np.cumsum(rng.normal(0, 0.002, n))), index=index)
+    return pd.DataFrame(
         {"open": close, "high": close * 1.002, "low": close * 0.998,
          "close": close, "volume": 1000.0},
         index=index,
     )
 
-    atoms = events.detect_atoms(sol)
 
-    assert not atoms["round_level_touch"].any(), (
-        "атом ожидаемо мёртв на дешёвой монете; если он ожил — значит формулу "
-        "поменяли на месте, а это ломает смысл исторических event_block_id"
-    )
+def test_round_level_touch_works_on_cheap_coins():
+    """
+    Атом обязан жить на монете любой цены.
+
+    До 2026-08-11 порог был задан в долларах (`close % 1000 < 50`), и на SOL
+    в диапазоне $100–200 условие не выполнялось никогда: бит 19 маски у
+    монеты постоянно нулевой, то есть signature-атом, за который платят
+    дроблением блоков, работал ровно на одной монете из трёх.
+    """
+    for level in (150.0, 3000.0, 60000.0):
+        atoms = events.detect_atoms(_synthetic_walk(level))
+        share = atoms["round_level_touch"].mean()
+        assert 0.02 < share < 0.25, (
+            f"на уровне цены {level} доля срабатываний {share:.1%} — "
+            "детектор либо мёртв, либо срабатывает постоянно"
+        )
+
+
+def test_round_level_touch_is_scale_invariant():
+    """
+    Тот же рынок, умноженный на степень десяти, обязан дать ту же разметку.
+
+    Это общее требование к детекторам (`docs/extending_features.md`, 2.1) и
+    ровно тот тест, который валит любой порог, заданный в деньгах.
+    """
+    close = _synthetic_walk(30000.0, n=5000, seed=2)["close"]
+    baseline = events.round_level_touch(close)
+    for factor in (100.0, 0.001):
+        assert (events.round_level_touch(close * factor) == baseline).all(), (
+            f"разметка поехала при умножении цены на {factor}"
+        )
+
+
+def test_round_level_touch_survives_bad_prices():
+    """Ноль в цене не должен ронять разметку целиком через log10(0)."""
+    import numpy as np
+    import pandas as pd
+
+    close = pd.Series([100.0, 0.0, np.nan, 150.0])
+    got = events.round_level_touch(close)
+    assert got.iloc[1] is np.False_ or got.iloc[1] == False  # noqa: E712
+    assert not got.isna().any()

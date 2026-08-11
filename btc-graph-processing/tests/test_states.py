@@ -71,6 +71,88 @@ def test_clustering_does_not_shatter_homogeneous_cloud():
     assert model.n_groups <= 4
 
 
+def test_split_gain_is_independent_of_dimensionality():
+    """
+    Критерий приёмки P0-2: на двух явно разделимых облаках gain положителен,
+    на однородном — отрицателен, и в 32, и в 64 измерениях ОДИНАКОВО.
+
+    Именно это свойство было сломано абсолютным порогом: разность силуэтов
+    зависит от размерности, поэтому константа, откалиброванная на 32
+    признаках, в 44 означала другую строгость — и двенадцать признаков любой
+    природы, включая чистый шум, обрушивали граф. Порог в сигмах референса
+    самонормируется.
+    """
+    cfg = config.StatesConfig()
+    for dim in (32, 64):
+        rng = np.random.default_rng(1)
+        homogeneous = rng.normal(0, 1, size=(2000, dim))
+        separable = np.vstack([
+            rng.normal(-4, 0.5, (1000, dim)),
+            rng.normal(+4, 0.5, (1000, dim)),
+        ])
+        assert clustering._split_gain(homogeneous, np.random.default_rng(42), cfg) < 0, \
+            f"однородное облако в {dim} измерениях не должно дробиться"
+        assert clustering._split_gain(separable, np.random.default_rng(42), cfg) > 0, \
+            f"разделимые облака в {dim} измерениях обязаны дробиться"
+
+
+def test_split_gain_threshold_is_inside_the_value():
+    """
+    Порог живёт внутри gain, поэтому решение — это `gain > 0`.
+
+    Следствие, которое и проверяем: рост split_gain_sigma делает критерий
+    строже монотонно. Если порог когда-нибудь снова вынесут наружу, тест
+    упадёт и заставит поправить `_recursive_split` вместе с ним.
+    """
+    rng = np.random.default_rng(2)
+    borderline = np.vstack([
+        rng.normal(-1.0, 1.0, (1000, 12)),
+        rng.normal(+1.0, 1.0, (1000, 12)),
+    ])
+    gains = [
+        clustering._split_gain(
+            borderline, np.random.default_rng(7),
+            config.StatesConfig(split_gain_sigma=sigma),
+        )
+        for sigma in (0.0, 1.0, 3.0)
+    ]
+    assert gains[0] > gains[1] > gains[2]
+
+
+def test_split_gain_averages_over_references():
+    """
+    Референсов несколько, и это видно по результату: с B = 1 сигму оценить
+    не по чему, поэтому порог не вычитается вовсе и критерий мягче.
+
+    Проверка на то, что параметр реально доходит до расчёта, — B = 1 был
+    поведением до 2026-08-11, и оно не должно вернуться молча.
+    """
+    rng = np.random.default_rng(3)
+    cloud = rng.normal(0, 1, size=(1500, 16))
+    single = clustering._split_gain(
+        cloud, np.random.default_rng(9), config.StatesConfig(split_reference_draws=1))
+    many = clustering._split_gain(
+        cloud, np.random.default_rng(9), config.StatesConfig(split_reference_draws=10))
+    assert single > many
+
+
+def test_model_params_record_the_calibration():
+    """
+    Параметры дробления попадают в params модели — без них прогон нельзя
+    воспроизвести, а число состояний двух прогонов нельзя объяснить.
+    """
+    rng = np.random.default_rng(5)
+    x = np.vstack([rng.normal(-4, 0.3, (600, 3)), rng.normal(4, 0.3, (600, 3))])
+    cfg = config.StatesConfig(seed_clusters=2, min_group_size=200, max_depth=1)
+    model, _ = clustering.fit_states(
+        x, ["a", "b", "c"], {"median": np.zeros(3), "iqr": np.ones(3)}, cfg
+    )
+    assert model.params["split_gain_sigma"] == cfg.split_gain_sigma
+    assert model.params["split_reference_draws"] == cfg.split_reference_draws
+    # Абсолютный порог удалён — его присутствие означало бы откат калибровки.
+    assert "split_gain" not in model.params
+
+
 def test_model_roundtrip_and_predict():
     rng = np.random.default_rng(5)
     x = np.vstack([rng.normal(-4, 0.3, (600, 3)), rng.normal(4, 0.3, (600, 3))])

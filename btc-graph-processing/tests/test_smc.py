@@ -506,9 +506,18 @@ def test_smc_atoms_are_absent_when_disabled(bars, smc_off):
 
 
 def test_feature_version_follows_the_features_flag(smc_on):
+    """
+    Метка набора собирается из СОСТАВА включённых источников, а не нумеруется.
+
+    Раньше здесь стояло `== "v2"`. Двоичная схема второго источника не
+    выражала: набор «база + SMC + ончейн» получил бы ту же метку, что
+    «база + SMC», `feature_sets.names` перезаписался бы по первичному ключу,
+    а старые строки `features` остались бы массивами прежней длины —
+    и разошлось бы это молча (btcproc/features/registry.py).
+    """
     from btcproc.features import builder
 
-    assert builder.feature_version() == builder.SMC_FEATURE_VERSION
+    assert builder.feature_version() == "v1+smc"
 
 
 def test_atoms_alone_do_not_change_the_feature_set(smc_atoms_only, bars, context):

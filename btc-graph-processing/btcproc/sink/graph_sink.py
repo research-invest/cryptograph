@@ -165,6 +165,39 @@ def emit_batch(batch: Sequence[dict], mode: str | None = None, use_llm: bool | N
     raise ValueError(f"Неизвестный SINK_MODE: {mode}")
 
 
+def reset_graph(symbol: str, mode: str | None = None) -> int:
+    """
+    Сносит граф монеты в Neo4j перед отправкой кандидатов новой модели.
+
+    Зачем: ключ узла в btc-graph — `(symbol, group_id)`, без измерения
+    модели, а `train` перенумеровывает `group_id` с нуля. Без очистки
+    накопленные `count`, `avg_win_rate` и `avg_quality_score` продолжают
+    расти поверх узлов предыдущего поколения, и отличить одно от другого
+    в графе нельзя: свойства те же, значения правдоподобные.
+
+    Возвращает число удалённых узлов. Ошибки НЕ глотаются — вызывающий
+    прогон обязан упасть, а не отправить кандидатов в смешанный граф:
+    молчаливое смешивание поколений и есть та ошибка, которую очистка
+    закрывает.
+
+    В режиме `none` возвращает 0: отправки нет, графа не касаемся.
+    """
+    mode = mode or config.sink.mode
+    if mode == "none":
+        return 0
+    if mode == "direct":
+        _load_btc_graph()
+        from src.db import graph_repo  # noqa: E402  (пакет btc-graph)
+
+        return graph_repo.clear_symbol(symbol)
+    raise RuntimeError(
+        f"SINK_MODE={mode} не умеет чистить граф: у btc-graph нет HTTP-ручки "
+        f"для этого. Прогон train с отправкой в этом режиме смешал бы "
+        f"поколения нумерации group_id. Используй SINK_MODE=direct либо "
+        f"train --no-emit."
+    )
+
+
 def chunked(items: Iterable[dict], size: int) -> Iterable[list[dict]]:
     chunk: list[dict] = []
     for item in items:

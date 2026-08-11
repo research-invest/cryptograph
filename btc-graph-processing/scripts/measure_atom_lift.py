@@ -10,20 +10,30 @@
     python3 scripts/measure_atom_lift.py --metric realized    # фактические исходы
     python3 scripts/measure_atom_lift.py --correction bh --alpha 0.1
     python3 scripts/measure_atom_lift.py --context-only       # только фоновые атомы
+    python3 scripts/measure_atom_lift.py --thinned            # + sanity check
+    python3 scripts/measure_atom_lift.py --no-bootstrap       # как мерили до 08-11
 
 Две метрики, и разница между ними принципиальная:
 
   long_outcome_share (по умолчанию) — то, что записано в кандидате: доля
     исторических аналогов, закрывшихся вверх. Это **ожидание системы**, а не
-    факт. Метрика из ТЗ, но у неё есть слабое место: кандидаты пересекаются
-    по своим историческим выборкам, поэтому n завышает число независимых
-    наблюдений, и тест анти-консервативен. Значимость по ней — повод
-    посмотреть внимательнее, а не вывод.
+    факт: она отвечает на вопрос «коррелирует ли атом с исторически
+    перекошенными конфигурациями», а не «предсказывает ли атом исход».
 
   realized — фактический исход бара кандидата из processing.outcomes
-    (is_up на горизонте). Одно независимое наблюдение на бар, честный
-    Бернулли. Считать выводы стоит по ней; выборка меньше, потому что
-    берутся только созревшие метки (valid).
+    (is_up на горизонте). Свободна от зацикливания на ожиданиях системы,
+    поэтому выводы делаются по ней; выборка меньше, потому что берутся
+    только созревшие метки (valid).
+
+**Ни одна из двух не даёт независимых наблюдений.** Раньше здесь было
+написано, что `realized` — «одно независимое наблюдение на бар, честный
+Бернулли»; это неверно. Горизонт 24h при базовом ТФ 15m равен 96 барам, а
+кандидаты идут в среднем каждые ~11 баров: исходы соседних кандидатов
+перекрываются почти полностью. Плюс снимки офсетов
+(`SNAPSHOT_OFFSETS_MIN = 0, 45, 90, 180`) дают до четырёх кандидатов на одну
+реализацию перехода. Обеим метрикам нужен блочный бутстрап — он считается
+по умолчанию, и именно по нему определяется значимость (см. шапку
+`btcproc/analysis/lift.py`).
 
 Фоновые атомы участвуют в замере наравне с signature — ради этого чинилась
 колонка context_atoms. До этой правки контекст в БД не сохранялся, и на
@@ -40,86 +50,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd  # noqa: E402
 
 from btcproc import config, symbols  # noqa: E402
-from btcproc.analysis.lift import format_table, measure_lift  # noqa: E402
-from btcproc.db import runs as runs_repo  # noqa: E402
-from btcproc.db.session import fetch_all  # noqa: E402
+from btcproc.analysis import samples  # noqa: E402
+from btcproc.analysis.lift import (  # noqa: E402
+    DEFAULT_N_BOOT,
+    block_length_rows,
+    format_table,
+    measure_lift,
+)
 from btcproc.features import events as ev  # noqa: E402
-
-# Кандидат и бар связаны напрямую: candidates.ts — колонка, а не только
-# payload._meta.ts, поэтому джойн идёт по (symbol, ts) без разбора JSON.
-QUERY_EXPECTED = """
-SELECT c.ts,
-       (c.payload->>'long_outcome_share')::float8 AS metric,
-       e.atoms,
-       e.context_atoms
-FROM candidates c
-JOIN bar_events e ON e.symbol = c.symbol AND e.ts = c.ts
-WHERE c.symbol = %s
-  AND c.payload->>'long_outcome_share' IS NOT NULL
-  AND {scope}
-ORDER BY c.ts
-"""
-
-QUERY_REALIZED = """
-SELECT c.ts,
-       CASE WHEN o.is_up THEN 1.0 ELSE 0.0 END AS metric,
-       e.atoms,
-       e.context_atoms
-FROM candidates c
-JOIN bar_events e ON e.symbol = c.symbol AND e.ts = c.ts
-JOIN outcomes o ON o.symbol = c.symbol AND o.ts = c.ts AND o.horizon = %s
-WHERE c.symbol = %s
-  AND o.valid
-  AND o.is_up IS NOT NULL
-  AND {scope}
-ORDER BY c.ts
-"""
-
-
-def resolve_model_run(symbol: str, run_id: int | None) -> int:
-    """Прогон, задающий модель. По умолчанию — последний успешный train монеты."""
-    if run_id:
-        return run_id
-    latest = runs_repo.latest_completed_run("train", symbol)
-    if not latest:
-        raise SystemExit(f"У {symbol} нет завершённого train — мерить нечего.")
-    return int(latest["run_id"])
-
-
-def load(symbol: str, metric: str, model_run: int) -> pd.DataFrame:
-    """
-    Кандидаты ОДНОЙ модели состояний.
-
-    Ограничение обязательно, и это не осторожность, а исправление ошибки.
-    Замер без него брал всех кандидатов монеты, а в базе их выпускали разные
-    модели: полные прогоны и частичные (`train --start ...`). Частичные
-    покрывают только свежий период, поэтому скапливаются в holdout и удваивают
-    там плотность кандидатов.
-
-    Как это выглядело: на BTC ни один атом не пережил holdout, корреляция
-    лифтов между половинами −0.09, знак совпал у 32% атомов — хуже подбрасывания
-    монеты. На ETH и SOL, где лишних прогонов не было, корреляция +0.63 и +0.61.
-    Списать это на «рынок BTC изменился» было очень легко и совершенно неверно.
-    """
-    scope_sql, scope_params = runs_repo.model_run_scope(model_run)
-    scope_sql = scope_sql.replace("run_id", "c.run_id", 1)
-    if metric == "realized":
-        sql = QUERY_REALIZED.format(scope=scope_sql)
-        rows = fetch_all(sql, (config.data.horizon, symbol, *scope_params))
-    else:
-        sql = QUERY_EXPECTED.format(scope=scope_sql)
-        rows = fetch_all(sql, (symbol, *scope_params))
-    return pd.DataFrame(rows)
 
 
 def consolidate(per_symbol: dict[str, list]) -> None:
     """
     Сводка по монетам: где атом прошёл, где нет и совпал ли знак.
 
-    Это более сильная проверка, чем holdout внутри одной монеты. Holdout
-    отделяет позднюю историю от ранней, но рынок один и тот же; три монеты —
-    три независимых рынка. Эффект, который держится на всех трёх с одним
-    знаком, гораздо труднее объяснить подгонкой.
+    Проверка сильнее, чем holdout внутри одной монеты: holdout отделяет
+    позднюю историю от ранней, но рынок под ними один.
+
+    Чего она НЕ даёт — трёх независимых подтверждений. Дневные доходности
+    BTC и ETH исторически коррелированы на 0.8+, BTC и SOL немногим слабее;
+    три сильно коррелированных инструмента дают эффективно полтора
+    независимых наблюдения, а не три. Поэтому «совпало на 3 из 3» нельзя
+    считать как p³ — это одно свидетельство, а не перемножение трёх.
+    Реально независимую проверку дал бы инструмент из другого класса
+    активов, слабо связанный с BTC; это отдельная задача.
+
+    Что проверка ловит и ради чего остаётся обязательной — грубую подгонку
+    под один инструмент: эффект, живущий только на BTC, почти наверняка
+    артефакт его конкретной истории.
     """
     symbols_list = list(per_symbol)
     atoms: dict[str, dict] = {}
@@ -165,25 +123,19 @@ def consolidate(per_symbol: dict[str, list]) -> None:
 
 def run_one(symbol: str, args) -> list | None:
     """Замер по одной монете. Печатает таблицу, возвращает результаты."""
-    model_run = resolve_model_run(symbol, args.run)
-    frame = load(symbol, args.metric, model_run)
+    model_run = samples.resolve_model_run(symbol, args.run)
+    frame = samples.load(symbol, args.metric, model_run, with_atoms=True)
     if frame.empty:
         print(f"Нет данных по {symbol}. Нужен прогон train или live.")
         return None
 
     # NULL в context_atoms — бар размечен прогоном до появления колонки.
-    stale = int(frame["context_atoms"].isna().sum())
+    frame, stale = samples.merge_atom_columns(frame)
     if stale:
-        frame = frame[frame["context_atoms"].notna()]
         print(f"Пропущено {stale} баров без context_atoms (размечены до правки).")
-        if frame.empty:
-            print("Ни одного бара с контекстом. Нужен прогон после правки.")
-            return None
-
-    frame["atoms"] = [
-        list(row["atoms"]) + list(row["context_atoms"])
-        for _, row in frame.iterrows()
-    ]
+    if frame.empty:
+        print("Ни одного бара с контекстом. Нужен прогон после правки.")
+        return None
 
     if args.context_only:
         atoms = list(ev.CONTEXT_ATOM_LIST)
@@ -191,6 +143,10 @@ def run_one(symbol: str, args) -> list | None:
         atoms = list(ev.SIGNATURE_ATOMS)
     else:
         atoms = list(ev.ATOMS)
+
+    # Горизонт берётся из конфига, а не хардкодится: он задаёт и длину блока
+    # бутстрапа, и ширину окна прореживания.
+    horizon_minutes = None if args.no_bootstrap else config.data.horizon_minutes
 
     results = measure_lift(
         frame,
@@ -200,6 +156,9 @@ def run_one(symbol: str, args) -> list | None:
         correction=args.correction,
         holdout=args.holdout or None,
         min_group=args.min_group,
+        horizon_minutes=horizon_minutes,
+        n_boot=args.n_boot,
+        thinned=args.thinned,
     )
 
     span = f"{frame['ts'].min():%Y-%m-%d} … {frame['ts'].max():%Y-%m-%d}"
@@ -207,8 +166,12 @@ def run_one(symbol: str, args) -> list | None:
     print(f"Метрика: {args.metric}"
           + ("  (ожидание системы, не факт — см. шапку скрипта)"
              if args.metric == "long_outcome_share" else "  (фактические исходы)"))
+    if horizon_minutes:
+        block = block_length_rows(frame["ts"], horizon_minutes)
+        print(f"Горизонт {config.data.horizon} = {config.data.horizon_bars} баров; "
+              f"блок бутстрапа {block} строк, реплик {args.n_boot}")
     print(f"Базовая доля: {frame['metric'].mean():.4f}\n")
-    print(format_table(results, args.correction, args.alpha))
+    print(format_table(results, args.correction, args.alpha, args.n_boot))
 
     confirmed = [r.atom for r in results if r.confirmed]
     print(f"\nПрошли всё: {', '.join(confirmed) if confirmed else 'ни одного'}")
@@ -237,6 +200,15 @@ def main() -> int:
                         help="Только фоновые атомы")
     parser.add_argument("--signature-only", action="store_true",
                         help="Только атомы, входящие в event_block_id")
+    parser.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT,
+                        help="Реплик блочного бутстрапа")
+    parser.add_argument("--no-bootstrap", action="store_true",
+                        help="Только наивный z-тест — режим до 2026-08-11. "
+                             "Он анти-консервативен, годится лишь для сверки "
+                             "со старыми замерами")
+    parser.add_argument("--thinned", action="store_true",
+                        help="Плюс медиана z по прореживанию непересекающимися "
+                             "окнами (дорого, независимая проверка бутстрапа)")
     args = parser.parse_args()
 
     if args.all:

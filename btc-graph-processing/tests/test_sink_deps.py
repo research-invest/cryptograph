@@ -140,6 +140,50 @@ def test_http_payload_omits_unset_threshold(monkeypatch):
     assert sent["min_quality_score"] == 0.5
 
 
+# ── Сброс графа под новую модель ────────────────────────────────────────────
+#
+# Ключ узла в btc-graph — (symbol, group_id), без измерения модели, а train
+# перенумеровывает group_id с нуля. Очистка — единственное, что не даёт
+# счётчикам рёбер расти поверх узлов предыдущего поколения.
+
+
+def test_reset_graph_is_a_noop_without_a_sink():
+    """Отправки нет — графа не касаемся, и это не ошибка."""
+    assert graph_sink.reset_graph("BTCUSDT", mode="none") == 0
+
+
+def test_reset_graph_refuses_in_http_mode():
+    """
+    У btc-graph нет HTTP-ручки очистки, и молча пропустить её нельзя: прогон
+    отправил бы кандидатов новой модели в граф со старой нумерацией.
+    """
+    import pytest
+
+    with pytest.raises(RuntimeError, match="не умеет чистить граф"):
+        graph_sink.reset_graph("BTCUSDT", mode="http")
+
+
+def test_reset_graph_errors_are_not_swallowed(monkeypatch):
+    """
+    Недоступность Neo4j обязана уронить прогон.
+
+    «Не получилось почистить, но модель сохранили» воспроизводит ровно ту
+    ошибку, ради которой очистка заводилась, — поэтому исключение проходит
+    насквозь, а не превращается в ноль удалённых узлов.
+    """
+    import pytest
+
+    class Boom(RuntimeError):
+        pass
+
+    def explode():
+        raise Boom("neo4j недоступен")
+
+    monkeypatch.setattr(graph_sink, "_load_btc_graph", explode)
+    with pytest.raises(Boom):
+        graph_sink.reset_graph("BTCUSDT", mode="direct")
+
+
 def test_env_parses_empty_as_none_and_number_as_number():
     from btcproc.config import _env_float_optional
 
