@@ -271,3 +271,69 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAUL
 
 CREATE INDEX IF NOT EXISTS runs_running_idx ON runs (status, updated_at DESC)
     WHERE status = 'running';
+
+-- ─── Уведомления (вебхуки) ──────────────────────────────────────────────────
+-- Правило = «куда слать» + «что именно слать» (фильтр по кандидату, теми же
+-- осями, что и селектор на странице кандидатов).
+--
+-- Правила лежат в БД, а не в .env и не в коде: их правит оператор из админки,
+-- и перезапуск процесса ради нового адреса или порога — неприемлемая цена.
+-- Механика доставки (таймауты, число потоков, окно свежести) наоборот живёт
+-- в окружении: это свойство установки, а не бизнес-настройка.
+--
+-- Пустой массив и NULL в фильтрах означают «не фильтруем по этой оси». Это
+-- сделано намеренно вместо отдельного флага «фильтр включён»: правило без
+-- ограничений должно создаваться пустой формой, а не набором галок.
+CREATE TABLE IF NOT EXISTS notification_rules (
+    rule_id            BIGSERIAL PRIMARY KEY,
+    name               TEXT        NOT NULL,
+    enabled            BOOLEAN     NOT NULL DEFAULT TRUE,
+    url                TEXT        NOT NULL,
+    -- Заголовки запроса: авторизация получателя (Authorization, X-Api-Key).
+    -- JSONB, а не отдельные колонки, — набор зависит от чужой системы.
+    headers            JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    -- full   — весь кандидат (37 полей схемы) + оценка btc-graph;
+    -- compact — только сводка (монета, время, сторона, рейтинг, оценка).
+    payload_mode       TEXT        NOT NULL DEFAULT 'full',
+
+    -- ── Фильтр ──────────────────────────────────────────────────────────────
+    symbol             TEXT,               -- NULL = любая монета
+    ratings            TEXT[],             -- STRONG / MODERATE / WEAK
+    directions         TEXT[],             -- long / short
+    min_quality        DOUBLE PRECISION,
+    min_research_score DOUBLE PRECISION,
+    min_sample_size    INTEGER,
+    transitions        TEXT[],             -- конкретные переходы, «42->1»
+    event_families     TEXT[],             -- primary_event_family
+    -- Слать только тех, кого btc-graph принял и оценил. По умолчанию да:
+    -- без оценки у кандидата нет ни rating, ни quality_score, то есть
+    -- большая часть фильтров к нему неприменима в принципе.
+    require_evaluation BOOLEAN     NOT NULL DEFAULT TRUE,
+
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Журнал доставок. У него две роли, и вторая важнее первой:
+--   1. диагностика — «почему не пришло» иначе не разобрать вообще никак,
+--      отправка идёт в фоновом потоке и ответ получателя нигде не виден;
+--   2. защита от повторов — PK (rule_id, candidate_id). Окна live намеренно
+--      перекрываются, кандидат детерминирован по id и попадается нескольким
+--      прогонам подряд; без этого ключа один и тот же кандидат уходил бы
+--      получателю столько раз, сколько прогонов его увидели.
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    rule_id      BIGINT      NOT NULL,
+    candidate_id TEXT        NOT NULL,
+    symbol       TEXT,
+    -- queued (взят в работу) → sent | failed | dropped
+    status       TEXT        NOT NULL DEFAULT 'queued',
+    http_status  INTEGER,
+    error        TEXT,
+    attempts     INTEGER     NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent_at      TIMESTAMPTZ,
+    PRIMARY KEY (rule_id, candidate_id)
+);
+
+CREATE INDEX IF NOT EXISTS notification_deliveries_recent_idx
+    ON notification_deliveries (created_at DESC);

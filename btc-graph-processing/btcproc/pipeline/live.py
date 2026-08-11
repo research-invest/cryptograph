@@ -13,7 +13,7 @@ import time
 
 import pandas as pd
 
-from btcproc import config, symbols
+from btcproc import config, notify, symbols
 from btcproc.candidates import builder as cand
 from btcproc.candidates.outcomes import compute_outcomes
 from btcproc.db import repo, runs
@@ -236,6 +236,24 @@ def run_live(
             stats["emit"] = emit_pending(run_id)
         else:
             stats["emit"] = {"sent": 0, "skipped": True}
+
+        # Второй заход рассылки — для кандидатов, до оценки не доехавших:
+        # отправка выключена (`--no-emit`, `SINK_MODE=none`) либо btc-graph
+        # отсеял их своим фильтром. Повтора не будет: захват в журнале
+        # доставок уникален по паре «правило + кандидат», и всё, что уже
+        # ушло из emit_pending, здесь молча отсеется. Правила с фильтром по
+        # рейтингу тут не сработают — рейтинга у неоценённого кандидата нет,
+        # см. Rule.matches.
+        if fresh:
+            stats["notify"] = notify.dispatch(
+                [c["candidate_id"] for c in fresh], reason=f"live run={run_id}"
+            )
+            # `duplicates` здесь — норма, а не тревога: это ровно те, кого уже
+            # отправил emit_pending выше. Поэтому в лог пишем, только когда
+            # что-то действительно ушло.
+            if stats["notify"].get("queued"):
+                runs.log(run_id, f"Уведомления: {runs.dumps(stats['notify'])}")
+        notify.flush()
 
         stats["seconds"] = round(time.time() - started, 1)
         runs.finish_run(run_id, stats)

@@ -438,6 +438,59 @@ def status(
         )
 
 
+@app.command("notify-example")
+def notify_example(
+    mode: str = typer.Option("full", help="Формат payload: full | compact"),
+) -> None:
+    """
+    Напечатать пример тела уведомления.
+
+    Существует ради чужой системы: её автору нужен образец JSON, а не описание
+    полей словами. Пример собирается тем же кодом, что и боевое тело, поэтому
+    протухнуть молча не может — в отличие от куска JSON, выписанного в
+    документацию руками.
+    """
+    import json
+
+    from btcproc.notify import payload as payload_mod
+    from btcproc.notify import rules as rules_mod
+
+    if mode not in rules_mod.PAYLOAD_MODES:
+        raise typer.BadParameter(
+            f"допустимы {', '.join(rules_mod.PAYLOAD_MODES)}"
+        )
+    rule = rules_mod.Rule(rule_id=1, name="пример", url="https://example.com/hook",
+                          payload_mode=mode)
+    body = payload_mod.build(rule, payload_mod.example_row())
+    typer.echo(json.dumps(body, ensure_ascii=False, indent=2))
+
+
+@app.command("notify-test")
+def notify_test(
+    rule: int = typer.Option(..., "--rule", help="rule_id правила из админки"),
+) -> None:
+    """
+    Отправить на адрес правила последнего кандидата — проверка связи.
+
+    Идёт мимо очереди, мимо фильтров и мимо журнала доставок: это ручная
+    проверка адреса, а не событие. Ответ печатается — здесь ожидание и есть
+    смысл команды.
+    """
+    from btcproc.admin import queries
+    from btcproc.notify import service as notify_service
+    from btcproc.notify import payload as payload_mod
+    from btcproc.notify import rules as rules_mod
+
+    spec = rules_mod.get_rule(rule)
+    if spec is None:
+        raise typer.BadParameter(f"Правила #{rule} нет")
+    row = queries.latest_candidate_row(spec.symbol) or payload_mod.example_row()
+    result = notify_service.send_one(spec, row)
+    typer.echo(runs_repo.dumps(result))
+    if result["status"] != "sent":
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def admin(
     host: str = typer.Option(None),

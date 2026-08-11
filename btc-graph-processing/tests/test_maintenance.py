@@ -47,6 +47,12 @@ def _quiet(monkeypatch, maintenance, **over):
         maintenance, "vacuum",
         lambda table, full: calls["vacuum"].append((table, full)),
     )
+    # Чистка журнала доставок уведомлений — тоже поход в БД, и к решениям
+    # про вакуум она отношения не имеет.
+    monkeypatch.setattr(
+        maintenance, "prune_deliveries",
+        lambda dry: calls.__setitem__("deliveries", dry) or 0,
+    )
     monkeypatch.setattr(
         maintenance.runs_repo, "active_runs", lambda: over.get("active", [])
     )

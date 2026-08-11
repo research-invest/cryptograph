@@ -361,6 +361,64 @@ def candidate_detail(candidate_id: str) -> dict | None:
     return fetch_one("SELECT * FROM candidates WHERE candidate_id = %s", (candidate_id,))
 
 
+# ─── Уведомления ────────────────────────────────────────────────────────────
+def deliveries(rule_id: int | None = None, limit: int = 50) -> list[dict]:
+    """
+    Журнал доставок — единственное место, где видно, что стало с вебхуком.
+    Отправка идёт в фоновом потоке, поэтому больше её следов нигде нет.
+    """
+    sql = (
+        "SELECT d.*, r.name AS rule_name, r.url FROM notification_deliveries d "
+        "LEFT JOIN notification_rules r ON r.rule_id = d.rule_id"
+    )
+    params: list[Any] = []
+    if rule_id:
+        sql += " WHERE d.rule_id = %s"
+        params.append(rule_id)
+    sql += " ORDER BY d.created_at DESC LIMIT %s"
+    params.append(limit)
+    return fetch_all(sql, params)
+
+
+def delivery_totals() -> list[dict]:
+    """Сводка по правилам: сколько ушло, сколько сорвалось."""
+    return fetch_all(
+        "SELECT rule_id, status, count(*) AS n, max(created_at) AS last_at "
+        "FROM notification_deliveries GROUP BY rule_id, status"
+    )
+
+
+def latest_candidate_row(symbol: str | None = None) -> dict | None:
+    """
+    Свежий кандидат для кнопки «проверить». Берётся настоящий, а не выдуманный:
+    смысл проверки в том, чтобы принимающая система увидела реальное тело.
+    """
+    sql = (
+        "SELECT candidate_id, run_id, symbol, ts, payload, quality_score, rating, "
+        "direction, warning_flags, evaluation FROM candidates"
+    )
+    params: list[Any] = []
+    if symbol:
+        sql += " WHERE symbol = %s"
+        params.append(symbol)
+    sql += " ORDER BY ts DESC LIMIT 1"
+    return fetch_one(sql, params)
+
+
+def transition_options(run_id: int | None, limit: int = 200) -> list[str]:
+    """Переходы последнего прогона — для подсказки в форме правила."""
+    if not run_id:
+        return []
+    return [
+        row["transition_id"]
+        for row in fetch_all(
+            "SELECT transition_id FROM transitions WHERE run_id = %s "
+            "ORDER BY count DESC LIMIT %s",
+            (run_id, limit),
+        )
+    ]
+
+
 def top_groups(run_id: int, limit: int = 10) -> list[dict]:
     """Крупнейшие состояния — где рынок проводит больше всего времени."""
     return fetch_all(

@@ -31,6 +31,9 @@ install:
 init-db:
 	$(PY) -m btcproc.cli init-db
 
+admin:
+	$(PY) -m btcproc.cli admin --reload
+
 ingest:
 	$(PY) -m btcproc.cli ingest
 
@@ -61,9 +64,6 @@ status:
 # Стоит в кроне раз в неделю; руками полезен --dry-run, чтобы сперва посмотреть.
 maintenance:
 	$(PY) scripts/maintenance.py
-
-admin:
-	$(PY) -m btcproc.cli admin --reload
 
 test:
 	$(PY) -m pytest -q

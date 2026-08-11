@@ -20,10 +20,11 @@ from typing import Callable
 
 import pandas as pd
 
-from btcproc import config, symbols
+from btcproc import config, notify, symbols
 from btcproc.candidates import builder as cand
 from btcproc.candidates.outcomes import compute_outcomes
 from btcproc.db import repo, runs
+from btcproc.db.runs import dumps as runs_dumps
 from btcproc.features import builder as feat
 from btcproc.features import events as ev
 from btcproc.ingest import binance
@@ -348,6 +349,7 @@ def emit_pending(
     pending = [row["payload"] for row in fetch_all(sql, params)]
     total = len(pending)
     sent, evaluated, errors = 0, 0, 0
+    notified: dict[str, int] = {}
 
     for start in range(0, total, batch_size):
         batch = pending[start:start + batch_size]
@@ -394,7 +396,32 @@ def emit_pending(
             errors += len(batch)
             repo.mark_emit_error(ids, f"{type(exc).__name__}: {exc}")
             runs.log(run_id, f"Ошибка отправки батча: {exc}")
+
+        # Уведомления шлём здесь, а не в конце: оценка уже записана, и
+        # правилам есть по чему фильтровать (rating и quality_score считает
+        # btc-graph, у нас их нет). Отправка не блокирующая — задания уходят
+        # в очередь, прогон идёт дальше. Кандидаты старше окна свежести
+        # отсекаются внутри dispatch, поэтому бэкфилл на всей истории не
+        # превращается в десятки тысяч вебхуков.
+        _merge_counters(notified, notify.dispatch(ids, reason=f"emit run={run_id}"))
+
         if on_batch:
             on_batch(min(start + batch_size, total), total)
 
-    return {"sent": sent, "evaluated": evaluated, "errors": errors, "pending": total}
+    # Очередь разбирается фоновыми потоками, а крон-процесс завершится сразу
+    # после прогона и убьёт их вместе с неотправленным. Ждём с дедлайном.
+    if notified.get("queued"):
+        runs.log(run_id, f"Уведомления: {runs_dumps(notified)}")
+    notify.flush()
+
+    return {"sent": sent, "evaluated": evaluated, "errors": errors, "pending": total,
+            "notify": notified}
+
+
+def _merge_counters(target: dict[str, int], summary: dict) -> None:
+    """Складывает сводки рассылки по батчам в одну. Строковые поля переносит."""
+    for key, value in summary.items():
+        if isinstance(value, int):
+            target[key] = target.get(key, 0) + value
+        else:
+            target[key] = value

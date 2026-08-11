@@ -157,6 +157,36 @@ def prune_live_states(keep_live: int, dry_run: bool) -> int:
     return removed
 
 
+def prune_deliveries(dry_run: bool) -> int:
+    """
+    Журнал доставок уведомлений старше NOTIFY_RETENTION_DAYS.
+
+    Журнал заодно защищает от повторной отправки (PK «правило + кандидат»),
+    поэтому удаление снимает эту защиту с удалённых пар. Безопасно это ровно
+    потому, что кандидат старше окна свежести
+    (`NOTIFY_MAX_CANDIDATE_AGE_MIN`, по умолчанию 3 часа) не проходит в
+    рассылку в принципе, а retention измеряется днями. Занижать retention до
+    часов нельзя — тогда старый кандидат сможет уйти получателю второй раз.
+    """
+    days = config.notify.retention_days
+    with connect() as conn, conn.cursor() as cur:
+        if dry_run:
+            cur.execute(
+                "SELECT count(*) FROM notification_deliveries "
+                "WHERE created_at < NOW() - (%s * INTERVAL '1 day')", (days,)
+            )
+            doomed = cur.fetchone()[0]
+            print(f"  (сухой прогон) удалили бы {doomed} записей старше {days} дн.")
+            return 0
+        cur.execute(
+            "DELETE FROM notification_deliveries "
+            "WHERE created_at < NOW() - (%s * INTERVAL '1 day')", (days,)
+        )
+        removed = cur.rowcount
+    print(f"  удалено {removed} записей старше {days} дн.")
+    return removed
+
+
 def report() -> None:
     print("\nРазмеры:")
     for table in WATCHED:
@@ -214,6 +244,9 @@ def main() -> int:
 
     print("\nРазметка старых live-прогонов:")
     removed = prune_live_states(args.keep_live, args.dry_run)
+
+    print("\nЖурнал доставок уведомлений:")
+    prune_deliveries(args.dry_run)
 
     if args.dry_run:
         report()

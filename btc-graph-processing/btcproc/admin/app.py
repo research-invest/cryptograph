@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -283,6 +284,162 @@ def help_page(request: Request):
     страница не заменяет её, а избавляет от похода в репозиторий за мелочью.
     """
     return page(request, "help.html", active="help")
+
+
+# ─── Уведомления ────────────────────────────────────────────────────────────
+def parse_headers(raw: str) -> dict[str, str]:
+    """
+    Заголовки из текстового поля: по строке на заголовок, `Имя: значение`.
+
+    Формат выбран вместо JSON намеренно: оператор вставляет сюда токен
+    авторизации, и заставлять его экранировать кавычки ради одной строки —
+    лишний способ ошибиться. Пустые строки и строки без двоеточия
+    игнорируются молча: это опечатка в необязательном поле, а не повод
+    отказать в сохранении правила.
+    """
+    headers: dict[str, str] = {}
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        name, value = name.strip(), value.strip()
+        if name and value:
+            headers[name] = value
+    return headers
+
+
+def format_headers(headers: dict) -> str:
+    return "\n".join(f"{name}: {value}" for name, value in (headers or {}).items())
+
+
+def event_families() -> list[str]:
+    """
+    Семейства событий для селектора — из ATOM_FAMILY, а не списком в шаблоне.
+    Захардкоженный список разошёлся бы с детекторами при первом же новом
+    атоме, причём молча: фильтр просто перестал бы предлагать новое семейство.
+    Импорт ленивый — модуль тянет pandas.
+    """
+    from btcproc.features.events import ATOM_FAMILY
+
+    return sorted(set(ATOM_FAMILY.values()))
+
+
+@app.get("/notifications", response_class=HTMLResponse)
+def notifications_page(request: Request, edit: str | None = None,
+                       status: str | None = None):
+    """
+    Настройка вебхуков: список правил, форма правила, журнал доставок.
+
+    Журнал здесь не для полноты картины: отправка идёт в фоновом потоке и
+    следов больше не оставляет, поэтому вопрос «почему получателю ничего
+    не пришло» отвечается только отсюда.
+    """
+    from btcproc.notify import rules as rules_repo
+
+    symbol = current_symbol(request)
+    edit_id = opt_int(edit)
+    rule = rules_repo.get_rule(edit_id) if edit_id else None
+    return page(
+        request, "notifications.html", active="notifications", symbol=symbol,
+        rules=rules_repo.list_rules(),
+        rule=rule,
+        headers_text=format_headers(rule.headers) if rule else "",
+        deliveries=queries.deliveries(limit=40),
+        totals=queries.delivery_totals(),
+        families=event_families(),
+        transitions=queries.transition_options(_latest_train_id(symbol), 100),
+        notify_config=config.notify,
+        status=opt_str(status),
+    )
+
+
+@app.post("/notifications/save")
+def notifications_save(
+    rule_id: str = Form(""),
+    name: str = Form(""),
+    url: str = Form(""),
+    enabled: bool = Form(False),
+    payload_mode: str = Form("full"),
+    headers: str = Form(""),
+    symbol: str = Form(""),
+    ratings: list[str] = Form([]),
+    directions: list[str] = Form([]),
+    min_quality: str = Form(""),
+    min_research_score: str = Form(""),
+    min_sample_size: str = Form(""),
+    transitions: str = Form(""),
+    event_families: list[str] = Form([]),
+    require_evaluation: bool = Form(False),
+):
+    """
+    Создать или обновить правило.
+
+    Пустые поля означают «фильтр не задан», а не ноль: `min_quality=""` — это
+    «любое качество», а `min_quality=0` формально то же самое, но выглядит
+    как заданный порог. Поэтому разбор идёт через opt_*.
+    """
+    from btcproc.notify import rules as rules_repo
+
+    values = {
+        "name": name.strip(),
+        "url": url.strip(),
+        "enabled": enabled,
+        "payload_mode": payload_mode,
+        "headers": parse_headers(headers),
+        "symbol": opt_str(symbol),
+        "ratings": rules_repo.clean_list(ratings),
+        "directions": rules_repo.clean_list(directions),
+        "min_quality": opt_float(min_quality),
+        "min_research_score": opt_float(min_research_score),
+        "min_sample_size": opt_int(min_sample_size),
+        # Переходы вводятся строкой через запятую: их сотни, селектором не
+        # выбрать, а нужный оператор копирует со страницы кандидатов.
+        "transitions": rules_repo.clean_list(transitions.split(",")),
+        "event_families": rules_repo.clean_list(event_families),
+        "require_evaluation": require_evaluation,
+    }
+    try:
+        rules_repo.save_rule(values, opt_int(rule_id))
+    except rules_repo.RuleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse("/notifications?status=saved", status_code=303)
+
+
+@app.post("/notifications/{rule_id}/delete")
+def notifications_delete(rule_id: int):
+    from btcproc.notify import rules as rules_repo
+
+    rules_repo.delete_rule(rule_id)
+    return RedirectResponse("/notifications?status=deleted", status_code=303)
+
+
+@app.post("/notifications/{rule_id}/test")
+def notifications_test(rule_id: int):
+    """
+    Разовая отправка на адрес правила — мимо очереди, мимо журнала и мимо
+    фильтров. Ждём ответа: оператор нажал кнопку и смотрит на результат.
+
+    Кандидат берётся настоящий — последний по монете правила. Если их ещё нет
+    (новая установка), уходит показательный пример из payload.example_row():
+    принимающей системе нужно тело, а не отказ.
+    """
+    from btcproc.notify import service as notify_service
+    from btcproc.notify import payload as payload_mod
+    from btcproc.notify import rules as rules_repo
+
+    rule = rules_repo.get_rule(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Правило не найдено")
+    row = queries.latest_candidate_row(rule.symbol) or payload_mod.example_row()
+    result = notify_service.send_one(rule, row)
+    detail = result["error"] or f"HTTP {result['http_status']}"
+    # Сообщение уезжает в query-параметр, а в нём бывают пробелы, кавычки и
+    # двоеточия из чужого текста ошибки — без экранирования это битый Location.
+    return RedirectResponse(
+        "/notifications?status=" + quote(f"{result['status']}: {detail}"[:300]),
+        status_code=303,
+    )
 
 
 RUNS_PER_PAGE = 50
