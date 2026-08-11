@@ -37,6 +37,16 @@
   --chart-grid: #1b2330;
   --chart-border: #243043;
   --chart-text: #9fb0c8;
+  /* Крестик отдельным цветом, а не accent'ом: он лежит поверх свечей,
+     раскрашенных состояниями, и обязан читаться как «не данные». Фиолетовый
+     в палитре состояний не встречается — совпадение с номером состояния
+     сбивало бы с толку сильнее, чем неудачный оттенок. */
+  --chart-cross: #9b7dff;
+  /* Вертикаль — широкая полупрозрачная полоса, а не линия: под курсором
+     подсвечивается сам бар, и по нему видно, к какой свече относится
+     подпись на оси. Прозрачность обязательна — непрозрачная полоса
+     закрывала бы свечу, ради которой её и наводят. */
+  --chart-cross-band: rgba(195, 188, 219, .26);
 
   --shadow: none;
 }
@@ -69,6 +79,11 @@
   --chart-grid: #eceff4;
   --chart-border: #d9e0ea;
   --chart-text: #5d6b80;
+  /* Светлая тема берёт тот же фиолетовый темнее и полосу глуше: на белом
+     фоне светлая полупрозрачная полоса из тёмной темы не видна вообще,
+     а яркая метка на оси слепит. */
+  --chart-cross: #6d4aff;
+  --chart-cross-band: rgba(109, 74, 255, .10);
 
   --shadow: 0 1px 2px rgba(20, 30, 50, .06);
 }
@@ -107,12 +122,20 @@ h4 { font-size: 11px; margin: 12px 0 3px; color: var(--muted);
 .brand { font-weight: 600; display: flex; align-items: center; gap: 7px; font-size: 13px; }
 .brand small { color: var(--muted); font-weight: 400; }
 
+/* Знак с названием — ссылка на сводку. Цвет наследуется, подчёркивания нет:
+   в шапке она должна читаться как логотип, а не как ссылка в тексте. */
+.brand-link {
+  display: flex; align-items: center; gap: 7px;
+  color: inherit; text-decoration: none;
+}
+.brand-link:hover { text-decoration: none; opacity: .8; }
+
 /* Селектор монеты в шапке. Монета — сквозное измерение интерфейса, поэтому
    он стоит рядом с названием проекта, а не среди фильтров страницы. */
 .symbol-picker {
   background: var(--bg);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 4px;
   padding: 2px 6px;
   font: inherit;
@@ -253,7 +276,7 @@ nav.pager {
 }
 nav.pager .kinds, nav.pager .steps { display: flex; gap: 10px; }
 nav.pager a { text-decoration: none; }
-nav.pager a.on { font-weight: 600; color: var(--fg); }
+nav.pager a.on { font-weight: 600; color: var(--text); }
 nav.pager .muted { opacity: .45; }
 
 /* ─── Панель инструментов ───────────────────────────────────────────────── */
@@ -310,6 +333,10 @@ nav.pager .muted { opacity: .45; }
   height: calc(100vh - 250px); min-height: 420px;
   border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
 }
+/* Курсор-ладонь на время перетаскивания. Класс вешает chart.html по
+   mousedown: библиотека курсор не трогает, и без подсказки движение мышью
+   с зажатой кнопкой читается как выделение текста, а не как таскание. */
+.chart.dragging, .chart.dragging canvas { cursor: grabbing; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .chip { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
 .chip i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
@@ -332,7 +359,7 @@ nav.pager .muted { opacity: .45; }
   height: 26px; line-height: 26px; white-space: nowrap;
   max-width: 620px; overflow: hidden; text-overflow: ellipsis;
   padding: 0 10px; border-radius: 6px;
-  background: var(--panel); border: 1px solid var(--border);
+  background: var(--panel); border: 1px solid var(--line);
   box-shadow: 0 4px 14px rgba(0, 0, 0, .28);
   font-size: 11.5px; color: var(--text);
 }
@@ -343,7 +370,7 @@ nav.pager .muted { opacity: .45; }
 .chart-tooltip b { font-weight: 600; }
 .chart-tooltip .tt-name { color: var(--accent); }
 .chart-tooltip .tt-tr { color: var(--muted); }
-.chart-tooltip .tt-sep { color: var(--border); margin: 0 6px; }
+.chart-tooltip .tt-sep { color: var(--line); margin: 0 6px; }
 
 /* Имя состояния в панели деталей графа — подзаголовок под номером. */
 .state-name {

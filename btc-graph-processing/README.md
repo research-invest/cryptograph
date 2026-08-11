@@ -172,7 +172,7 @@ btc-graph-processing/
 │       ├── auth.py              сессии, rate-limit по IP, allowlist
 │       ├── queries.py           только чтение — данные для страниц
 │       ├── templates/           Jinja + HTMX
-│       └── static/app.css
+│       └── static/assets/     css/app.css + js/ (cytoscape, lightweight-charts, htmx)
 │
 ├── tests/                       синтетические бары, ни БД, ни сети
 ├── docker-compose.yml           один сервис admin в сети btc-graph_default
@@ -693,9 +693,10 @@ lightweight-charts парсит цвет сам и на `hsl(...)` падает 
 Порт по умолчанию слушается на `127.0.0.1`. Прежде чем выставлять админку
 наружу, поставь её за TLS-прокси: кука `secure` включается только на https.
 
-Cytoscape, lightweight-charts и htmx подключаются с unpkg — на машине без
-интернета страницы графа и чарта останутся пустыми. Лечится скачиванием трёх
-файлов в `btcproc/admin/static/` и правкой ссылок в шаблонах.
+Внешних запросов админка не делает вообще: cytoscape, lightweight-charts и htmx
+лежат в `btcproc/admin/static/assets/js/`, стиль — в `assets/css/`, шрифты
+системные. Страницы графа и чарта работают на машине без интернета. Версии
+библиотек и порядок обновления — `btcproc/admin/static/assets/README.md`.
 
 ---
 

@@ -3,7 +3,7 @@
 {% block main_class %}wide{% endblock %}
 
 {% block head %}
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/static/assets/js/lightweight-charts.standalone.production.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -46,6 +46,9 @@
     </select>
   </label>
   <div class="spacer"></div>
+  {# График открывается на правом крае в читаемом масштабе, история достаётся
+     перетаскиванием. Кнопка — для случая «покажи весь выбранный период». #}
+  <button id="fit" type="button" title="Вписать всю выборку в окно">Вписать всё</button>
   <button id="reload" type="button" class="primary">Показать</button>
 </form>
 
@@ -60,6 +63,9 @@
     <span class="legend-item"><i class="line" style="background:var(--amber)"></i>MODERATE</span>
     <span class="legend-item"><i class="line" style="background:var(--muted)"></i>WEAK</span>
     <span class="legend-item">снизу — long, сверху — short</span>
+  </div>
+  <div class="legend-group">
+    <span class="legend-item">тащить мышью · колесо — сдвиг · за ось — масштаб</span>
   </div>
   <div class="legend-group"><span class="legend-item" id="chartInfo"></span></div>
 </div>
@@ -78,14 +84,80 @@ function chartTheme() {
     grid: { vertLines: { color: cssVar('--chart-grid') }, horzLines: { color: cssVar('--chart-grid') } },
     rightPriceScale: { borderColor: cssVar('--chart-border') },
     timeScale: { borderColor: cssVar('--chart-border'), timeVisible: true },
+    // Крестик тоже часть темы: его цвета живут в CSS-переменных обеих палитр,
+    // иначе на светлой странице он оставался бы рассчитанным под тёмный фон.
+    crosshair: {
+      // Normal вместо magnet: крестик ходит свободно и не прилипает к
+      // ближайшему бару — иначе цену между свечами не прочитать.
+      mode: LightweightCharts.CrosshairMode.Normal,
+      // Вертикаль шириной в несколько пикселей подсвечивает сам бар.
+      vertLine: {
+        width: 8,
+        color: cssVar('--chart-cross-band'),
+        style: LightweightCharts.LineStyle.Solid,
+        labelBackgroundColor: cssVar('--chart-cross'),
+      },
+      horzLine: {
+        color: cssVar('--chart-cross'),
+        labelBackgroundColor: cssVar('--chart-cross'),
+      },
+    },
   };
 }
 
+// Стартовая ширина бара в пикселях. Не косметика: именно она делает график
+// перетаскиваемым. Раньше окно вписывало fitContent'ом ВСЮ загруженную
+// историю — при 1500 барах на полутора тысячах пикселей на бар приходится
+// меньше пикселя, за краями окна ничего не остаётся, и перетаскивание
+// внешне выглядит сломанным, хотя формально работает: тянуть некуда.
+const BAR_SPACING = 8;
+
 const chart = LightweightCharts.createChart(el('chart'), Object.assign({
-  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   autoSize: true,
+  // Перетаскивание мышью и колесо — явно, а не на дефолтах: набор
+  // включённого здесь и есть то, чем график управляется, и менять его
+  // вслепую при обновлении библиотеки не придётся.
+  handleScroll: {
+    pressedMouseMove: true,   // тащить график мышью
+    mouseWheel: true,         // колесо — сдвиг по времени
+    horzTouchDrag: true,
+    vertTouchDrag: true,
+  },
+  handleScale: {
+    axisPressedMouseMove: { time: true, price: true },  // тянуть за ось = масштаб
+    mouseWheel: true,
+    pinch: true,
+    axisDoubleClickReset: true,  // двойной клик по оси возвращает автомасштаб
+  },
+  // Инерция после броска мышью: по истории в тысячи баров иначе приходится
+  // тянуть десятками коротких движений.
+  kineticScroll: { mouse: true, touch: true },
+  timeScale: { barSpacing: BAR_SPACING, rightOffset: 5 },
 }, chartTheme()));
 const series = chart.addCandlestickSeries();
+
+// Шкала цены: запас сверху и снизу под маркеры. Стрелки кандидатов стоят
+// под баром и над баром, и без полей нижние срезались бы краем окна.
+series.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.2 } });
+
+// Вертикальное перетаскивание возможно ТОЛЬКО при выключенном автомасштабе:
+// иначе шкала цены пересчитывается по видимым барам на каждом кадре и
+// возвращает график обратно — со стороны выглядит так, будто вверх-вниз
+// он не двигается вовсе. Поэтому autoScale держим выключенным, а вписывание
+// делаем разово: включили, дали пересчитать кадр, выключили обратно.
+function fitPrice() {
+  const scale = series.priceScale();
+  scale.applyOptions({ autoScale: true });
+  requestAnimationFrame(() => scale.applyOptions({ autoScale: false }));
+}
+
+// Курсор-ладонь во время перетаскивания: без него непонятно, тащится график
+// или выделяется страница. Сама библиотека курсор не меняет.
+(function () {
+  const box = el('chart');
+  box.addEventListener('mousedown', () => box.classList.add('dragging'));
+  window.addEventListener('mouseup', () => box.classList.remove('dragging'));
+})();
 
 // Состояния по номеру и бары по времени — для подсказки и подписей.
 let stateNames = new Map();
@@ -187,7 +259,15 @@ async function load() {
     : '';
   el('chartInfo').textContent =
     `${data.bars.length} баров, ${data.markers.length} кандидатов${cut}, ${data.groups.length} состояний в окне`;
-  chart.timeScale().fitContent();
+
+  // Показываем правый край в читаемом масштабе, а не всю выборку целиком:
+  // остальная история остаётся слева и достаётся перетаскиванием. Кому нужен
+  // весь период разом — кнопка «Вписать всё».
+  chart.timeScale().applyOptions({ barSpacing: BAR_SPACING });
+  chart.timeScale().scrollToPosition(5, false);
+  // Новая выборка — новый диапазон цен. Без этого график остался бы на
+  // масштабе прошлой выборки и мог оказаться целиком за краем окна.
+  fitPrice();
 }
 
 // ─── Подсказка при наведении ────────────────────────────────────────────────
@@ -228,6 +308,13 @@ chart.subscribeCrosshairMove((param) => {
 });
 
 el('reload').addEventListener('click', load);
+// «Вписать всё» возвращает обе оси разом: время — в окно, цену — по данным.
+// Только timeScale.fitContent() было бы полдела, вертикаль осталась бы там,
+// куда её утащили.
+el('fit').addEventListener('click', () => {
+  chart.timeScale().fitContent();
+  fitPrice();
+});
 ['run', 'limit', 'rating', 'stateLabels'].forEach(
   id => el(id).addEventListener('change', load));
 
