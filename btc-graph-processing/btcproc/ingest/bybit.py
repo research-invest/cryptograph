@@ -47,7 +47,8 @@ logger = logging.getLogger(__name__)
 # а формат Bybit.
 MONTHLY_URL = "https://public.bybit.com/spot/{sym}/{sym}-{ym}.csv.gz"
 DAILY_URL = "https://public.bybit.com/spot/{sym}/{sym}_{ymd}.csv.gz"
-REST_URL = "https://api.bybit.com/v5/market/kline"
+# Настраиваемый по той же причине, что и у Binance, — см. DataConfig.
+REST_URL = config.data.bybit_rest_url
 
 # Порядок колонок в тиковых CSV. Заголовок в файлах есть, но доверять ему
 # нельзя: в месячных архивах он перечисляет пять имён при шести колонках
@@ -380,6 +381,18 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
                     "start": start_ms, "limit": 1000,
                 },
             )
+            if resp.status_code in (403, 451):
+                # Гео-блокировка, а не сбой: с американского хоста REST Bybit
+                # закрыт целиком, вместе со всеми зеркалами. Ронять прогон
+                # нельзя — тогда `live` монеты падал бы каждые полчаса,
+                # хотя тиковые архивы качаются и данные идут. Отставание в
+                # этом режиме — до суток, ровно до выхода дневного архива.
+                logger.warning(
+                    "REST Bybit недоступен (%s), хвост берётся только из "
+                    "дневных архивов: отставание до суток. Адрес — %s",
+                    resp.status_code, REST_URL,
+                )
+                break
             resp.raise_for_status()
             body = resp.json()
             if body.get("retCode") != 0:

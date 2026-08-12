@@ -204,6 +204,49 @@ def test_empty_archive_gives_empty_frame():
     assert bybit.ticks_to_bars(pd.DataFrame(), "HYPEUSDT", "15m").empty
 
 
+# ─── Гео-блокировка REST ──────────────────────────────────────────────────────
+
+def test_geoblocked_rest_does_not_break_the_run(monkeypatch):
+    """
+    С американского хоста REST Bybit отвечает 403 — вместе со всеми зеркалами
+    (api.bytick.com, api.bybit.nl: та же заглушка CloudFront). Боевой VPS
+    именно такой.
+
+    Ронять на этом прогон нельзя: тиковые архивы качаются, данные идут, а
+    `live` монеты падал бы каждые полчаса. Отставание в таком режиме — до
+    суток, до выхода дневного архива.
+    """
+    calls = {"daily": 0, "rest": 0}
+
+    def fake_daily(symbol, tf, client, progress=None):
+        calls["daily"] += 1
+        return 7
+
+    class FakeResponse:
+        status_code = 403
+
+        def raise_for_status(self):  # pragma: no cover — не должен вызываться
+            raise AssertionError("на 403 полагается мягкая деградация, а не исключение")
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def get(self, *a, **kw):
+            calls["rest"] += 1
+            return FakeResponse()
+
+    monkeypatch.setattr(bybit, "_sync_daily_tail", fake_daily)
+    monkeypatch.setattr(bybit.bars, "last_ts", lambda *a, **kw: pd.Timestamp("2026-08-01", tz="UTC"))
+    monkeypatch.setattr(bybit.httpx, "Client", FakeClient)
+
+    rows = bybit.sync_recent("HYPEUSDT", "15m")
+
+    assert rows == 7, "бары из дневных архивов обязаны сохраниться"
+    assert calls["rest"] == 1, "после 403 повторять запросы незачем"
+
+
 # ─── Выбор площадки ───────────────────────────────────────────────────────────
 
 def test_loader_is_chosen_by_venue():

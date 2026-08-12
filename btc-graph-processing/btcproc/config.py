@@ -105,6 +105,19 @@ class DataConfig:
     binance_rest_url: str = _env(
         "BINANCE_REST_URL", "https://api.binance.com/api/v3/klines"
     )
+    # То же самое для Bybit — но с важным отличием: рабочего зеркала у него
+    # нет. api.bybit.com, api.bytick.com и api.bybit.nl отвечают 403 с той же
+    # CloudFront-заглушкой «configured to block access from your country»,
+    # то есть с американского хоста (в том числе с боевого VPS) свежий хвост
+    # монеты с Bybit не добирается никак. Переменная оставлена ради установок,
+    # где доступ есть, и ради подмены адреса в тестах.
+    #
+    # Работать без неё загрузчик умеет: тиковые архивы public.bybit.com
+    # отдаются отовсюду, и на них он и живёт, отставая на сутки. Это разобрано
+    # в bybit.sync_recent — там же причина, почему 403 не роняет прогон.
+    bybit_rest_url: str = _env(
+        "BYBIT_REST_URL", "https://api.bybit.com/v5/market/kline"
+    )
 
     @property
     def base_minutes(self) -> int:
