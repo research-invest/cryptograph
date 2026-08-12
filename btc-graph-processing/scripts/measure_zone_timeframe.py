@@ -45,7 +45,7 @@ from btcproc.analysis.gradation import format_table as format_gradation  # noqa:
 from btcproc.analysis.gradation import measure_gradation  # noqa: E402
 from btcproc.analysis.lift import DEFAULT_N_BOOT, format_table, measure_lift  # noqa: E402
 from btcproc.features import smc  # noqa: E402
-from btcproc.ingest import binance  # noqa: E402
+from btcproc.ingest import bars  # noqa: E402
 
 #: Зонная половина SMC — то, о чём идёт спор. Структурные атомы (bos/choch)
 #: сюда не входят: они первый замер прошли и меряются отдельно.
@@ -83,7 +83,7 @@ def zone_values(symbol: str, timeframe: str, base_index: pd.DatetimeIndex) -> pd
     `shift(1)` обязателен, иначе на 15-минутный бар попадёт значение ещё не
     закрытого 4-часового.
     """
-    bars = binance.load_ohlcv(symbol, timeframe, None, None)
+    bars = bars.load_ohlcv(symbol, timeframe, None, None)
     if bars.empty:
         raise SystemExit(
             f"Нет баров {symbol} на {timeframe}. Старшие ТФ агрегируются из "

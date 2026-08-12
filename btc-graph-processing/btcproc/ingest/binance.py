@@ -1,9 +1,9 @@
 """
-Загрузка истории торговых пар с Binance.
+Загрузка истории торговых пар со спота Binance.
 
-Монет может быть несколько: `sync_many()` проходит их подряд, беря дату
-начала истории у каждой из реестра `btcproc/symbols.py`. Остальные функции
-работают по одной монете и принимают её символом.
+Модуль знает ровно одну площадку. Цикл по монетам живёт в
+`btcproc/ingest/sources.py`: монеты бывают с разных бирж, и выбирать
+загрузчик — его работа, а не наша. Хранение и чтение баров — `bars.py`.
 
 Основной источник — публичные дампы data.binance.vision: месячные zip-архивы
 klines. Это на порядок быстрее REST (вся история 15m с 2017 — несколько минут
@@ -14,8 +14,9 @@ klines. Это на порядок быстрее REST (вся история 15
 переменной BINANCE_REST_URL: api.binance.com отвечает 451 из ряда юрисдикций,
 и там его меняют на data-api.binance.vision.
 
-Старшие таймфреймы не качаются отдельно — они агрегируются из базового.
-Так исключены расхождения между ТФ на границах баров.
+Старшие таймфреймы не качаются отдельно — они агрегируются из базового
+(`bars.rebuild_context_timeframes`). Так исключены расхождения между ТФ
+на границах баров.
 """
 from __future__ import annotations
 
@@ -25,13 +26,14 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator
 
 import httpx
 import pandas as pd
 
 from btcproc import config
-from btcproc.db.session import bulk_upsert, fetch_all, fetch_one
+from btcproc.ingest import bars
+from btcproc.ingest.bars import OHLCV_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -46,23 +48,6 @@ KLINE_COLUMNS = [
     "open_time", "open", "high", "low", "close", "volume", "close_time",
     "quote_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore",
 ]
-
-OHLCV_COLUMNS = [
-    "symbol", "tf", "ts", "open", "high", "low", "close",
-    "volume", "quote_volume", "trades", "taker_buy_base",
-]
-
-# Правило агрегации базовых баров в старший ТФ.
-_AGG = {
-    "open": "first",
-    "high": "max",
-    "low": "min",
-    "close": "last",
-    "volume": "sum",
-    "quote_volume": "sum",
-    "trades": "sum",
-    "taker_buy_base": "sum",
-}
 
 
 def _to_utc(series: pd.Series) -> pd.Series:
@@ -162,19 +147,16 @@ def _normalize(df: pd.DataFrame, symbol: str, tf: str) -> pd.DataFrame:
     return df[OHLCV_COLUMNS]
 
 
-def _store(df: pd.DataFrame) -> int:
-    if df.empty:
-        return 0
-    df = df.copy()
-    # trades — INTEGER в схеме, а после агрегации старших ТФ приходит float.
-    df["trades"] = pd.to_numeric(df["trades"], errors="coerce").fillna(0).astype(int)
-    rows = list(df.itertuples(index=False, name=None))
-    return bulk_upsert(
-        "ohlcv",
-        OHLCV_COLUMNS,
-        rows,
-        conflict_columns=["symbol", "tf", "ts"],
-    )
+def has_month(symbol: str, ym: str, client: httpx.Client) -> bool:
+    """
+    Есть ли месячный дамп за `ym` (формат YYYY-MM).
+
+    Нужна `symbols.resolve_history_start`: дату листинга проверяют фактом,
+    а «факт» у каждой площадки свой. HEAD вместо GET — файлы бывают
+    в сотни мегабайт, а ответ нужен один бит.
+    """
+    url = VISION_URL.format(sym=symbol.upper(), tf=config.data.base_tf, ym=ym)
+    return client.head(url).status_code == 200
 
 
 def sync_history(
@@ -208,7 +190,7 @@ def sync_history(
                     progress(i + 1, len(months), f"{ym}: дампа нет")
                 continue
             df = _normalize(_unzip(payload), symbol, tf)
-            total_rows += _store(df)
+            total_rows += bars.store_bars(df)
             if progress:
                 progress(i + 1, len(months), f"{ym}: {len(df)} баров")
 
@@ -217,74 +199,6 @@ def sync_history(
 
     total_rows += sync_recent(symbol, tf)
     return {"months": len(months), "rows": total_rows, "missing_months": missing}
-
-
-def sync_many(
-    tickers: Sequence[str] | None = None,
-    tf: str | None = None,
-    start: str | None = None,
-    context: bool = True,
-    progress=None,
-    on_symbol=None,
-) -> dict:
-    """
-    Загрузка истории по нескольким монетам подряд.
-
-    Цикл живёт здесь, а не в CLI, потому что он нужен трём вызывающим —
-    команде `ingest --all`, форме админки и обкатке новой монеты — и у всех
-    трёх одинаковые требования к поведению.
-
-    Как устроено и почему:
-
-      * **Дата начала берётся из реестра, у каждой монеты своя.** Общий
-        HISTORY_START на альткоине означал бы полсотни запросов за месяцы
-        до листинга: каждый вернёт 404 и попадёт в missing_months, замусорив
-        отчёт настолько, что настоящий пропуск в нём не разглядеть.
-        Явный `start` перекрывает реестр — для точечных догрузок.
-      * **Падение одной монеты не останавливает остальные.** Сеть отвалилась
-        на третьей из семи — остальные четыре всё равно должны загрузиться,
-        иначе ночной прогон превращается в лотерею. Диагноз копится
-        и возвращается вызывающему.
-      * **Последовательно, а не параллельно.** Упирается всё в сеть и в
-        запись пачками в одну таблицу; параллельная закачка дала бы выигрыш
-        только до первого 429 от Binance.
-
-    Возвращает сводку: что загрузилось, что упало и сколько всего баров.
-    Печатает — вызывающий, а не эта функция.
-
-    tickers=None — все активные монеты реестра.
-    """
-    from btcproc import symbols
-
-    specs = (
-        [symbols.get(t) for t in tickers] if tickers else symbols.enabled()
-    )
-    tf = tf or config.data.base_tf
-
-    result: dict = {"symbols": {}, "failed": {}, "rows_total": 0}
-
-    for index, spec in enumerate(specs, start=1):
-        if on_symbol:
-            on_symbol(index, len(specs), spec.ticker)
-        try:
-            report = sync_history(
-                spec.ticker, tf, start or spec.start_date(),
-                progress=(
-                    (lambda i, n, msg, _t=spec.ticker: progress(i, n, f"{_t}: {msg}"))
-                    if progress else None
-                ),
-            )
-            if context:
-                report["context"] = rebuild_context_timeframes(spec.ticker)
-            result["symbols"][spec.ticker] = report
-            result["rows_total"] += report["rows"]
-        except Exception as exc:  # noqa: BLE001 — одна монета не рушит пакет
-            logger.exception("Загрузка %s упала", spec.ticker)
-            result["failed"][spec.ticker] = f"{type(exc).__name__}: {exc}"
-
-    result["ok"] = len(result["symbols"])
-    result["total"] = len(specs)
-    return result
 
 
 def _sync_daily_tail(symbol: str, tf: str, client: httpx.Client, progress=None) -> int:
@@ -298,7 +212,7 @@ def _sync_daily_tail(symbol: str, tf: str, client: httpx.Client, progress=None) 
         url = DAILY_URL.format(sym=symbol, tf=tf, ymd=ymd)
         payload = _fetch_zip(url, _cache_path(symbol, tf, ymd), client)
         if payload is not None:
-            rows += _store(_normalize(_unzip(payload), symbol, tf))
+            rows += bars.store_bars(_normalize(_unzip(payload), symbol, tf))
         day += timedelta(days=1)
     if progress:
         progress(1, 1, f"дневной хвост: {rows} баров")
@@ -316,7 +230,7 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
 
     symbol = symbol or config.data.symbol
     tf = tf or config.data.base_tf
-    last = last_ts(symbol, tf)
+    last = bars.last_ts(symbol, tf)
     if last:
         start_ms = int(last.timestamp() * 1000) + 1
     else:
@@ -346,161 +260,8 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
             df = df[pd.to_numeric(df["close_time"]) < now_ms]
             if df.empty:
                 break
-            rows += _store(_normalize(df, symbol, tf))
+            rows += bars.store_bars(_normalize(df, symbol, tf))
             start_ms = int(df["open_time"].iloc[-1]) + 1
             if len(batch) < 1000:
                 break
     return rows
-
-
-def rebuild_context_timeframes(
-    symbol: str | None = None,
-    tfs: list[str] | None = None,
-    full: bool = False,
-) -> dict:
-    """
-    Пересобирает старшие ТФ из базового и складывает в ту же таблицу.
-
-    По умолчанию инкрементально: базовые бары читаются не с 2017 года, а от
-    последнего уже сохранённого бара старшего ТФ. Этот последний бар обязан
-    попасть в пересчёт заново — на момент прошлого запуска он мог быть
-    недособран (метка бара — время открытия, а окно ещё не закрылось).
-
-    Полный пересчёт (`full=True`) нужен, только если базовые бары правились
-    задним числом: обычная догрузка хвоста этого не делает.
-
-    Раньше `live` каждые полчаса читал всю историю базового ТФ и перезаписывал
-    upsert'ом ВСЕ старшие — сотни тысяч строк ради нескольких свежих.
-    """
-    symbol = symbol or config.data.symbol
-    tfs = tfs or config.data.context_tfs
-
-    # Граница пересчёта — самый ранний хвост среди всех ТФ: базовые бары
-    # читаются один раз на всех, а недельный ТФ отступает назад дальше
-    # четырёхчасового.
-    starts: dict[str, pd.Timestamp | None] = {}
-    for tf in tfs:
-        if full:
-            starts[tf] = None
-            continue
-        row = fetch_one(
-            "SELECT max(ts) AS t FROM ohlcv WHERE symbol = %s AND tf = %s",
-            (symbol, tf),
-        )
-        starts[tf] = pd.Timestamp(row["t"]) if row and row["t"] is not None else None
-
-    earliest = None if any(v is None for v in starts.values()) else min(starts.values())
-    base = load_ohlcv(symbol, config.data.base_tf, start=earliest)
-
-    out = {}
-    for tf in tfs:
-        # Срез строго от границы своего ТФ: она совпадает с открытием бара
-        # (label=left), поэтому агрегация от неё даёт тот же результат, что и
-        # агрегация всей истории — просто без лишней работы.
-        window = base if starts[tf] is None else base[base.index >= starts[tf]]
-        if window.empty:
-            out[tf] = 0
-            continue
-        agg = resample(window, tf)
-        agg = agg.reset_index().rename(columns={"index": "ts"})
-        agg["symbol"], agg["tf"] = symbol, tf
-        out[tf] = _store(agg[OHLCV_COLUMNS])
-    return out
-
-
-def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
-    """
-    Агрегация баров в старший ТФ.
-
-    df — с DatetimeIndex по ts. label/closed=left: метка бара — время его
-    открытия, как у Binance.
-    """
-    rule = {"1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "12h": "12h", "1d": "1D"}[tf]
-    out = df.resample(rule, label="left", closed="left").agg(_AGG)
-    return out.dropna(subset=["open", "close"])
-
-
-def _as_utc(value: str | datetime | pd.Timestamp) -> pd.Timestamp:
-    """
-    Границу диапазона принимаем и наивной, и с зоной.
-
-    `pd.Timestamp(x, tz="UTC")` на уже локализованном значении бросает
-    ValueError — а границы приходят из обоих источников: наивные строки от
-    оператора и tz-aware метки из БД (`max(ts)`).
-    """
-    ts = pd.Timestamp(value)
-    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-
-
-def load_ohlcv(
-    symbol: str | None = None,
-    tf: str | None = None,
-    start: str | datetime | None = None,
-    end: str | datetime | None = None,
-) -> pd.DataFrame:
-    """Бары из БД в DataFrame с DatetimeIndex (UTC)."""
-    symbol = symbol or config.data.symbol
-    tf = tf or config.data.base_tf
-    sql = (
-        "SELECT ts, open, high, low, close, volume, quote_volume, trades, taker_buy_base "
-        "FROM ohlcv WHERE symbol = %s AND tf = %s"
-    )
-    params: list = [symbol, tf]
-    if start is not None:
-        sql += " AND ts >= %s"
-        params.append(_as_utc(start))
-    if end is not None:
-        sql += " AND ts <= %s"
-        params.append(_as_utc(end))
-    sql += " ORDER BY ts"
-
-    rows = fetch_all(sql, params)
-    if not rows:
-        return pd.DataFrame(
-            columns=["open", "high", "low", "close", "volume", "quote_volume",
-                     "trades", "taker_buy_base"],
-            index=pd.DatetimeIndex([], tz="UTC", name="ts"),
-        )
-    df = pd.DataFrame(rows)
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    return df.set_index("ts").astype(float)
-
-
-def last_ts(symbol: str | None = None, tf: str | None = None) -> datetime | None:
-    row = fetch_one(
-        "SELECT max(ts) AS ts FROM ohlcv WHERE symbol = %s AND tf = %s",
-        (symbol or config.data.symbol, tf or config.data.base_tf),
-    )
-    return row["ts"] if row and row["ts"] else None
-
-
-def coverage(symbol: str | None = None) -> list[dict]:
-    """Что реально лежит в базе: период и число баров по каждому ТФ."""
-    return fetch_all(
-        "SELECT tf, count(*) AS bars, min(ts) AS first_ts, max(ts) AS last_ts "
-        "FROM ohlcv WHERE symbol = %s GROUP BY tf ORDER BY tf",
-        (symbol or config.data.symbol,),
-    )
-
-
-def coverage_all(symbols_filter: list[str] | None = None, tf: str | None = None) -> list[dict]:
-    """
-    Сводка покрытия по всем монетам сразу — одним запросом, а не N.
-
-    tf=None — по всем таймфреймам; иначе только базовый, что и нужно
-    помонетной таблице `status`.
-    """
-    sql = (
-        "SELECT symbol, tf, count(*) AS bars, min(ts) AS first_ts, max(ts) AS last_ts "
-        "FROM ohlcv"
-    )
-    conditions, params = [], []
-    if symbols_filter:
-        conditions.append("symbol = ANY(%s)")
-        params.append(list(symbols_filter))
-    if tf:
-        conditions.append("tf = %s")
-        params.append(tf)
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
-    return fetch_all(sql + " GROUP BY symbol, tf ORDER BY symbol, tf", params)

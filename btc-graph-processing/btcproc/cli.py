@@ -115,16 +115,16 @@ def ingest(
     context: bool = typer.Option(True, help="Пересобрать старшие ТФ из базового"),
 ) -> None:
     """
-    Скачать историю Binance в БД.
+    Скачать историю монеты в БД — с той площадки, что указана в её реестре.
 
-    Цикл по монетам живёт в binance.sync_many: он нужен и админке, и обкатке
+    Цикл по монетам живёт в sources.sync_many: он нужен и админке, и обкатке
     новой монеты, а не только этой команде.
     """
-    from btcproc.ingest import binance
+    from btcproc.ingest import bars, sources
 
     specs = _resolve(symbol, all_symbols)
 
-    result = binance.sync_many(
+    result = sources.sync_many(
         [spec.ticker for spec in specs],
         tf=config.data.base_tf,
         start=start,
@@ -345,7 +345,7 @@ def status(
     from datetime import datetime, timezone
 
     from btcproc.db.session import fetch_all
-    from btcproc.ingest import binance
+    from btcproc.ingest import bars
     from btcproc.sink import graph_sink
 
     specs = _resolve(symbol, all_symbols and not symbol)
@@ -356,7 +356,7 @@ def status(
     # тормозить от числа монет.
     coverage = {
         row["symbol"]: row
-        for row in binance.coverage_all(tickers, tf=config.data.base_tf)
+        for row in bars.coverage_all(tickers, tf=config.data.base_tf)
     }
     cand_rows = {
         row["symbol"]: row

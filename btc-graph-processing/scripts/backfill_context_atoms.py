@@ -34,7 +34,7 @@ from btcproc import config, symbols  # noqa: E402
 from btcproc.db import repo  # noqa: E402
 from btcproc.db.session import fetch_all  # noqa: E402
 from btcproc.features import events as ev  # noqa: E402
-from btcproc.ingest import binance  # noqa: E402
+from btcproc.ingest import bars  # noqa: E402
 
 
 def process(symbol: str, only_missing: bool, dry_run: bool) -> bool:
@@ -59,7 +59,7 @@ def process(symbol: str, only_missing: bool, dry_run: bool) -> bool:
         print("  Нечего заполнять.")
         return True
 
-    base = binance.load_ohlcv(symbol, config.data.base_tf, None, None)
+    base = bars.load_ohlcv(symbol, config.data.base_tf, None, None)
     if base.empty:
         print("  Нет баров в ohlcv.")
         return True

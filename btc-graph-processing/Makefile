@@ -1,5 +1,6 @@
 .PHONY: help setup install init-db ingest ingest-all train train-all train-fast \
-        live live-all status admin maintenance test docker-up docker-down docker-logs
+        live live-all status admin maintenance validate-holdout test docker-up \
+        docker-down docker-logs
 
 PY ?= python3
 
@@ -17,6 +18,7 @@ help:
 	@echo "status     — таблица по монетам: покрытие, отставание, очередь"
 	@echo "admin      — запустить админку"
 	@echo "maintenance— недельная уборка: разметка старых live + вакуум"
+	@echo "validate-holdout — проверка системы на отложенной части истории (часы)"
 	@echo "test       — тесты"
 	@echo "docker-up  — поднять админку в docker (нужен запущенный btc-graph)"
 
@@ -64,6 +66,12 @@ status:
 # Стоит в кроне раз в неделю; руками полезен --dry-run, чтобы сперва посмотреть.
 maintenance:
 	$(PY) scripts/maintenance.py
+
+# Обучает модель на первых 70% истории и меряет на остальных 30%. Часы
+# машинного времени на три монеты, поэтому в кроне ему делать нечего:
+# запускается руками после изменений, меняющих геометрию кластеров.
+validate-holdout:
+	$(PY) scripts/validate_holdout.py --all
 
 test:
 	$(PY) -m pytest -q

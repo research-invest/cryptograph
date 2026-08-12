@@ -21,17 +21,31 @@ from typing import Any
 from btcproc import config
 
 
+#: Площадки, с которых умеем брать бары. Значение — модуль-загрузчик в
+#: `btcproc/ingest/`; диспетчер живёт в `btcproc/ingest/sources.py`.
+#:
+#: Площадка — свойство монеты, а не окружения: HYPEUSDT на споте Binance
+#: не существует вовсе, и это не настройка, которую захочется поменять.
+VENUES: tuple[str, ...] = ("binance_spot", "bybit_spot")
+
+
 @dataclass(frozen=True)
 class SymbolSpec:
     ticker: str
 
-    # Раньше этой даты дампов на data.binance.vision просто нет.
+    # Раньше этой даты дампов на площадке просто нет.
     # Занижать безопасно (лишние месяцы дадут 404 и попадут в missing_months),
     # но каждый лишний месяц — это лишний HTTP-запрос при каждом ingest.
     # Проверять фактом, а не по памяти: см. resolve_history_start ниже.
     history_start: str
 
     enabled: bool = True
+
+    # Откуда берутся бары. Дефолт — Binance: на нём заведены все монеты,
+    # с которых начиналась система, и молчаливая смена площадки у них была бы
+    # худшим из возможных изменений — цены разъехались бы на доли процента,
+    # а модель состояний переучилась бы на другой рынок без единой ошибки.
+    venue: str = "binance_spot"
 
     # Точечные переопределения StatesConfig для монет, которым общая формула
     # масштабирования min_group_size не подошла (раздел 7 задачи).
@@ -81,6 +95,21 @@ SYMBOLS: tuple[SymbolSpec, ...] = (
             "относительный порог дробления min_group_share"
         ),
     ),
+    SymbolSpec(
+        "HYPEUSDT", "2025-07-01",
+        venue="bybit_spot",
+        note=(
+            "Первая монета не с Binance: пары HYPEUSDT на его споте нет вовсе "
+            "(есть только бессрочный фьючерс), на Bybit она с 2025-07-11. "
+            "Истории всего год с небольшим — вчетверо короче, чем у SOLUSDT, "
+            "и профиль оценки в btc-graph ей нужен по пресету young. "
+            "Кандидаты выходят ТОЛЬКО со scope=transition: на 8.4 тыс. снимков "
+            "приходится 4.5 тыс. пар (переход × блок событий), и до "
+            "min_sample_size=30 аналогов не добирается ни одна. Это следствие "
+            "короткой истории, а не поломки — понижать порог ради появления "
+            "scope=transition+event_block нельзя, выборка и так на пределе"
+        ),
+    ),
 )
 
 _BY_TICKER = {spec.ticker.upper(): spec for spec in SYMBOLS}
@@ -106,6 +135,7 @@ def get(ticker: str) -> SymbolSpec:
             "Новая монета добавляется туда же — SymbolSpec с датой листинга."
         )
     _validate_overrides(spec)
+    _validate_venue(spec)
     return spec
 
 
@@ -122,6 +152,20 @@ def _validate_overrides(spec: SymbolSpec) -> None:
         raise UnknownSymbolError(
             f"{spec.ticker}: states_overrides содержит неизвестные параметры "
             f"{sorted(unknown)}. Поля StatesConfig: {', '.join(sorted(known))}."
+        )
+
+
+def _validate_venue(spec: SymbolSpec) -> None:
+    """
+    Опечатка в площадке обязана падать здесь, а не там, где её последствия
+    выглядят как отсутствие данных: диспетчер `ingest/sources.py` выбирает
+    загрузчик по этой строке, и незнакомое значение означало бы монету,
+    которую некому качать.
+    """
+    if spec.venue not in VENUES:
+        raise UnknownSymbolError(
+            f"{spec.ticker}: неизвестная площадка {spec.venue!r}. "
+            f"Известные: {', '.join(VENUES)}."
         )
 
 
@@ -191,7 +235,11 @@ def validate_default() -> None:
     default()
 
 
-def resolve_history_start(ticker: str, probe_from: str = "2017-07-01") -> str:
+def resolve_history_start(
+    ticker: str,
+    probe_from: str = "2017-07-01",
+    venue: str = "binance_spot",
+) -> str:
     """
     Ищет фактическую дату начала истории перебором месяцев.
 
@@ -200,26 +248,34 @@ def resolve_history_start(ticker: str, probe_from: str = "2017-07-01") -> str:
     дамп существует.
 
         python3 -c "from btcproc import symbols; print(symbols.resolve_history_start('SOLUSDT'))"
+        python3 -c "from btcproc import symbols; print(symbols.resolve_history_start('HYPEUSDT', venue='bybit_spot'))"
+
+    Площадку приходится передавать явно: монеты в реестре ещё нет — она
+    заводится по результату этого вызова.
     """
     from datetime import datetime, timezone
 
     import httpx
     import pandas as pd
 
-    from btcproc.ingest.binance import VISION_URL
+    if venue not in VENUES:
+        raise UnknownSymbolError(
+            f"Неизвестная площадка {venue!r}. Известные: {', '.join(VENUES)}."
+        )
 
-    tf = config.data.base_tf
+    from btcproc.ingest import sources
+
+    loader = sources.loader_for(venue)
     month = pd.Timestamp(probe_from, tz="UTC")
     now = pd.Timestamp(datetime.now(timezone.utc))
 
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
         while month < now:
-            url = VISION_URL.format(sym=ticker.upper(), tf=tf, ym=month.strftime("%Y-%m"))
-            if client.head(url).status_code == 200:
+            if loader.has_month(ticker.upper(), month.strftime("%Y-%m"), client):
                 return month.strftime("%Y-%m-01")
             month += pd.DateOffset(months=1)
 
     raise UnknownSymbolError(
-        f"Дампов {ticker} на data.binance.vision не найдено с {probe_from}. "
+        f"Дампов {ticker} на площадке {venue} не найдено с {probe_from}. "
         "Проверь написание тикера."
     )

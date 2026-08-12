@@ -45,7 +45,7 @@ from btcproc import config, symbols  # noqa: E402
 from btcproc.features import builder as feat  # noqa: E402
 from btcproc.features import events as ev  # noqa: E402
 from btcproc.features import smc  # noqa: E402
-from btcproc.ingest import binance  # noqa: E402
+from btcproc.ingest import bars  # noqa: E402
 
 SIGNATURE_MAX_SHARE = 0.03
 DUPLICATE_CORRELATION = 0.9
@@ -78,12 +78,12 @@ def load(symbol: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Data
     должен работать при любом значении `SMC_ENABLED`, в том числе при
     выключенном — иначе им нельзя было бы пользоваться до включения.
     """
-    base = binance.load_ohlcv(symbol, config.data.base_tf, None, None)
+    base = bars.load_ohlcv(symbol, config.data.base_tf, None, None)
     if base.empty:
         raise SystemExit(f"Нет баров по {symbol} — сначала ingest.")
 
     context = {
-        tf: binance.load_ohlcv(symbol, tf, None, None)
+        tf: bars.load_ohlcv(symbol, tf, None, None)
         for tf in config.data.context_tfs
     }
     features = feat.build_features(base, context)

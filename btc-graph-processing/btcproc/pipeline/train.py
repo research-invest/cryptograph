@@ -27,7 +27,7 @@ from btcproc.db import repo, runs
 from btcproc.db.runs import dumps as runs_dumps
 from btcproc.features import builder as feat
 from btcproc.features import events as ev
-from btcproc.ingest import binance
+from btcproc.ingest import bars, sources
 from btcproc.sink import graph_sink
 from btcproc.states import assign, clustering, graph
 
@@ -82,6 +82,7 @@ def run_train(
     do_ingest: bool = True,
     do_emit: bool = True,
     emit_min_quality: float | None = None,
+    states_overrides: dict | None = None,
     on_progress: Callable[[str, float], None] | None = None,
 ) -> dict:
     """
@@ -89,6 +90,15 @@ def run_train(
 
     do_ingest=False — работать по тому, что уже в БД (быстрый пересчёт модели
     без повторной закачки истории).
+
+    `states_overrides` — разовые переопределения порогов кластеризации поверх
+    реестра монеты. Нужны замерам, которым требуется ВТОРАЯ модель состояний
+    на тех же данных (валидация на отложенной части требует повторить вывод
+    на двух моделях, `docs/plan_priority_2026-08-12.md`, Ш0): другой
+    `random_state` даёт другую реализацию процедуры, не трогая ни данные, ни
+    калибровку. Штатным прогонам параметр не нужен — постоянные
+    переопределения живут в `btcproc/symbols.py`, где версионируются и
+    проходят ревью.
     """
     spec = symbols.resolve(symbol)
     symbol = spec.ticker
@@ -100,6 +110,17 @@ def run_train(
     # переопределения из реестра + масштабирование min_group_size по длине
     # истории внутри fit_states.
     states_cfg = spec.states_config()
+    if states_overrides:
+        import dataclasses
+
+        unknown = set(states_overrides) - {
+            f.name for f in dataclasses.fields(config.StatesConfig)
+        }
+        if unknown:
+            raise ValueError(
+                f"states_overrides содержит неизвестные параметры {sorted(unknown)}"
+            )
+        states_cfg = dataclasses.replace(states_cfg, **states_overrides)
 
     own_run = run_id is None
     if own_run:
@@ -107,7 +128,8 @@ def run_train(
             "train",
             {"symbol": symbol, "start": start, "end": end,
              "do_ingest": do_ingest, "do_emit": do_emit,
-             "states_overrides": spec.states_overrides or None},
+             "states_overrides": {**spec.states_overrides,
+                                  **(states_overrides or {})} or None},
             symbol=symbol,
         )
 
@@ -117,17 +139,20 @@ def run_train(
 
     try:
         # ── 1. История ──────────────────────────────────────────────────────
-        progress.start("ingest", "загрузка баров Binance")
+        # Площадка в сообщении не для красоты: монеты приезжают с разных бирж,
+        # и «загрузка баров Binance» на монете с Bybit — ровно та подпись,
+        # по которой потом ищут несуществующую проблему.
+        progress.start("ingest", f"загрузка баров ({symbols.get(symbol).venue})")
         if do_ingest:
-            result = binance.sync_history(
+            result = sources.sync_history(
                 symbol, config.data.base_tf, start,
                 progress=lambda i, n, msg: progress.within(i / max(n, 1), msg),
             )
             stats["ingest"] = result
             runs.log(run_id, f"Загружено баров: {result['rows']}")
-            ctx_rows = binance.rebuild_context_timeframes(symbol)
+            ctx_rows = bars.rebuild_context_timeframes(symbol)
             stats["context_timeframes"] = ctx_rows
-        base = binance.load_ohlcv(symbol, config.data.base_tf, start, end)
+        base = bars.load_ohlcv(symbol, config.data.base_tf, start, end)
         if base.empty:
             raise RuntimeError(
                 "В БД нет баров. Запусти прогон с загрузкой истории (do_ingest=True)."
@@ -138,7 +163,7 @@ def run_train(
         # ── 2. Признаки ─────────────────────────────────────────────────────
         progress.start("features", "расчёт признаков")
         context = {
-            tf: binance.load_ohlcv(symbol, tf, start, end)
+            tf: bars.load_ohlcv(symbol, tf, start, end)
             for tf in config.data.context_tfs
         }
         features = feat.build_features(base, context)

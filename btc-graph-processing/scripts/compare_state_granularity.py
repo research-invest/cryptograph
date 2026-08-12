@@ -42,7 +42,7 @@ import numpy as np  # noqa: E402
 from btcproc import config, symbols  # noqa: E402
 from btcproc.features import builder as feat  # noqa: E402
 from btcproc.features import smc  # noqa: E402
-from btcproc.ingest import binance  # noqa: E402
+from btcproc.ingest import bars  # noqa: E402
 from btcproc.states import clustering  # noqa: E402
 
 
@@ -53,11 +53,11 @@ def features_for(symbol: str, start: str | None, enabled: bool):
     saved = config.smc
     config.smc = config.SMCConfig(enabled=enabled)
     try:
-        base = binance.load_ohlcv(symbol, config.data.base_tf, start, None)
+        base = bars.load_ohlcv(symbol, config.data.base_tf, start, None)
         if base.empty:
             raise SystemExit(f"Нет баров по {symbol}")
         context = {
-            tf: binance.load_ohlcv(symbol, tf, start, None)
+            tf: bars.load_ohlcv(symbol, tf, start, None)
             for tf in config.data.context_tfs
         }
         return feat.build_features(base, context)

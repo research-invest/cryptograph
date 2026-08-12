@@ -19,7 +19,7 @@ from btcproc.candidates.outcomes import compute_outcomes
 from btcproc.db import repo, runs
 from btcproc.features import builder as feat
 from btcproc.features import events as ev
-from btcproc.ingest import binance
+from btcproc.ingest import bars, sources
 from btcproc.pipeline.train import emit_pending
 from btcproc.states import assign, graph
 
@@ -170,12 +170,12 @@ def run_live(
 
     try:
         runs.log(run_id, "Добор свежих баров", stage="ingest", progress=0.1)
-        new_bars = binance.sync_recent(symbol, config.data.base_tf)
-        binance.rebuild_context_timeframes(symbol)
+        new_bars = sources.sync_recent(symbol, config.data.base_tf)
+        bars.rebuild_context_timeframes(symbol)
         stats["new_bars"] = new_bars
 
-        base = binance.load_ohlcv(symbol, config.data.base_tf)
-        context = {tf: binance.load_ohlcv(symbol, tf) for tf in config.data.context_tfs}
+        base = bars.load_ohlcv(symbol, config.data.base_tf)
+        context = {tf: bars.load_ohlcv(symbol, tf) for tf in config.data.context_tfs}
 
         runs.log(run_id, "Признаки и события", stage="features", progress=0.3)
         features = feat.build_features(base, context)

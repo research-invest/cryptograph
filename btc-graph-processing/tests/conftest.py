@@ -70,7 +70,7 @@ def bars() -> pd.DataFrame:
 
 @pytest.fixture(scope="session")
 def context(bars) -> dict:
-    from btcproc.ingest.binance import resample
+    from btcproc.ingest.bars import resample
 
     return {tf: resample(bars, tf) for tf in ("1h", "4h", "1d")}
 

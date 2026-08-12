@@ -51,7 +51,7 @@ from btcproc.analysis.gradation import (  # noqa: E402
 )
 from btcproc.analysis.lift import DEFAULT_N_BOOT, block_length_rows  # noqa: E402
 from btcproc.features import smc  # noqa: E402
-from btcproc.ingest import binance  # noqa: E402
+from btcproc.ingest import bars  # noqa: E402
 
 
 def attach_features(frame: pd.DataFrame, symbol: str,
@@ -65,7 +65,7 @@ def attach_features(frame: pd.DataFrame, symbol: str,
     (дисциплина модуля `smc.py`), поэтому джойн по `ts` заглядывания вперёд
     не создаёт.
     """
-    base = binance.load_ohlcv(symbol, config.data.base_tf, None, None)
+    base = bars.load_ohlcv(symbol, config.data.base_tf, None, None)
     if base.empty:
         raise SystemExit(f"Нет баров по {symbol} — сначала ingest.")
 

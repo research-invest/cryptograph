@@ -49,7 +49,7 @@ import pandas as pd  # noqa: E402
 from btcproc import config, symbols  # noqa: E402
 from btcproc.features import builder as feat  # noqa: E402
 from btcproc.features import smc  # noqa: E402
-from btcproc.ingest import binance  # noqa: E402
+from btcproc.ingest import bars  # noqa: E402
 from btcproc.states import clustering  # noqa: E402
 
 DEFAULT_SIGMAS = (0.5, 0.75, 1.0, 1.5, 2.0)
@@ -83,11 +83,11 @@ def build(symbol: str, start: str | None, enabled: bool) -> pd.DataFrame:
     saved = config.smc
     config.smc = config.SMCConfig(enabled=enabled, features_enabled=enabled)
     try:
-        base = binance.load_ohlcv(symbol, config.data.base_tf, start, None)
+        base = bars.load_ohlcv(symbol, config.data.base_tf, start, None)
         if base.empty:
             raise SystemExit(f"Нет баров по {symbol} — сначала ingest.")
         context = {
-            tf: binance.load_ohlcv(symbol, tf, start, None)
+            tf: bars.load_ohlcv(symbol, tf, start, None)
             for tf in config.data.context_tfs
         }
         return feat.build_features(base, context)

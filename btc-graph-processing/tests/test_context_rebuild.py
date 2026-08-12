@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from btcproc.ingest.binance import resample
+from btcproc.ingest.bars import resample
 
 
 def _base(periods: int = 4000) -> pd.DataFrame:
