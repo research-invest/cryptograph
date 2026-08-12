@@ -1,0 +1,67 @@
+# ЧЕРНОВИК, сгенерированный scripts/calibrate_profile.py.
+# Ступени — перцентили выборки монеты; они не знают, что маленькая
+# выборка статистически несостоятельна даже если это p90 монеты.
+# Перед вводом в работу: проверь топ-10 глазами, положи sanity-кандидата
+# в tests/fixtures/ и зафиксируй его ожидаемый рейтинг.
+# Меняешь профиль потом — бампай version (правило 6).
+
+symbol: HYPEUSDT
+version: 1
+description: Черновик калибровки по 446 кандидатам (scripts/calibrate_profile.py,
+  пресет весов «young»)
+extends: _default
+weights: {statistical: 0.4, directional: 0.25, context: 0.25, rarity: 0.1}
+statistical:
+  sample_size:
+    mode: higher_better
+    ladder:
+    - [166, 1.0]
+    - [123, 0.7]
+    - [59, 0.4]
+    floor: 0.1
+  monthly_concentration:
+    mode: lower_better
+    ladder:
+    - [0.18, 1.0]
+    - [0.2126, 0.7]
+    - [0.2571, 0.3]
+    floor: 0.0
+  repeatability_months:
+    mode: higher_better
+    ladder:
+    - [12, 1.0]
+    - [10, 0.7]
+    - [8, 0.4]
+    floor: 0.1
+directional:
+  win_rate:
+    mode: higher_better
+    ladder:
+    - [0.6875, 1.0]
+    - [0.6286, 0.7]
+    - [0.5753, 0.4]
+    floor: 0.1
+  abs_outcome_skew:
+    mode: higher_better
+    ladder:
+    - [0.375, 1.0]
+    - [0.2571, 0.7]
+    - [0.1507, 0.4]
+    floor: 0.1
+  fa_ratio:
+    mode: higher_better
+    ladder:
+    - [4.073, 1.0]
+    - [3.254, 0.7]
+    - [2.565, 0.4]
+    floor: 0.1
+rarity:
+  research_score:
+    mode: higher_better
+    ladder:
+    - [0.6423, 1.0]
+    - [0.6098, 0.7]
+    - [0.5477, 0.4]
+    floor: 0.2
+rating: {strong_min: 0.743, moderate_min: 0.527}
+batch: {min_quality_score: 0.527, fresh_bonus: 0.05}
