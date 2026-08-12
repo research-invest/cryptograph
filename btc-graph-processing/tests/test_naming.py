@@ -197,3 +197,18 @@ def test_unknown_atom_falls_back_to_its_id():
     """Незнакомый атом не должен ломать панель — показываем как есть."""
     assert naming.label_for_atom("нет_такого_атома") == "нет_такого_атома"
     assert naming.label_for_atom("in_premium") == "в премиальной зоне"
+
+
+def test_feature_catalog_is_exactly_the_vocabulary():
+    """
+    Плоский каталог для интерфейса обязан совпадать со словарём по составу.
+    Он существует ровно затем, чтобы селектор признаков на графике не заводил
+    второй словарь: разъехавшись, тот назвал бы признак иначе, чем имя
+    состояния, посчитанное из того же признака.
+    """
+    catalog = naming.feature_catalog()
+    axes = dict(naming.AXES)
+
+    assert len(catalog) == sum(len(vocabulary) for _axis, vocabulary in naming.AXES)
+    for axis, feature, positive, negative in catalog:
+        assert axes[axis][feature] == (positive, negative)

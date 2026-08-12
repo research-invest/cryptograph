@@ -18,6 +18,11 @@ from btcproc.states import naming
 # (`markers_truncated`) — молча терять кандидатов нельзя.
 MARKER_LIMIT = 500
 
+#: Потолок точек в серии признака на нижней панели графика. Окно графика
+#: ограничено 5000 барами, так что на обычном пути он не срабатывает — он
+#: страхует прямой запрос к API без границ окна.
+INDICATOR_LIMIT = 6000
+
 
 # Область видимости прогонов живёт в db/runs.py: ею пользуется не только
 # админка, но и замеры в scripts/, а дублировать такое условие нельзя —
@@ -176,7 +181,8 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     # оставались последние N баров диапазона, и начало заданного периода молча
     # пропадало (запрос с 1 июля отдавал бары с 15-го). Без start смысл обратный
     # — нужны свежие бары, поэтому берём с конца.
-    inner = "SELECT ts, symbol, open, high, low, close FROM ohlcv WHERE symbol = %s AND tf = %s"
+    inner = ("SELECT ts, symbol, open, high, low, close, volume "
+             "FROM ohlcv WHERE symbol = %s AND tf = %s")
     inner_params: list[Any] = [symbol, config.data.base_tf]
     if start:
         inner += " AND ts >= %s"
@@ -189,9 +195,13 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
 
     # Окно баров отбирается ДО lateral-джойна: иначе поиск разметки шёл бы по
     # всей истории, а не по показанным полутора тысячам баров.
+    # Атомы бара приезжают тем же запросом: у `bar_events` ключ (symbol, ts)
+    # без run_id — событийный слой считается один раз и от модели не зависит.
+    # Джойн обычный, а не LATERAL: размножить бары он не может.
     sql = (
-        "SELECT o.ts, o.open, o.high, o.low, o.close, s.group_id, s.is_transition, "
-        "s.transition_id, s.age_bucket, s.entropy "
+        "SELECT o.ts, o.open, o.high, o.low, o.close, o.volume, "
+        "s.group_id, s.is_transition, s.transition_id, s.age_bucket, s.entropy, "
+        "e.atoms, e.context_atoms "
         f"FROM ({inner}) o "
         "LEFT JOIN LATERAL ("
         "  SELECT b.group_id, b.is_transition, b.transition_id, b.age_bucket, b.entropy "
@@ -199,11 +209,13 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
         f"  WHERE b.symbol = o.symbol AND b.ts = o.ts AND {scope_sql} "
         "  ORDER BY b.run_id DESC LIMIT 1"
         ") s ON true "
+        "LEFT JOIN bar_events e ON e.symbol = o.symbol AND e.ts = o.ts "
         "ORDER BY o.ts ASC"
     )
     bars = fetch_all(sql, [*inner_params, *scope_params])
     if not bars:
-        return {"bars": [], "markers": [], "groups": [], "markers_truncated": False}
+        return {"bars": [], "markers": [], "groups": [], "markers_truncated": False,
+                "atom_labels": {}, "indicators": indicator_catalog(run_id)}
 
     first_ts, last_ts = bars[0]["ts"], bars[-1]["ts"]
     # rating="none" — маркеры не нужны вовсе: на длинном окне их сотни,
@@ -248,14 +260,32 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     }
 
     out_bars = []
+    seen_atoms: set[str] = set()
     for b in bars:
         color = palette.get(b["group_id"], "#8892a0")
+        # None и [] здесь разные вещи: пустой список — «событий на баре нет»,
+        # отсутствие строки в bar_events — «событийный слой этот бар не считал»
+        # (хвост свежее последнего прогона). Схлопывать их нельзя: второе
+        # читалось бы как спокойный рынок.
+        atoms = None if b["atoms"] is None else list(b["atoms"])
+        context = None if b["atoms"] is None else list(b["context_atoms"] or ())
+        seen_atoms.update(atoms or ())
+        seen_atoms.update(context or ())
         out_bars.append({
             "time": int(b["ts"].timestamp()),
             "open": b["open"], "high": b["high"], "low": b["low"], "close": b["close"],
             "color": color, "borderColor": color, "wickColor": color,
             "group_id": b["group_id"],
-            "transition_id": b["transition_id"],
+            # "NaN" строкой прилетает из pandas на барах без предыдущего
+            # состояния (первый бар модели). Наружу это уходило подписью
+            # «переход NaN» — читается как сбой, хотя перехода просто нет.
+            "transition_id": None if b["transition_id"] in (None, "NaN") else b["transition_id"],
+            "volume": b["volume"],
+            # Атомы отдаём идентификаторами, подписи — общим словарём ниже:
+            # атомов на бар до десятка, и русская строка в каждом баре
+            # раздувала бы ответ впятеро без единого нового факта.
+            "atoms": atoms,
+            "context": context,
         })
 
     markers = []
@@ -278,6 +308,107 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
             for gid in group_ids
         ],
         "markers_truncated": truncated,
+        "atom_labels": {atom: naming.label_for_atom(atom) for atom in sorted(seen_atoms)},
+        # Список признаков модели едет вместе с барами, а не отдельным
+        # запросом: он зависит от прогона, и рассинхрон селектора с
+        # раскраской означал бы запрос несуществующего в модели признака.
+        "indicators": indicator_catalog(run_id),
+    }
+
+
+def _feature_version(root: int) -> str | None:
+    """Набор признаков, которым обучена модель прогона."""
+    row = fetch_one("SELECT feature_ver FROM state_models WHERE run_id = %s", (root,))
+    return row["feature_ver"] if row else None
+
+
+def indicator_catalog(run_id: int) -> list[dict]:
+    """
+    Признаки, доступные для нижней панели графика.
+
+    Берём не «что умеет считать код», а состав набора, которым обучена модель
+    прогона: на v1 SMC-признаков в базе нет вовсе, и предлагать их в селекторе
+    значило бы обещать пустую панель. Порядок и подписи — из словаря имён
+    состояний (`naming.AXES`), чтобы индикатор и имя состояния говорили об
+    одном и том же одними словами.
+    """
+    version = _feature_version(runs_repo.model_root(run_id))
+    if not version:
+        return []
+    row = fetch_one("SELECT names FROM feature_sets WHERE version = %s", (version,))
+    if not row:
+        return []
+    available = set(row["names"])
+
+    out = [
+        {"name": feature, "axis": axis, "high": positive, "low": negative}
+        for axis, feature, positive, negative in naming.feature_catalog()
+        if feature in available
+    ]
+    # Признак без словарной строки — нарушение инварианта 7, и тест полноты
+    # его ловит. Но молча прятать такой признак из интерфейса нельзя: пусть
+    # видно будет здесь, а не только в упавшем тесте.
+    named = {item["name"] for item in out}
+    out.extend(
+        {"name": feature, "axis": "без описания", "high": "", "low": ""}
+        for feature in row["names"] if feature not in named
+    )
+    return out
+
+
+def indicator_series(run_id: int, symbol: str, name: str,
+                     start: Any = None, end: Any = None) -> dict:
+    """
+    Значения одного признака по барам окна — для нижней панели графика.
+
+    Читаем ровно те числа, на которых обучалась модель, а не пересчитываем
+    индикатор в браузере: пересчёт разошёлся бы с моделью на параметрах окон
+    и на сдвиге старших ТФ, и панель показывала бы не то, что видит граф.
+    """
+    version = _feature_version(runs_repo.model_root(run_id))
+    if not version:
+        return {"name": name, "points": [], "note": "у прогона нет модели состояний"}
+    row = fetch_one("SELECT names FROM feature_sets WHERE version = %s", (version,))
+    names: list[str] = list(row["names"]) if row else []
+    if name not in names:
+        return {"name": name, "points": [],
+                "note": f"признака нет в наборе {version} этого прогона"}
+
+    # Массивы в postgres 1-based; индекс берём по составу набора, а не по
+    # порядку в коде — набор монеты может быть старым.
+    position = names.index(name) + 1
+    sql = ("SELECT ts, values[%s] AS value FROM features "
+           "WHERE symbol = %s AND version = %s")
+    params: list[Any] = [position, symbol, version]
+    if start is not None:
+        sql += " AND ts >= %s"
+        params.append(start)
+    if end is not None:
+        sql += " AND ts <= %s"
+        params.append(end)
+    # Потолок на случай запроса без границ: у монеты сотни тысяч баров, и
+    # вся история одним ответом — полтора мегабайта JSON ради полутора тысяч
+    # видимых точек. Берём последние, а не первые: без границ нужен свежий
+    # хвост. Окно графика (максимум 5000 баров) в этот потолок помещается,
+    # то есть на обычном пути обрезка не срабатывает.
+    sql += " ORDER BY ts DESC LIMIT %s"
+    params.append(INDICATOR_LIMIT)
+
+    rows = fetch_all(sql, params)
+    points = [
+        {"time": int(r["ts"].timestamp()), "value": r["value"]}
+        for r in reversed(rows) if r["value"] is not None
+    ]
+    described = {item["name"]: item for item in indicator_catalog(run_id)}.get(name, {})
+    return {
+        "name": name,
+        "version": version,
+        "high": described.get("high", ""),
+        "low": described.get("low", ""),
+        "points": points,
+        # Прогрев окон съедает первые недели истории, а набор v2 посчитан не
+        # на всей: пустая панель без объяснения читается как поломка.
+        "note": "" if points else "нет посчитанных значений в этом окне",
     }
 
 

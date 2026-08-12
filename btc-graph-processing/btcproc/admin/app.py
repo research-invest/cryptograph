@@ -685,6 +685,25 @@ def api_chart(request: Request, run: str | None = None, start: str | None = None
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get("/api/chart/indicator")
+def api_chart_indicator(request: Request, name: str, run: str | None = None,
+                        start: str | None = None, end: str | None = None):
+    """
+    Одна серия признака под свечами.
+
+    Отдельным запросом от `/api/chart`, а не полем в нём: смена индикатора не
+    должна перезагружать бары — иначе график сбрасывал бы позицию и масштаб на
+    каждое переключение панели.
+    """
+    symbol = current_symbol(request)
+    run_id = opt_int(run) or _latest_train_id(symbol)
+    if run_id is None:
+        return {"name": name, "points": [], "note": "нет ни одного прогона монеты"}
+    return queries.indicator_series(
+        run_id, symbol, name, start=opt_str(start), end=opt_str(end)
+    )
+
+
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: int):
     run = runs_repo.get_run(run_id)

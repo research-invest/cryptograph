@@ -47,6 +47,18 @@
      подпись на оси. Прозрачность обязательна — непрозрачная полоса
      закрывала бы свечу, ради которой её и наводят. */
   --chart-cross-band: rgba(195, 188, 219, .26);
+  /* Объём. Полупрозрачный по построению: столбцы стоят под свечами,
+     раскрашенными состояниями, и насыщенный цвет спорил бы с раскраской за
+     внимание. Зелёный/красный здесь — единственное место, где на графике
+     видно направление бара: сами свечи заняты цветом состояния.
+     Всплеск (атом volume_spike) берёт янтарный — он не про направление,
+     а про то, что событийный слой этот бар отметил. */
+  --chart-vol-up: rgba(47, 158, 94, .45);
+  --chart-vol-down: rgba(192, 57, 43, .45);
+  --chart-vol-spike: rgba(217, 154, 43, .85);
+  /* Линия признака на нижней панели. Не accent: панель читается вместе с
+     графиком, и линия обязана отличаться и от состояний, и от крестика. */
+  --chart-indicator: #4fb3d9;
 
   --shadow: none;
 }
@@ -84,6 +96,11 @@
      а яркая метка на оси слепит. */
   --chart-cross: #6d4aff;
   --chart-cross-band: rgba(109, 74, 255, .10);
+  /* На белом фоне та же прозрачность объёма выглядит бледнее — берём выше. */
+  --chart-vol-up: rgba(23, 134, 74, .40);
+  --chart-vol-down: rgba(179, 38, 30, .40);
+  --chart-vol-spike: rgba(180, 83, 9, .80);
+  --chart-indicator: #1d7ea6;
 
   --shadow: 0 1px 2px rgba(20, 30, 50, .06);
 }
@@ -329,10 +346,52 @@ nav.pager .muted { opacity: .45; }
 .legend-item .sz-l { width: 17px; height: 17px; background: var(--muted); }
 
 /* ─── График ────────────────────────────────────────────────────────────── */
+/* Высоту режет то, что показано под свечами: панель признака и инспектор бара
+   занимают место, и без вычета нижний край уезжал бы за окно. Переменную
+   выставляет chart.html при включении панели — CSS не знает, включена ли она. */
 .chart {
-  height: calc(100vh - 250px); min-height: 420px;
+  height: calc(100vh - 250px - var(--chart-extra, 0px)); min-height: 300px;
   border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
 }
+/* Панель признака — отдельный график lightweight-charts, синхронизированный
+   по времени с основным. В версии 4.x встроенных панелей нет: единственный
+   способ дать признаку собственную шкалу цены — второй график.
+   Ось времени у него скрыта, даты подписаны один раз сверху. */
+.chart-sub {
+  height: 140px; margin-top: 6px; display: none;
+  border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+  position: relative;
+}
+.chart-sub.on { display: block; }
+.chart-sub .sub-title {
+  position: absolute; z-index: 4; left: 10px; top: 6px; pointer-events: none;
+  font-size: 11.5px; color: var(--muted);
+}
+.chart-sub .sub-title b { color: var(--chart-indicator); font-weight: 600; }
+
+/* Инспектор бара: всё, что система знает про бар под курсором. Живёт под
+   графиком, а не в подсказке у курсора, по той же причине, по которой
+   подсказка однострочная, — длина здесь меняется от бара к бару (атомов
+   бывает от нуля до десятка), и у курсора это прыгало бы. Высота
+   зафиксирована, чтобы не дёргалась разметка страницы. */
+.bar-inspect {
+  min-height: 42px; margin: 6px 0 0; padding: 6px 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  font-size: 11.5px; color: var(--muted);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px;
+}
+.bar-inspect .bi-ts { color: var(--text); font-weight: 600; }
+.bar-inspect .bi-up { color: var(--green); }
+.bar-inspect .bi-down { color: var(--red); }
+.bar-inspect .bi-atom {
+  padding: 1px 7px; border-radius: 10px;
+  border: 1px solid var(--line); color: var(--text);
+}
+/* Контекстный атом отличается от signature-атома намеренно: первый в
+   event_block_id не входит, второй входит — это разные каналы, и в интерфейсе
+   их нельзя показывать одинаковыми. */
+.bar-inspect .bi-atom.ctx { color: var(--muted); border-style: dashed; }
+.bar-inspect .bi-hint { opacity: .7; }
 /* Курсор-ладонь на время перетаскивания. Класс вешает chart.html по
    mousedown: библиотека курсор не трогает, и без подсказки движение мышью
    с зажатой кнопкой читается как выделение текста, а не как таскание. */

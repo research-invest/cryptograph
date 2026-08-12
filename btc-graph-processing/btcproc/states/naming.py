@@ -238,6 +238,22 @@ def label_for_atom(atom: str) -> str:
     return ATOM_LABELS.get(atom, atom)
 
 
+def feature_catalog() -> list[tuple[str, str, str, str]]:
+    """
+    Признаки словаря как плоский список `(ось, признак, фраза «выше», «ниже»)`.
+
+    Нужен интерфейсу, а не именованию: селектор индикатора на графике
+    показывает те же признаки, которыми названы состояния, и в том же порядке
+    осей. Второго словаря для этого заводить нельзя — он разъедется с AXES
+    молча, и подписи на графике начали бы противоречить именам состояний.
+    """
+    return [
+        (axis, feature, positive, negative)
+        for axis, vocabulary in AXES
+        for feature, (positive, negative) in vocabulary.items()
+    ]
+
+
 def describe_state(
     top_features: dict[str, Any] | None,
     dominant_bias: str | None = None,
