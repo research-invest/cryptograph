@@ -118,6 +118,53 @@ def publish_strong_candidate(evaluation_dict: dict) -> bool:
         return False
 
 
+def persist_batch(entries: list[dict]) -> bool:
+    """
+    Пачка записей одним round-trip'ом: кэш оценки, метка хэша, публикация STRONG.
+
+    `entries` — по одной записи на кандидата в порядке пачки:
+    `{"symbol", "candidate_id", "evaluation_json", "configuration_hash",
+      "strong_payload"}`. Пустой `configuration_hash` и `strong_payload=None`
+      означают «этой команды для кандидата нет» — ровно как в одиночном пути.
+
+    MULTI/EXEC, а не простое конвейерное отправление: при обрыве посреди пачки
+    команды не должны примениться частично. `setex` идемпотентен и повтор ему
+    безразличен, а вот `publish` — нет: подписчик получил бы STRONG-кандидата
+    дважды, если бы вызывающий после сбоя повторил пачку по одному.
+
+    Возвращает успех записи всей пачки. Как и в одиночном пути, недоступность
+    Redis не исключение, а False в логе.
+    """
+    if not entries:
+        return True
+    try:
+        pipe = get_client().pipeline(transaction=True)
+        for entry in entries:
+            symbol = _key_symbol(entry.get("symbol"))
+            pipe.setex(
+                f"{symbol}:evaluation:{entry['candidate_id']}",
+                CACHE_TTL, entry["evaluation_json"],
+            )
+            configuration_hash = entry.get("configuration_hash")
+            if configuration_hash:
+                pipe.setex(
+                    f"{symbol}:candidate:hash:{configuration_hash}",
+                    DEDUP_TTL, entry["candidate_id"],
+                )
+            strong = entry.get("strong_payload")
+            if strong is not None:
+                payload = json.dumps(strong, ensure_ascii=False)
+                pipe.publish(strong_channel(entry.get("symbol")), payload)
+                pipe.publish(STRONG_CHANNEL_ALL, payload)
+        pipe.execute()
+        return True
+    except redis.RedisError:
+        logger.warning(
+            "Не удалось записать пачку из %d оценок в Redis", len(entries), exc_info=True
+        )
+        return False
+
+
 def subscribe_strong_candidates(symbol: str | None = None):
     """
     Генератор для подписки на STRONG-кандидатов.

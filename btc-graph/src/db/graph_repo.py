@@ -210,6 +210,156 @@ def _upsert_tx(tx, candidate: Candidate, evaluation: CandidateEvaluation) -> Non
     )
 
 
+def upsert_batch(pairs: list[tuple[Candidate, CandidateEvaluation]]) -> bool:
+    """
+    Пачка кандидатов одной транзакцией: три запроса вместо трёх на кандидата.
+
+    **Результат обязан совпадать с последовательным `upsert_from_candidate`,
+    и здесь это не пожелание, а условие применимости.** Свойства узлов и рёбер
+    накапливаются (`count`, `sample_count`, скользящие средние), поэтому любое
+    расхождение не всплывёт ошибкой — граф просто станет другим. Совпадение
+    обеспечивается двумя вещами:
+
+    * **предагрегация в Python.** Инкрементальное среднее, применённое k раз,
+      равно среднему по всем n+k наблюдениям, поэтому пачка сворачивается в
+      `(n, сумма win_rate, сумма quality_score)` на переход, и Cypher делает
+      ОДИН шаг с теми же формулами. Правые части `SET` вычисляются от
+      состояния ДО предложения — на этом же свойстве держался и одиночный путь;
+    * **порядок пачки.** `dominant_bias` узла и `rarity` ребра в
+      последовательном коде перезаписываются каждым кандидатом, то есть
+      побеждает последний. Здесь берётся последний в порядке пачки — она
+      приходит в том же порядке, в каком шёл бы цикл.
+
+    Порядок между запросами (текущие группы, предыдущие, рёбра) на результат
+    не влияет: узел, созданный как «предыдущий», не получает `sample_count`, а
+    последующее `ON MATCH` считает его через `coalesce(..., 0)` — ровно как
+    если бы кандидаты шли по одному.
+
+    Транзакция одна на всю пачку: при сбое не применяется ничего, и
+    вызывающему безопасно повторить пачку по одному кандидату. Частичное
+    применение сделало бы повтор двойным счётом.
+    """
+    if not pairs:
+        return True
+
+    groups, prev_groups, edges = _aggregate(pairs)
+    try:
+        driver = get_driver()
+        with driver.session() as session:
+            session.execute_write(_upsert_batch_tx, groups, prev_groups, edges)
+        return True
+    except ServiceUnavailable:
+        logger.warning(
+            "Neo4j недоступен — граф не обновлён для пачки из %d кандидатов",
+            len(pairs), exc_info=True,
+        )
+        return False
+
+
+def _aggregate(
+    pairs: list[tuple[Candidate, CandidateEvaluation]],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Пачка → строки для трёх UNWIND: текущие группы, предыдущие, рёбра."""
+    groups: dict[tuple[str, float], dict] = {}
+    prev_groups: dict[tuple[str, float], dict] = {}
+    edges: dict[tuple[str, str], dict] = {}
+
+    for candidate, evaluation in pairs:
+        symbol = candidate.symbol
+
+        key = (symbol, candidate.current_group_id)
+        row = groups.get(key)
+        if row is None:
+            row = groups[key] = {
+                "symbol": symbol,
+                "group_id": candidate.current_group_id,
+                "label": f"{symbol}:group_{int(candidate.current_group_id)}",
+                "n": 0,
+                "bias": None,
+            }
+        row["n"] += 1
+        row["bias"] = candidate.historical_bias_context.value
+
+        if candidate.previous_group_id is None:
+            continue
+
+        prev_key = (symbol, candidate.previous_group_id)
+        if prev_key not in prev_groups:
+            prev_groups[prev_key] = {
+                "symbol": symbol,
+                "group_id": candidate.previous_group_id,
+                "label": f"{symbol}:group_{int(candidate.previous_group_id)}",
+            }
+
+        edge_key = (symbol, candidate.transition_id)
+        edge = edges.get(edge_key)
+        if edge is None:
+            edge = edges[edge_key] = {
+                "symbol": symbol,
+                "tid": candidate.transition_id,
+                "from_id": candidate.previous_group_id,
+                "to_id": candidate.current_group_id,
+                "n": 0,
+                "win_sum": 0.0,
+                "qs_sum": 0.0,
+                "rarity": None,
+            }
+        edge["n"] += 1
+        edge["win_sum"] += evaluation.win_rate
+        edge["qs_sum"] += evaluation.quality_score
+        edge["rarity"] = candidate.transition_rarity.value
+
+    return list(groups.values()), list(prev_groups.values()), list(edges.values())
+
+
+def _upsert_batch_tx(tx, groups: list[dict], prev_groups: list[dict], edges: list[dict]) -> None:
+    if groups:
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MERGE (g:MarketGroup {symbol: row.symbol, group_id: row.group_id})
+            ON CREATE SET g.label = row.label, g.sample_count = row.n,
+                          g.dominant_bias = row.bias
+            ON MATCH  SET g.sample_count = coalesce(g.sample_count, 0) + row.n,
+                          g.dominant_bias = row.bias
+            """,
+            rows=groups,
+        )
+
+    if prev_groups:
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MERGE (g:MarketGroup {symbol: row.symbol, group_id: row.group_id})
+            ON CREATE SET g.label = row.label
+            """,
+            rows=prev_groups,
+        )
+
+    if edges:
+        # Формулы средних те же, что в одиночном пути, только вместо одного
+        # наблюдения приходит сумма n наблюдений. t.count справа — ещё старый.
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (src:MarketGroup {symbol: row.symbol, group_id: row.from_id})
+            MATCH (dst:MarketGroup {symbol: row.symbol, group_id: row.to_id})
+            MERGE (src)-[t:TRANSITION {symbol: row.symbol, transition_id: row.tid}]->(dst)
+            ON CREATE SET
+                t.rarity = row.rarity,
+                t.count = row.n,
+                t.avg_win_rate = row.win_sum / row.n,
+                t.avg_quality_score = row.qs_sum / row.n
+            ON MATCH SET
+                t.count = t.count + row.n,
+                t.avg_win_rate      = (t.avg_win_rate      * t.count + row.win_sum) / (t.count + row.n),
+                t.avg_quality_score = (t.avg_quality_score * t.count + row.qs_sum)  / (t.count + row.n),
+                t.rarity = row.rarity
+            """,
+            rows=edges,
+        )
+
+
 def find_transitions_to_group(
     symbol: str,
     to_group_id: float,

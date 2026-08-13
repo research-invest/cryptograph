@@ -390,6 +390,33 @@ def test_fingerprint_ignores_description(profiles_dir):
     assert profiles.get_profile("ETHUSDT").fingerprint == first
 
 
+def test_fingerprint_is_cached_but_still_the_real_hash(profiles_dir):
+    """
+    Отпечаток считается один раз на объект профиля: скорер читает его на
+    каждого кандидата, и на 31 921 кандидате пересчёт съедал 3.53 c из 3.78 c
+    всего скоринга. Кэш обязан отдавать РОВНО то же значение, что честный
+    пересчёт, и не появляться в `model_dump()` — из него отпечаток и считается.
+
+    Невидимость правки порога сторожит `test_fingerprint_changes_with_threshold`:
+    перезагрузка каталога собирает новые объекты, а не правит эти.
+    """
+    import hashlib
+    import json
+
+    write(profiles_dir, "ETHUSDT", "symbol: ETHUSDT\nversion: 1\n")
+    profile = profiles.get_profile("ETHUSDT")
+
+    payload = json.dumps(
+        profile.model_dump(mode="json", exclude={"description"}),
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    )
+    expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+    assert profile.fingerprint == expected
+    assert profile.fingerprint == profile.fingerprint
+    assert "_fingerprint" not in profile.model_dump()
+
+
 def test_list_profiles_reports_versions(profiles_dir):
     write(profiles_dir, "ETHUSDT", "symbol: ETHUSDT\nversion: 7\n")
     rows = {row["symbol"]: row for row in profiles.list_profiles()}

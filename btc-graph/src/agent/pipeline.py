@@ -25,6 +25,15 @@ _USE_DB = os.environ.get("USE_DB", "true").lower() == "true"
 _USE_REDIS = os.environ.get("USE_REDIS", "true").lower() == "true"
 _USE_GRAPH = os.environ.get("USE_GRAPH", "true").lower() == "true"
 
+# Сколько кандидатов пишется за одну транзакцию батчевым путём. Верхняя
+# граница здесь — не производительность, а цена отката: сбой пачки означает
+# поштучный повтор всей пачки, а падение процесса посреди неё — потерю
+# ЕЩЁ НЕ ЗАПИСАННОГО хвоста (повторная отправка его вернёт: candidate_id
+# детерминирован, запись идёт upsert'ом). Пятьсот — заметно больше пачки
+# генератора (SINK_BATCH_SIZE=200), то есть штатный батч уходит одной
+# транзакцией, и при этом список id в SELECT остаётся вменяемым.
+_PERSIST_CHUNK = int(os.environ.get("PERSIST_CHUNK_SIZE", "500"))
+
 
 def _evaluate(
     candidate: Candidate,
@@ -129,6 +138,7 @@ def run_batch_pipeline(
     )
 
     results = []
+    persisted: list[tuple[Candidate, CandidateEvaluation]] = []
     for candidate, _ in best:
         evaluation = _evaluate(
             candidate, use_llm, llm_model,
@@ -136,8 +146,11 @@ def run_batch_pipeline(
             score=breakdowns.get((candidate.symbol, candidate.candidate_id)),
         )
         if save:
-            _persist(candidate, evaluation)
+            persisted.append((candidate, evaluation))
         results.append(evaluation)
+
+    if persisted:
+        _persist_batch(persisted)
 
     return results
 
@@ -182,6 +195,124 @@ def _cached_evaluation(candidate: Candidate) -> CandidateEvaluation | None:
             "Кэш оценки %s повреждён — считаем заново", cached_id, exc_info=True
         )
         return None
+
+
+def _persist_batch(
+    pairs: list[tuple[Candidate, CandidateEvaluation]],
+) -> dict[str, int]:
+    """
+    Батчевая запись пачки оценок в три хранилища.
+
+    Зачем. Одиночный `_persist` на каждого кандидата открывает свою сессию
+    PostgreSQL с отдельным commit, свою сессию Neo4j с тремя запросами и шлёт
+    в Redis по команде за раз. На отправке в 28.6 тыс. кандидатов это давало
+    порядка 600 записей в минуту — и уходило туда не время расчёта (скорер на
+    32 тыс. кандидатов тратит 3.4 секунды), а round-trip'ы к трём хранилищам.
+
+    Контракт деградации сохранён дословно: **недоступное хранилище не ломает
+    оценку, но обязательно логируется и попадает в статус.** Изменилась только
+    гранулярность — счёт идёт по пачке. Поэтому у каждого хранилища свой
+    `try`, и при сбое пачки идёт откат **на поштучную запись именно в это
+    хранилище**, а не на общий `_persist`: тот переписал бы заодно и те два,
+    что уже отработали, а для Neo4j повтор — это двойной инкремент счётчиков.
+
+    Возвращает число записанных кандидатов по каждому хранилищу; отключённое
+    хранилище даёт 0.
+    """
+    written = {"db": 0, "graph": 0, "redis": 0}
+    for start in range(0, len(pairs), _PERSIST_CHUNK):
+        chunk = pairs[start:start + _PERSIST_CHUNK]
+        if _USE_DB:
+            written["db"] += _persist_db_chunk(chunk)
+        if _USE_GRAPH:
+            written["graph"] += _persist_graph_chunk(chunk)
+        if _USE_REDIS:
+            written["redis"] += _persist_redis_chunk(chunk)
+    return written
+
+
+def _persist_db_chunk(chunk: list[tuple[Candidate, CandidateEvaluation]]) -> int:
+    from src.db.connection import get_session
+    from src.db import candidate_repo
+
+    try:
+        with get_session() as session:
+            candidate_repo.save_evaluations(session, chunk)
+            candidate_repo.log_events(session, chunk)
+        return len(chunk)
+    except Exception:
+        logger.exception(
+            "Не удалось сохранить пачку из %d оценок в PostgreSQL — "
+            "повторяем поштучно", len(chunk),
+        )
+
+    written = 0
+    for candidate, evaluation in chunk:
+        try:
+            with get_session() as session:
+                candidate_repo.save_evaluation(session, candidate, evaluation)
+                candidate_repo.log_event(session, candidate, evaluation)
+            written += 1
+        except Exception:
+            logger.exception(
+                "Не удалось сохранить оценку %s в PostgreSQL", candidate.candidate_id
+            )
+    return written
+
+
+def _persist_graph_chunk(chunk: list[tuple[Candidate, CandidateEvaluation]]) -> int:
+    from src.db import graph_repo
+
+    try:
+        if graph_repo.upsert_batch(chunk):
+            return len(chunk)
+        # Neo4j недоступен целиком — поштучный повтор упрётся в то же самое.
+        return 0
+    except Exception:
+        logger.exception(
+            "Не удалось обновить граф Neo4j пачкой из %d кандидатов — "
+            "повторяем поштучно", len(chunk),
+        )
+
+    # Транзакция пачки атомарна: раз она не прошла, не применилось ничего,
+    # и поштучный повтор не даст двойного инкремента счётчиков.
+    written = 0
+    for candidate, evaluation in chunk:
+        try:
+            if graph_repo.upsert_from_candidate(candidate, evaluation):
+                written += 1
+        except Exception:
+            logger.exception(
+                "Не удалось обновить граф Neo4j для кандидата %s", candidate.candidate_id
+            )
+    return written
+
+
+def _persist_redis_chunk(chunk: list[tuple[Candidate, CandidateEvaluation]]) -> int:
+    from src.cache import redis_cache
+
+    entries = [
+        {
+            "symbol": candidate.symbol,
+            "candidate_id": candidate.candidate_id,
+            "evaluation_json": evaluation.model_dump_json(),
+            "configuration_hash": candidate.configuration_hash,
+            "strong_payload": (
+                evaluation.model_dump() if evaluation.rating == "STRONG" else None
+            ),
+        }
+        for candidate, evaluation in chunk
+    ]
+
+    try:
+        if redis_cache.persist_batch(entries):
+            return len(chunk)
+        return 0
+    except Exception:
+        logger.exception(
+            "Не удалось записать пачку из %d оценок в Redis", len(chunk)
+        )
+        return 0
 
 
 def _persist(candidate: Candidate, evaluation: CandidateEvaluation) -> dict[str, bool | None]:

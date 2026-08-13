@@ -19,14 +19,91 @@ def save_evaluation(
     evaluation: CandidateEvaluation,
 ) -> CandidateRecord:
     """Сохраняет или обновляет результат оценки кандидата."""
-    embedding = build_embedding(candidate)
-
     record = session.get(CandidateRecord, (candidate.symbol, candidate.candidate_id))
     if record is None:
         record = CandidateRecord(
             symbol=candidate.symbol, candidate_id=candidate.candidate_id
         )
         session.add(record)
+
+    _apply_evaluation(record, candidate, evaluation)
+    return record
+
+
+def save_evaluations(
+    session: Session,
+    pairs: list[tuple[Candidate, CandidateEvaluation]],
+) -> int:
+    """
+    Пачка оценок за один проход. Возвращает число записанных строк.
+
+    Отличается от цикла по `save_evaluation` ровно двумя вещами, и обе — про
+    round-trip'ы, а не про содержание записи:
+
+    * существующие строки поднимаются ОДНИМ запросом на монету, а не
+      `session.get` на кандидата (тот идёт в базу за каждым);
+    * commit остаётся на вызывающем, то есть один на пачку, а не на строку.
+      Именно commit'ы и составляли основную часть времени отправки: у батча в
+      двести кандидатов их было двести, каждый со своим fsync.
+
+    Поля пишутся тем же `_apply_evaluation`, что и в одиночном пути, — иначе
+    две ветки записи разъехались бы по составу колонок молча.
+
+    Порядок пачки сохраняется: повторный кандидат внутри одной пачки
+    (одинаковый `(symbol, candidate_id)`) обновляет ту же строку, а не
+    добавляет вторую. Без этого flush падал бы на нарушении первичного ключа
+    там, где одиночный путь просто перезаписал бы запись.
+    """
+    if not pairs:
+        return 0
+
+    known = _load_existing(session, pairs)
+
+    for candidate, evaluation in pairs:
+        key = (candidate.symbol, candidate.candidate_id)
+        record = known.get(key)
+        if record is None:
+            record = CandidateRecord(
+                symbol=candidate.symbol, candidate_id=candidate.candidate_id
+            )
+            session.add(record)
+            known[key] = record
+        _apply_evaluation(record, candidate, evaluation)
+
+    return len(pairs)
+
+
+def _load_existing(
+    session: Session,
+    pairs: list[tuple[Candidate, CandidateEvaluation]],
+) -> dict[tuple[str, str], CandidateRecord]:
+    """Уже сохранённые строки пачки — один запрос на монету."""
+    by_symbol: dict[str, set[str]] = {}
+    for candidate, _ in pairs:
+        by_symbol.setdefault(candidate.symbol, set()).add(candidate.candidate_id)
+
+    found: dict[tuple[str, str], CandidateRecord] = {}
+    for symbol, ids in by_symbol.items():
+        rows = (
+            session.query(CandidateRecord)
+            .filter(
+                CandidateRecord.symbol == symbol,
+                CandidateRecord.candidate_id.in_(ids),
+            )
+            .all()
+        )
+        for row in rows:
+            found[(row.symbol, row.candidate_id)] = row
+    return found
+
+
+def _apply_evaluation(
+    record: CandidateRecord,
+    candidate: Candidate,
+    evaluation: CandidateEvaluation,
+) -> None:
+    """Состав колонок записи. Единственное место, где он задан."""
+    embedding = build_embedding(candidate)
 
     record.configuration_hash = candidate.configuration_hash
     record.family_key = candidate.candidate_family_key
@@ -58,8 +135,6 @@ def save_evaluation(
     record.warning_flags = evaluation.warning_flags
     record.raw_payload = candidate.model_dump()
     record.embedding = embedding
-
-    return record
 
 
 def get_by_id(session: Session, symbol: str, candidate_id: str) -> CandidateRecord | None:
@@ -111,10 +186,31 @@ def log_event(
     evaluation: CandidateEvaluation,
 ) -> None:
     """Записывает событие оценки в hypertable candidate_events."""
+    session.add(_build_event(candidate, evaluation))
+
+
+def log_events(
+    session: Session,
+    pairs: list[tuple[Candidate, CandidateEvaluation]],
+) -> int:
+    """
+    Пачка событий одним `add_all`: hypertable append-only, читать нечего.
+
+    Каждому событию проставляется своё `event_time` в момент сборки, а не одно
+    на пачку: колонка — измерение времени hypertable, и склеивать по ней всю
+    пачку в одну метку значит терять порядок внутри неё.
+    """
+    if not pairs:
+        return 0
+    session.add_all([_build_event(c, e) for c, e in pairs])
+    return len(pairs)
+
+
+def _build_event(candidate: Candidate, evaluation: CandidateEvaluation):
     from datetime import datetime, timezone
     from src.db.orm_models import CandidateEventRecord
 
-    event = CandidateEventRecord(
+    return CandidateEventRecord(
         event_time=datetime.now(timezone.utc),
         symbol=candidate.symbol,
         candidate_id=candidate.candidate_id,
@@ -129,7 +225,6 @@ def log_event(
         fa_ratio=evaluation.favorable_adverse_ratio,
         context_status=candidate.context_status.value,
     )
-    session.add(event)
 
 
 def get_strong_candidates(
