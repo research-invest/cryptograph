@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Уведомления · crypto-graph{% endblock %}
+
+{% block content %}
+<h1>Уведомления</h1>
+
+<p class="hint">
+  Правило — это адрес получателя плюс фильтр по кандидату теми же осями, что и
+  на странице кандидатов. Когда появляется кандидат, подходящий под фильтр,
+  на адрес уходит <code>POST</code> с JSON. Прогон ответа не ждёт: запрос
+  отправляется фоновым потоком, результат складывается в журнал внизу
+  страницы. Формат тела — <code>docs/notifications.md</code>, он же печатается
+  командой <code>python3 -m btcproc.cli notify-example</code>.
+</p>
+
+{% if status %}
+  <p class="banner">{{ status }}</p>
+{% endif %}
+
+{% if not notify_config.enabled %}
+  <p class="banner">
+    <b>NOTIFY_ENABLED=false</b> — правила сохраняются и редактируются, но ни
+    одно уведомление не отправляется. Включается в <code>.env</code>.
+  </p>
+{% endif %}
+
+<h2>Правила</h2>
+<div class="scroll-y">
+<table>
+  <thead>
+    <tr>
+      <th></th><th>Имя</th><th>Адрес</th><th>Монета</th><th>Фильтр</th>
+      <th>Формат</th><th>Доставки</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rules %}
+    <tr>
+      <td>{% if r.enabled %}<span class="status done">вкл</span>
+          {% else %}<span class="muted">выкл</span>{% endif %}</td>
+      <td>{{ r.name }}</td>
+      <td class="flags" title="{{ r.url }}"><code>{{ r.url }}</code></td>
+      <td>{{ r.symbol or 'все' }}</td>
+      <td class="flags">
+        {%- set parts = [] -%}
+        {%- if r.ratings %}{% set _ = parts.append(r.ratings|join('/')) %}{% endif -%}
+        {%- if r.directions %}{% set _ = parts.append(r.directions|join('/')) %}{% endif -%}
+        {%- if r.min_quality is not none %}{% set _ = parts.append('quality ≥ %.2f'|format(r.min_quality)) %}{% endif -%}
+        {%- if r.min_research_score is not none %}{% set _ = parts.append('research ≥ %.2f'|format(r.min_research_score)) %}{% endif -%}
+        {%- if r.min_sample_size %}{% set _ = parts.append('выборка ≥ %d'|format(r.min_sample_size)) %}{% endif -%}
+        {%- if r.transitions %}{% set _ = parts.append('переходы: ' ~ r.transitions|join(', ')) %}{% endif -%}
+        {%- if r.event_families %}{% set _ = parts.append(r.event_families|join(', ')) %}{% endif -%}
+        {%- if not r.require_evaluation %}{% set _ = parts.append('в т.ч. без оценки') %}{% endif -%}
+        {{ parts|join(' · ') or 'без ограничений' }}
+      </td>
+      <td>{{ r.payload_mode }}</td>
+      <td class="num">
+        {%- set ok = totals|selectattr('rule_id', 'equalto', r.rule_id)|selectattr('status', 'equalto', 'sent')|map(attribute='n')|sum -%}
+        {%- set bad = totals|selectattr('rule_id', 'equalto', r.rule_id)|rejectattr('status', 'equalto', 'sent')|map(attribute='n')|sum -%}
+        <span class="up">{{ ok }}</span>{% if bad %} / <span class="down">{{ bad }}</span>{% endif %}
+      </td>
+      <td>
+        <a href="/notifications?edit={{ r.rule_id }}">править</a>
+        <form method="post" action="/notifications/{{ r.rule_id }}/test" style="display:inline">
+          <button type="submit" title="Отправить последнего кандидата на этот адрес">проверить</button>
+        </form>
+        <form method="post" action="/notifications/{{ r.rule_id }}/delete" style="display:inline"
+              onsubmit="return confirm('Удалить правило «{{ r.name }}» вместе с журналом доставок?')">
+          <button type="submit">удалить</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="muted">Правил нет — уведомления не отправляются</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>{{ 'Правило #' ~ rule.rule_id if rule else 'Новое правило' }}</h2>
+<form method="post" action="/notifications/save" class="panel">
+  {% if rule %}<input type="hidden" name="rule_id" value="{{ rule.rule_id }}">{% endif %}
+
+  <div class="toolbar">
+    <label class="grow">Имя
+      <input type="text" name="name" required placeholder="STRONG по BTC в мой бот"
+             value="{{ rule.name if rule else '' }}">
+    </label>
+    <label class="grow">Адрес (http/https)
+      <input type="text" name="url" required placeholder="https://example.com/hooks/btcproc"
+             value="{{ rule.url if rule else '' }}">
+    </label>
+    <label>Формат
+      <select name="payload_mode">
+        <option value="full" {{ 'selected' if not rule or rule.payload_mode == 'full' }}>full — весь кандидат</option>
+        <option value="compact" {{ 'selected' if rule and rule.payload_mode == 'compact' }}>compact — сводка</option>
+      </select>
+    </label>
+    <label>Включено
+      <input type="checkbox" name="enabled" value="true" {{ 'checked' if not rule or rule.enabled }}>
+    </label>
+  </div>
+
+  <div class="toolbar">
+    <label>Монета
+      <select name="symbol">
+        <option value="">все</option>
+        {% for ticker in symbols %}
+          <option value="{{ ticker }}" {{ 'selected' if rule and rule.symbol == ticker }}>{{ ticker }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Рейтинг (можно несколько)
+      <select name="ratings" multiple size="3">
+        {% for value in ['STRONG', 'MODERATE', 'WEAK'] %}
+          <option value="{{ value }}" {{ 'selected' if rule and value in rule.ratings }}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Сторона
+      <select name="directions" multiple size="2">
+        {% for value in ['long', 'short'] %}
+          <option value="{{ value }}" {{ 'selected' if rule and value in rule.directions }}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Тип события (семейство)
+      <select name="event_families" multiple size="4">
+        {% for value in families %}
+          <option value="{{ value }}" {{ 'selected' if rule and value in rule.event_families }}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+
+  <div class="toolbar">
+    <label>quality ≥
+      <input type="number" name="min_quality" step="0.05" min="0" max="1"
+             value="{{ rule.min_quality if rule and rule.min_quality is not none }}">
+    </label>
+    <label>research ≥
+      <input type="number" name="min_research_score" step="0.05" min="0" max="1"
+             value="{{ rule.min_research_score if rule and rule.min_research_score is not none }}">
+    </label>
+    <label>Выборка ≥
+      <input type="number" name="min_sample_size" step="10" min="0"
+             value="{{ rule.min_sample_size if rule and rule.min_sample_size is not none }}">
+    </label>
+    <label class="grow">Переходы (через запятую, пусто = любые)
+      <input type="text" name="transitions" list="transition-options" placeholder="42->7, 13->2"
+             value="{{ rule.transitions|join(', ') if rule else '' }}">
+      <datalist id="transition-options">
+        {% for t in transitions %}<option value="{{ t }}">{% endfor %}
+      </datalist>
+    </label>
+    <label>Только оценённые btc-graph
+      <input type="checkbox" name="require_evaluation" value="true"
+             {{ 'checked' if not rule or rule.require_evaluation }}>
+    </label>
+  </div>
+
+  <div class="toolbar">
+    <label class="grow">Заголовки запроса — по одному на строку, <code>Имя: значение</code>
+      <textarea name="headers" rows="3"
+                placeholder="Authorization: Bearer xxxxx">{{ headers_text }}</textarea>
+    </label>
+  </div>
+
+  <p class="hint">
+    Пустое поле = «эта ось не ограничена». Снятая галка «только оценённые»
+    добавляет кандидатов, до btc-graph не доехавших (отправка выключена или
+    приёмник отсеял их своим фильтром); у них нет ни <code>rating</code>,
+    ни <code>quality_score</code>, поэтому фильтры по этим двум осям на них
+    не срабатывают никогда. Кандидаты старше
+    {{ notify_config.max_candidate_age_minutes }} мин не отправляются вовсе —
+    предохранитель от рассылки всей истории при полном прогоне.
+  </p>
+
+  <div class="toolbar">
+    <button type="submit" class="primary">Сохранить</button>
+    {% if rule %}<a href="/notifications">отменить правку</a>{% endif %}
+  </div>
+</form>
+
+<h2>Журнал доставок</h2>
+<div class="scroll-y">
+<table>
+  <thead>
+    <tr><th>Время</th><th>Правило</th><th>Монета</th><th>Кандидат</th>
+        <th>Статус</th><th>HTTP</th><th>Ошибка</th></tr>
+  </thead>
+  <tbody>
+  {% for d in deliveries %}
+    <tr>
+      <td>{{ d.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+      <td>{{ d.rule_name or ('#' ~ d.rule_id) }}</td>
+      <td>{{ d.symbol or '—' }}</td>
+      <td><a href="/candidates/{{ d.candidate_id }}"><code>{{ d.candidate_id[:12] }}</code></a></td>
+      <td>
+        {%- if d.status == 'sent' -%}<span class="status done">отправлено</span>
+        {%- elif d.status == 'queued' -%}<span class="status running">в очереди</span>
+        {%- else -%}<span class="status failed">{{ d.status }}</span>{%- endif -%}
+      </td>
+      <td class="num">{{ d.http_status or '—' }}</td>
+      <td class="flags" title="{{ d.error or '' }}">{{ (d.error or '—')[:80] }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted">Доставок ещё не было</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

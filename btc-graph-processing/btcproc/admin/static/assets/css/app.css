@@ -1,0 +1,480 @@
+/*
+ * Две темы на CSS-переменных. Тёмная — по умолчанию, светлая включается
+ * атрибутом data-theme="light" на <html>; выбор хранится в localStorage и
+ * выставляется до первой отрисовки, чтобы не было вспышки чужой темы.
+ *
+ * Цвета сущностей (long/short/rare/...) вынесены в переменные не для красоты:
+ * их читает JS для Cytoscape и lightweight-charts, иначе граф и график
+ * остались бы тёмными на светлой странице.
+ */
+:root {
+  --bg: #0b0f14;
+  --panel: #121821;
+  --panel-2: #0f141b;
+  --line: #1f2836;
+  --line-soft: #172030;
+  --text: #e6ecf5;
+  --muted: #8595ab;
+  --accent: #7aa2f7;
+  --accent-soft: rgba(122, 162, 247, .12);
+
+  --green: #2f9e5e;
+  --red: #c0392b;
+  --amber: #d99a2b;
+
+  /* Сущности графа */
+  --bias-long: #2f9e5e;
+  --bias-short: #c0392b;
+  --bias-neutral: #4b5c72;
+  --rarity-rare: #f2c94c;
+  --rarity-uncommon: #7aa2f7;
+  --rarity-common: #3c4657;
+  --node-label: #e8edf5;
+  --node-border: #0f141b;
+
+  /* График */
+  --chart-bg: #0f141b;
+  --chart-grid: #1b2330;
+  --chart-border: #243043;
+  --chart-text: #9fb0c8;
+  /* Крестик отдельным цветом, а не accent'ом: он лежит поверх свечей,
+     раскрашенных состояниями, и обязан читаться как «не данные». Фиолетовый
+     в палитре состояний не встречается — совпадение с номером состояния
+     сбивало бы с толку сильнее, чем неудачный оттенок. */
+  --chart-cross: #9b7dff;
+  /* Вертикаль — широкая полупрозрачная полоса, а не линия: под курсором
+     подсвечивается сам бар, и по нему видно, к какой свече относится
+     подпись на оси. Прозрачность обязательна — непрозрачная полоса
+     закрывала бы свечу, ради которой её и наводят. */
+  --chart-cross-band: rgba(195, 188, 219, .26);
+  /* Объём. Полупрозрачный по построению: столбцы стоят под свечами,
+     раскрашенными состояниями, и насыщенный цвет спорил бы с раскраской за
+     внимание. Зелёный/красный здесь — единственное место, где на графике
+     видно направление бара: сами свечи заняты цветом состояния.
+     Всплеск (атом volume_spike) берёт янтарный — он не про направление,
+     а про то, что событийный слой этот бар отметил. */
+  --chart-vol-up: rgba(47, 158, 94, .45);
+  --chart-vol-down: rgba(192, 57, 43, .45);
+  --chart-vol-spike: rgba(217, 154, 43, .85);
+  /* Линия признака на нижней панели. Не accent: панель читается вместе с
+     графиком, и линия обязана отличаться и от состояний, и от крестика. */
+  --chart-indicator: #4fb3d9;
+
+  --shadow: none;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --panel-2: #ffffff;
+  --line: #d9e0ea;
+  --line-soft: #eaeef4;
+  --text: #182130;
+  --muted: #5d6b80;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, .08);
+
+  --green: #17864a;
+  --red: #b3261e;
+  --amber: #b45309;
+
+  --bias-long: #17864a;
+  --bias-short: #b3261e;
+  --bias-neutral: #8b98ab;
+  --rarity-rare: #c2810b;
+  --rarity-uncommon: #2563eb;
+  --rarity-common: #b6c0ce;
+  --node-label: #ffffff;
+  --node-border: #ffffff;
+
+  --chart-bg: #ffffff;
+  --chart-grid: #eceff4;
+  --chart-border: #d9e0ea;
+  --chart-text: #5d6b80;
+  /* Светлая тема берёт тот же фиолетовый темнее и полосу глуше: на белом
+     фоне светлая полупрозрачная полоса из тёмной темы не видна вообще,
+     а яркая метка на оси слепит. */
+  --chart-cross: #6d4aff;
+  --chart-cross-band: rgba(109, 74, 255, .10);
+  /* На белом фоне та же прозрачность объёма выглядит бледнее — берём выше. */
+  --chart-vol-up: rgba(23, 134, 74, .40);
+  --chart-vol-down: rgba(179, 38, 30, .40);
+  --chart-vol-spike: rgba(180, 83, 9, .80);
+  --chart-indicator: #1d7ea6;
+
+  --shadow: 0 1px 2px rgba(20, 30, 50, .06);
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1 { font-size: 17px; margin: 14px 0 6px; font-weight: 600; }
+h2 { font-size: 11px; margin: 16px 0 6px; color: var(--muted);
+     text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
+h3 { font-size: 14px; margin: 10px 0 4px; }
+h4 { font-size: 11px; margin: 12px 0 3px; color: var(--muted);
+     text-transform: uppercase; letter-spacing: .05em; }
+.muted { color: var(--muted); }
+.hint { color: var(--muted); max-width: 90ch; margin: 4px 0 10px; font-size: 12px; }
+
+/* ─── Шапка ─────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 7px 16px; background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { font-weight: 600; display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.brand small { color: var(--muted); font-weight: 400; }
+
+/* Знак с названием — ссылка на сводку. Цвет наследуется, подчёркивания нет:
+   в шапке она должна читаться как логотип, а не как ссылка в тексте. */
+.brand-link {
+  display: flex; align-items: center; gap: 7px;
+  color: inherit; text-decoration: none;
+}
+.brand-link:hover { text-decoration: none; opacity: .8; }
+
+/* Селектор монеты в шапке. Монета — сквозное измерение интерфейса, поэтому
+   он стоит рядом с названием проекта, а не среди фильтров страницы. */
+.symbol-picker {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.symbol-picker:hover { border-color: var(--accent); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+
+/* Знак проекта: фрагмент графа состояний. Наследует цвет от .brand через
+   currentColor, поэтому отдельного набора цветов под тему не требует. */
+.mark { color: var(--accent); flex: none; }
+.login-card h1 { display: flex; align-items: center; gap: 8px; }
+.topbar nav { display: flex; gap: 14px; flex: 1; }
+.topbar nav a { color: var(--muted); padding: 3px 0; border-bottom: 2px solid transparent; }
+.topbar nav a.on { color: var(--text); border-bottom-color: var(--accent); }
+.user { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 10px; }
+
+.theme-toggle {
+  background: none; border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; color: var(--muted); font-size: 12px;
+  line-height: 1.4;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
+
+main { padding: 0 16px 32px; }
+main.wide { padding: 0 16px 12px; }
+
+/* ─── Логин ─────────────────────────────────────────────────────────────── */
+.login-page { display: grid; place-items: center; height: 100vh; }
+.login-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 24px; width: 320px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: var(--shadow);
+}
+.login-card h1 { margin: 0; font-size: 16px; }
+
+label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+input, select, button, textarea {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 12.5px;
+  font-family: inherit;
+}
+input[type="checkbox"] { width: auto; }
+button { cursor: pointer; background: var(--accent-soft); border-color: var(--line); }
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
+
+.error {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border: 1px solid var(--red); color: var(--red);
+  padding: 7px 9px; border-radius: 6px; font-size: 12px;
+}
+
+/* ─── Карточки и панели ─────────────────────────────────────────────────── */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  padding: 9px 11px; box-shadow: var(--shadow);
+}
+.card.ok { border-color: color-mix(in srgb, var(--green) 50%, var(--line)); }
+.card.bad { border-color: color-mix(in srgb, var(--red) 50%, var(--line)); }
+.card-label { color: var(--muted); font-size: 10.5px; text-transform: uppercase;
+              letter-spacing: .05em; }
+.card-value { font-size: 19px; margin-top: 2px; font-weight: 500; }
+.card-sub { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--shadow);
+}
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+
+.banner {
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 6px; padding: 8px 10px; margin: 10px 0; font-size: 12.5px;
+}
+.summary { background: var(--panel); border-left: 3px solid var(--accent);
+           padding: 8px 10px; font-size: 12.5px; }
+
+/* ─── Таблицы ───────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; margin: 4px 0 10px; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line-soft); }
+th { color: var(--muted); font-size: 10.5px; text-transform: uppercase;
+     letter-spacing: .05em; font-weight: 600;
+     position: sticky; top: 0; background: var(--panel); z-index: 1; }
+tbody tr:hover { background: var(--accent-soft); }
+tbody tr[onclick] { cursor: pointer; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.flags { color: var(--muted); font-size: 11.5px; max-width: 230px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv td:first-child { width: 260px; color: var(--muted); }
+.long { color: var(--green); }
+.short { color: var(--red); }
+.up { color: var(--green); }
+.down { color: var(--red); }
+
+.scroll-y { max-height: 60vh; overflow: auto; border: 1px solid var(--line);
+            border-radius: 7px; background: var(--panel); }
+.scroll-y table { margin: 0; }
+
+.tag { padding: 0 6px; border-radius: 9px; font-size: 10.5px;
+       border: 1px solid var(--line); white-space: nowrap; }
+.tag.strong { background: color-mix(in srgb, var(--green) 15%, transparent);
+              border-color: var(--green); color: var(--green); }
+.tag.moderate { background: color-mix(in srgb, var(--amber) 15%, transparent);
+                border-color: var(--amber); color: var(--amber); }
+.tag.weak { color: var(--muted); }
+.tag.rare { border-color: var(--rarity-rare); color: var(--rarity-rare); }
+.tag.uncommon { border-color: var(--rarity-uncommon); color: var(--rarity-uncommon); }
+.tag.common { color: var(--muted); }
+
+.status { font-size: 11.5px; }
+.status.running { color: var(--accent); }
+.status.done { color: var(--green); }
+.status.failed { color: var(--red); }
+
+.bar { display: inline-block; width: 80px; height: 5px; background: var(--line);
+       border-radius: 3px; overflow: hidden; vertical-align: middle; }
+.bar span { display: block; height: 100%; background: var(--accent); }
+.bar.big { width: 100%; height: 9px; }
+.run-progress { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+
+.pager { display: flex; gap: 6px; margin-bottom: 12px; }
+
+/* Пагинация прогонов: три группы — счётчик, фильтр по типу, шаги. Растянуты
+   по ширине, потому что счётчик слева и навигация справа читаются быстрее,
+   чем всё в одну кучу. nav.pager, а не .pager — чтобы не задеть пагинацию
+   кандидатов, у которой другая разметка. */
+nav.pager {
+  justify-content: space-between; align-items: center;
+  flex-wrap: wrap; margin: 10px 0 0;
+}
+nav.pager .kinds, nav.pager .steps { display: flex; gap: 10px; }
+nav.pager a { text-decoration: none; }
+nav.pager a.on { font-weight: 600; color: var(--text); }
+nav.pager .muted { opacity: .45; }
+
+/* ─── Панель инструментов ───────────────────────────────────────────────── */
+.toolbar {
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  padding: 8px 10px; margin: 8px 0;
+}
+.toolbar label { min-width: 0; }
+.toolbar .grow { flex: 1; }
+.toolbar .spacer { flex: 1; }
+
+/* ─── Граф ──────────────────────────────────────────────────────────────── */
+/* Высота во весь экран за вычетом шапки и панели: граф из 43 узлов
+   в окошке 640px нечитаем. */
+.graph-wrap {
+  display: grid; grid-template-columns: 1fr 320px; gap: 10px;
+  height: calc(100vh - 190px); min-height: 460px;
+}
+@media (max-width: 1100px) {
+  .graph-wrap { grid-template-columns: 1fr; height: auto; }
+  #cy { height: 60vh; }
+}
+#cy {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 7px; height: 100%; position: relative;
+}
+.details {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  padding: 10px 12px; overflow: auto; font-size: 12.5px;
+}
+.details table td { padding: 3px 5px; font-size: 11.5px; }
+.details h3 { margin-top: 0; }
+.feats { margin: 0; padding-left: 16px; font-size: 11.5px; }
+
+/* Легенда цветов: без неё граф — просто разноцветные кружки. */
+.legend-box {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  padding: 8px 10px; margin: 8px 0; display: flex; gap: 22px; flex-wrap: wrap;
+  font-size: 11.5px;
+}
+.legend-group { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.legend-group b { color: var(--muted); font-weight: 600; text-transform: uppercase;
+                  letter-spacing: .05em; font-size: 10.5px; }
+.legend-item { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+.legend-item i { display: inline-block; border-radius: 50%; }
+.legend-item i.line { border-radius: 2px; height: 3px; width: 20px; }
+.legend-item .sz-s { width: 8px; height: 8px; background: var(--muted); }
+.legend-item .sz-m { width: 12px; height: 12px; background: var(--muted); }
+.legend-item .sz-l { width: 17px; height: 17px; background: var(--muted); }
+
+/* ─── График ────────────────────────────────────────────────────────────── */
+/* Высоту режет то, что показано под свечами: панель признака и инспектор бара
+   занимают место, и без вычета нижний край уезжал бы за окно. Переменную
+   выставляет chart.html при включении панели — CSS не знает, включена ли она. */
+.chart {
+  height: calc(100vh - 250px - var(--chart-extra, 0px)); min-height: 300px;
+  border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+}
+/* Панель признака — отдельный график lightweight-charts, синхронизированный
+   по времени с основным. В версии 4.x встроенных панелей нет: единственный
+   способ дать признаку собственную шкалу цены — второй график.
+   Ось времени у него скрыта, даты подписаны один раз сверху. */
+.chart-sub {
+  height: 140px; margin-top: 6px; display: none;
+  border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+  position: relative;
+}
+.chart-sub.on { display: block; }
+.chart-sub .sub-title {
+  position: absolute; z-index: 4; left: 10px; top: 6px; pointer-events: none;
+  font-size: 11.5px; color: var(--muted);
+}
+.chart-sub .sub-title b { color: var(--chart-indicator); font-weight: 600; }
+
+/* Инспектор бара: всё, что система знает про бар под курсором. Живёт под
+   графиком, а не в подсказке у курсора, по той же причине, по которой
+   подсказка однострочная, — длина здесь меняется от бара к бару (атомов
+   бывает от нуля до десятка), и у курсора это прыгало бы. Высота
+   зафиксирована, чтобы не дёргалась разметка страницы. */
+.bar-inspect {
+  min-height: 42px; margin: 6px 0 0; padding: 6px 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  font-size: 11.5px; color: var(--muted);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px;
+}
+.bar-inspect .bi-ts { color: var(--text); font-weight: 600; }
+.bar-inspect .bi-up { color: var(--green); }
+.bar-inspect .bi-down { color: var(--red); }
+.bar-inspect .bi-atom {
+  padding: 1px 7px; border-radius: 10px;
+  border: 1px solid var(--line); color: var(--text);
+}
+/* Контекстный атом отличается от signature-атома намеренно: первый в
+   event_block_id не входит, второй входит — это разные каналы, и в интерфейсе
+   их нельзя показывать одинаковыми. */
+.bar-inspect .bi-atom.ctx { color: var(--muted); border-style: dashed; }
+.bar-inspect .bi-hint { opacity: .7; }
+/* Курсор-ладонь на время перетаскивания. Класс вешает chart.html по
+   mousedown: библиотека курсор не трогает, и без подсказки движение мышью
+   с зажатой кнопкой читается как выделение текста, а не как таскание. */
+.chart.dragging, .chart.dragging canvas { cursor: grabbing; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.chip { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
+.chip i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+/* Имя состояния в легенде: приглушено, чтобы номер оставался якорем,
+   а имя читалось как пояснение к нему. */
+.chip-name { opacity: .72; }
+
+/* Подсказка на графике: состояние бара под курсором. Цвет на глаз не
+   различить — оттенков десятки и часть похожа, поэтому номер и имя
+   показываются точным ответом, а не догадкой.
+
+   Строго ОДНА строка фиксированной высоты. Многострочный вариант дёргался:
+   строка перехода есть не у каждого бара, высота менялась на ходу, и подсказка
+   прыгала под курсором при обычном движении вдоль графика. Ширина при этом
+   плавает свободно — горизонтальное изменение глаз не раздражает, а перенос
+   строк вернул бы ту же пляску по высоте. */
+.chart { position: relative; }
+.chart-tooltip {
+  position: absolute; display: none; z-index: 5; pointer-events: none;
+  height: 26px; line-height: 26px; white-space: nowrap;
+  max-width: 620px; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 10px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .28);
+  font-size: 11.5px; color: var(--text);
+}
+.chart-tooltip i {
+  display: inline-block; vertical-align: -1px;
+  width: 10px; height: 10px; border-radius: 3px; margin-right: 6px;
+}
+.chart-tooltip b { font-weight: 600; }
+.chart-tooltip .tt-name { color: var(--accent); }
+.chart-tooltip .tt-tr { color: var(--muted); }
+.chart-tooltip .tt-sep { color: var(--line); margin: 0 6px; }
+
+/* Имя состояния в панели деталей графа — подзаголовок под номером. */
+.state-name {
+  margin: -6px 0 8px; font-size: 12px; color: var(--accent);
+}
+
+.log {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
+  padding: 10px; max-height: 420px; overflow: auto; white-space: pre-wrap;
+  color: var(--muted); font-size: 11.5px;
+}
+
+
+/* ─── Страница справки ─────────────────────────────────────────────────────
+   Шпаргалка читается подряд, поэтому колонка узкая: длинная строка на всю
+   ширину монитора теряется глазом на переносе. */
+.help-toc {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 22px;
+  padding-bottom: 14px; border-bottom: 1px solid var(--line);
+}
+.help-toc a { font-size: 12px; color: var(--muted); text-decoration: none; }
+.help-toc a:hover { color: var(--accent); }
+
+.help { max-width: 780px; margin-bottom: 30px; scroll-margin-top: 70px; }
+.help h2 {
+  font-size: 15px; margin: 0 0 10px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--line-soft);
+}
+.help p { margin: 0 0 10px; line-height: 1.6; }
+.help ul, .help ol { margin: 0 0 10px; padding-left: 20px; line-height: 1.7; }
+.help li { margin-bottom: 4px; }
+
+.help-table { width: 100%; border-collapse: collapse; margin: 0 0 10px; }
+.help-table td {
+  padding: 6px 10px 6px 0; vertical-align: top;
+  border-bottom: 1px solid var(--line-soft); line-height: 1.5;
+}
+.help-table td:first-child { width: 34%; white-space: nowrap; }
+
+/* Врезка: то, что чаще всего понимают неправильно. */
+.callout {
+  margin: 0 0 12px; padding: 10px 12px; border-radius: 6px;
+  background: var(--accent-soft); border-left: 3px solid var(--accent);
+  line-height: 1.6;
+}
+.callout.warn {
+  background: rgba(180, 83, 9, .10); border-left-color: var(--amber);
+}

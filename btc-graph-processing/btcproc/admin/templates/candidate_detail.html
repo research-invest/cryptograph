@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Кандидат {{ row.candidate_id }}{% endblock %}
+
+{% block content %}
+<h1>Кандидат <code>{{ row.candidate_id }}</code> · {{ row.symbol }}</h1>
+<p class="muted">
+  {{ row.ts.strftime('%Y-%m-%d %H:%M') }} ·
+  прогон #{{ row.run_id }} ·
+  переход <code>{{ row.transition_id }}</code> ·
+  блок <code>{{ row.event_block_id }}</code>
+</p>
+
+{% if row.evaluation %}
+<section class="cards">
+  <div class="card">
+    <div class="card-label">quality_score</div>
+    <div class="card-value">{{ '%.3f'|format(row.quality_score) }}</div>
+    <div class="card-sub"><span class="tag {{ row.rating|lower }}">{{ row.rating }}</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Направление</div>
+    <div class="card-value">{{ row.evaluation.direction }}</div>
+    <div class="card-sub">win rate {{ '%.1f'|format((row.evaluation.win_rate or 0) * 100) }}%</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Разбивка осей</div>
+    <div class="card-sub">
+      stat {{ '%.2f'|format(row.evaluation.score_statistical or 0) }} ·
+      dir {{ '%.2f'|format(row.evaluation.score_directional or 0) }} ·
+      ctx {{ '%.2f'|format(row.evaluation.score_context or 0) }} ·
+      rare {{ '%.2f'|format(row.evaluation.score_rarity or 0) }}
+    </div>
+  </div>
+</section>
+
+<div class="split">
+  <div>
+    <h2>Сильные стороны</h2>
+    <ul>{% for s in row.evaluation.strengths or [] %}<li>{{ s }}</li>{% endfor %}</ul>
+  </div>
+  <div>
+    <h2>Риски</h2>
+    <ul>{% for r in row.evaluation.risks or [] %}<li>{{ r }}</li>{% endfor %}</ul>
+  </div>
+</div>
+<p class="summary">{{ row.evaluation.summary }}</p>
+{% else %}
+<div class="banner">
+  Оценки от btc-graph нет.
+  {% if row.emit_error %}Причина: {{ row.emit_error }}{% else %}Кандидат ещё в очереди отправки.{% endif %}
+</div>
+{% endif %}
+
+<h2>Поля кандидата</h2>
+<table class="kv">
+  <tbody>
+  {% for key, value in row.payload.items() %}
+    <tr><td><code>{{ key }}</code></td><td>{{ value }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<p><a href="/chart?run={{ row.run_id }}">посмотреть на графике</a></p>
+{% endblock %}

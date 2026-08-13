@@ -1,0 +1,74 @@
+<table class="runs">
+  <thead>
+    {# Монета обязана быть в таблице: список сводный по всем монетам, и без
+       колонки «train 38%» не отвечает на вопрос «чей именно train». #}
+    <tr><th>#</th><th>Монета</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th>Стадия</th>
+        <th>Начало</th><th>Длительность</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for run in (runs or recent_runs) %}
+    <tr>
+      <td>{{ run.run_id }}</td>
+      <td>{{ run.symbol or '—' }}</td>
+      <td>{{ run.kind }}</td>
+      <td><span class="status {{ run.status }}">{{ run.status }}</span></td>
+      <td>
+        <div class="bar"><span style="width: {{ (run.progress * 100)|round(1) }}%"></span></div>
+        {{ '%.0f'|format(run.progress * 100) }}%
+      </td>
+      <td>{{ run.stage or '—' }}</td>
+      <td>{{ run.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>
+        {%- if run.finished_at -%}
+          {{ ((run.finished_at - run.started_at).total_seconds() / 60)|round(1) }} мин
+        {%- else -%}—{%- endif -%}
+      </td>
+      <td><a href="/runs/{{ run.run_id }}">лог</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="muted">Прогонов ещё не было</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{# Пагинация и фильтр.
+
+   Весь блок под `pages is defined`: этот же шаблон включает дашборд — там
+   таблица показывает шесть последних прогонов и пагинация не нужна, а
+   контекста для неё нет. Без проверки `{% if page_no > 1 %}` сравнивает
+   Undefined с числом и роняет страницу целиком. Ровно так и случилось:
+   упали обе страницы сразу, потому что шаблон общий.
+
+   Ссылки обычные, не hx: htmx здесь обновляет таблицу по таймеру, и если бы
+   переход по странице шёл тем же механизмом, следующий же тик вернул бы
+   на первую страницу. #}
+{% if pages is defined %}
+<nav class="pager">
+  <span class="muted">
+    Всего прогонов: {{ total_runs }}{% if kind %} (только {{ kind }}){% endif %},
+    страница {{ page_no }} из {{ pages }}
+  </span>
+
+  <span class="kinds">
+    <a href="/runs{% if not kind %}" class="on{% else %}{% endif %}">все</a>
+    <a href="/runs?kind=train{% if kind == 'train' %}" class="on{% else %}{% endif %}">train</a>
+    <a href="/runs?kind=live{% if kind == 'live' %}" class="on{% else %}{% endif %}">live</a>
+  </span>
+
+  <span class="steps">
+    {% set q = '&kind=' ~ kind if kind else '' %}
+    {% if page_no > 1 %}
+      <a href="/runs?page_no=1{{ q }}">« в начало</a>
+      <a href="/runs?page_no={{ page_no - 1 }}{{ q }}">‹ новее</a>
+    {% else %}
+      <span class="muted">« в начало</span><span class="muted">‹ новее</span>
+    {% endif %}
+    {% if page_no < pages %}
+      <a href="/runs?page_no={{ page_no + 1 }}{{ q }}">старее ›</a>
+      <a href="/runs?page_no={{ pages }}{{ q }}">в конец »</a>
+    {% else %}
+      <span class="muted">старее ›</span><span class="muted">в конец »</span>
+    {% endif %}
+  </span>
+</nav>
+{% endif %}

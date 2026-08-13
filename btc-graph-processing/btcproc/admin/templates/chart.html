@@ -1,0 +1,661 @@
+{% extends "base.html" %}
+{% block title %}График {{ symbol }} · crypto-graph{% endblock %}
+{% block main_class %}wide{% endblock %}
+
+{% block head %}
+<script src="/static/assets/js/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+
+{% block content %}
+{# Свечи одной монеты, раскрашенные состояниями её же прогона. Несогласованность
+   ловится на стороне API (422), но подписать монету всё равно обязательно. #}
+<h1>График · {{ symbol }}</h1>
+<form class="toolbar" onsubmit="return false;">
+  <label>Прогон
+    <select id="run">
+      {% for run in runs if run.kind in ('train', 'live') %}
+        <option value="{{ run.run_id }}" {{ 'selected' if run.run_id == run_id }}>
+          #{{ run.run_id }} {{ run.kind }} — {{ run.started_at.strftime('%Y-%m-%d %H:%M') }}
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>С даты <input type="date" id="start"></label>
+  <label>По дату <input type="date" id="end"></label>
+  <label>Баров
+    <select id="limit">
+      <option value="500">500</option>
+      <option value="1500" selected>1500</option>
+      <option value="3000">3000</option>
+      <option value="5000">5000</option>
+    </select>
+  </label>
+  <label>Кандидаты
+    <select id="rating">
+      <option value="">все</option>
+      <option value="STRONG">только STRONG</option>
+      <option value="STRONG,MODERATE">STRONG + MODERATE</option>
+      <option value="none">не показывать</option>
+    </select>
+  </label>
+  <label>Номера состояний
+    <select id="stateLabels">
+      <option value="long" selected>на заметных отрезках</option>
+      <option value="all">на всех сменах</option>
+      <option value="none">не показывать</option>
+    </select>
+  </label>
+  <label>Объём
+    <select id="volume">
+      <option value="on" selected>показывать</option>
+      <option value="off">не показывать</option>
+    </select>
+  </label>
+  {# Список признаков приходит с данными: он зависит от набора, которым
+     обучена модель прогона, и жёстко зашитый здесь разъехался бы с ней. #}
+  <label>Признак
+    <select id="indicator"><option value="">нет</option></select>
+  </label>
+  <div class="spacer"></div>
+  {# График открывается на правом крае в читаемом масштабе, история достаётся
+     перетаскиванием. Кнопка — для случая «покажи весь выбранный период». #}
+  <button id="fit" type="button" title="Вписать всю выборку в окно">Вписать всё</button>
+  <button id="reload" type="button" class="primary">Показать</button>
+</form>
+
+<div class="legend-box">
+  <div class="legend-group">
+    <b>Цвет свечи = состояние рынка</b>
+    <span class="legend-item">переход виден как смена цвета</span>
+  </div>
+  <div class="legend-group">
+    <b>Стрелка = кандидат</b>
+    <span class="legend-item"><i class="line" style="background:var(--green)"></i>STRONG</span>
+    <span class="legend-item"><i class="line" style="background:var(--amber)"></i>MODERATE</span>
+    <span class="legend-item"><i class="line" style="background:var(--muted)"></i>WEAK</span>
+    <span class="legend-item">снизу — long, сверху — short</span>
+  </div>
+  <div class="legend-group">
+    <b>Объём</b>
+    <span class="legend-item"><i class="line" style="background:var(--chart-vol-up)"></i>бар вырос</span>
+    <span class="legend-item"><i class="line" style="background:var(--chart-vol-down)"></i>бар упал</span>
+    <span class="legend-item"><i class="line" style="background:var(--chart-vol-spike)"></i>всплеск объёма (атом)</span>
+  </div>
+  <div class="legend-group">
+    <span class="legend-item">тащить мышью · колесо — сдвиг · за ось — масштаб</span>
+  </div>
+  <div class="legend-group"><span class="legend-item" id="chartInfo"></span></div>
+</div>
+
+<div id="chart" class="chart"><div id="tooltip" class="chart-tooltip"></div></div>
+<div id="indicator-pane" class="chart-sub"><div class="sub-title" id="subTitle"></div></div>
+{# Инспектор бара: OHLC, объём, состояние и атомы бара под курсором. Атомы —
+   единственное место в интерфейсе, где видно, что событийный слой заметил на
+   конкретном баре: в имя состояния они не входят по построению. #}
+<div id="barInspect" class="bar-inspect">
+  <span class="bi-hint">наведи курсор на бар — здесь появятся его цифры и события</span>
+</div>
+<div id="legend" class="legend"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const el = (id) => document.getElementById(id);
+
+function chartTheme() {
+  return {
+    layout: { background: { color: cssVar('--chart-bg') }, textColor: cssVar('--chart-text') },
+    grid: { vertLines: { color: cssVar('--chart-grid') }, horzLines: { color: cssVar('--chart-grid') } },
+    rightPriceScale: { borderColor: cssVar('--chart-border') },
+    timeScale: { borderColor: cssVar('--chart-border'), timeVisible: true },
+    // Крестик тоже часть темы: его цвета живут в CSS-переменных обеих палитр,
+    // иначе на светлой странице он оставался бы рассчитанным под тёмный фон.
+    crosshair: {
+      // Normal вместо magnet: крестик ходит свободно и не прилипает к
+      // ближайшему бару — иначе цену между свечами не прочитать.
+      mode: LightweightCharts.CrosshairMode.Normal,
+      // Вертикаль шириной в несколько пикселей подсвечивает сам бар.
+      vertLine: {
+        width: 8,
+        color: cssVar('--chart-cross-band'),
+        style: LightweightCharts.LineStyle.Solid,
+        labelBackgroundColor: cssVar('--chart-cross'),
+      },
+      horzLine: {
+        color: cssVar('--chart-cross'),
+        labelBackgroundColor: cssVar('--chart-cross'),
+      },
+    },
+  };
+}
+
+// Стартовая ширина бара в пикселях. Не косметика: именно она делает график
+// перетаскиваемым. Раньше окно вписывало fitContent'ом ВСЮ загруженную
+// историю — при 1500 барах на полутора тысячах пикселей на бар приходится
+// меньше пикселя, за краями окна ничего не остаётся, и перетаскивание
+// внешне выглядит сломанным, хотя формально работает: тянуть некуда.
+const BAR_SPACING = 8;
+
+const chart = LightweightCharts.createChart(el('chart'), Object.assign({
+  autoSize: true,
+  // Перетаскивание мышью и колесо — явно, а не на дефолтах: набор
+  // включённого здесь и есть то, чем график управляется, и менять его
+  // вслепую при обновлении библиотеки не придётся.
+  handleScroll: {
+    pressedMouseMove: true,   // тащить график мышью
+    mouseWheel: true,         // колесо — сдвиг по времени
+    horzTouchDrag: true,
+    vertTouchDrag: true,
+  },
+  handleScale: {
+    axisPressedMouseMove: { time: true, price: true },  // тянуть за ось = масштаб
+    mouseWheel: true,
+    pinch: true,
+    axisDoubleClickReset: true,  // двойной клик по оси возвращает автомасштаб
+  },
+  // Инерция после броска мышью: по истории в тысячи баров иначе приходится
+  // тянуть десятками коротких движений.
+  kineticScroll: { mouse: true, touch: true },
+  timeScale: { barSpacing: BAR_SPACING, rightOffset: 5 },
+}, chartTheme()));
+const series = chart.addCandlestickSeries();
+
+// Гистограмма объёма — оверлей поверх той же области, а не отдельный график:
+// пустой priceScaleId заводит собственную невидимую шкалу, и объём живёт в
+// своих единицах, не растягивая шкалу цены. Порядок вызовов важен ровно
+// настолько: серия объёма создана после свечей и рисуется поверх них, но
+// прижата scaleMargins к низу, поэтому пересечения нет.
+const volumeSeries = chart.addHistogramSeries({
+  priceFormat: { type: 'volume' },
+  priceScaleId: '',
+  lastValueVisible: false,
+  priceLineVisible: false,
+});
+
+// Ширина шкал у обоих графиков фиксируется одним числом: без этого ось цены
+// признака (значения около единицы) оказалась бы уже ценовой (шестизначные
+// числа), и панели разъехались бы по горизонтали на десятки пикселей.
+const PRICE_SCALE_WIDTH = 72;
+
+// Панель признака — второй график. В lightweight-charts 4.x панелей нет,
+// и собственная шкала значений возможна только так; синхронизацию времени
+// делаем руками ниже.
+// Ось времени у панели скрыта: даты подписаны сверху, на основном графике, и
+// второй ряд тех же чисел только съедал бы высоту. Тему кладём первой, а свои
+// опции — поверх: Object.assign сливает поверхностно, и обратный порядок
+// затёр бы `visible: false` целым объектом timeScale из темы.
+function subChartOptions() {
+  const theme = chartTheme();
+  return Object.assign({}, theme, {
+    autoSize: true,
+    handleScroll: { pressedMouseMove: true, mouseWheel: true, horzTouchDrag: true },
+    handleScale: { axisPressedMouseMove: { time: true, price: false },
+                   mouseWheel: true, pinch: true },
+    timeScale: Object.assign({}, theme.timeScale,
+                             { visible: false, barSpacing: BAR_SPACING }),
+  });
+}
+const subChart = LightweightCharts.createChart(el('indicator-pane'), subChartOptions());
+const indicatorSeries = subChart.addLineSeries({
+  color: cssVar('--chart-indicator'), lineWidth: 2, priceLineVisible: false,
+});
+
+// Шкала цены: запас сверху и снизу под маркеры. Стрелки кандидатов стоят
+// под баром и над баром, и без полей нижние срезались бы краем окна.
+// Нижнее поле зависит от объёма: с гистограммой ей нужна пятая часть высоты.
+function applyPriceMargins() {
+  const withVolume = el('volume').value === 'on';
+  series.priceScale().applyOptions({
+    scaleMargins: { top: 0.1, bottom: withVolume ? 0.26 : 0.2 },
+  });
+}
+applyPriceMargins();
+volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+chart.priceScale('right').applyOptions({ minimumWidth: PRICE_SCALE_WIDTH });
+subChart.priceScale('right').applyOptions({ minimumWidth: PRICE_SCALE_WIDTH });
+
+// ─── Синхронизация двух графиков ────────────────────────────────────────────
+// Диапазон логический, а не временной: индексы баров совпадают у обеих серий
+// потому, что серия признака заполняется на КАЖДЫЙ бар — там, где значения
+// нет, ставится whitespace-точка `{time}` без value. Без этого пропуски
+// сдвигали бы нумерацию, и панель ехала бы относительно свечей.
+let syncing = false;
+function linkTimeScales(source, target) {
+  source.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (syncing || !range) return;
+    syncing = true;
+    target.timeScale().setVisibleLogicalRange(range);
+    syncing = false;
+  });
+}
+linkTimeScales(chart, subChart);
+linkTimeScales(subChart, chart);
+
+// Вертикальное перетаскивание возможно ТОЛЬКО при выключенном автомасштабе:
+// иначе шкала цены пересчитывается по видимым барам на каждом кадре и
+// возвращает график обратно — со стороны выглядит так, будто вверх-вниз
+// он не двигается вовсе. Поэтому autoScale держим выключенным, а вписывание
+// делаем разово: включили, дали пересчитать кадр, выключили обратно.
+function fitPrice() {
+  const scale = series.priceScale();
+  scale.applyOptions({ autoScale: true });
+  requestAnimationFrame(() => scale.applyOptions({ autoScale: false }));
+}
+
+// Курсор-ладонь во время перетаскивания: без него непонятно, тащится график
+// или выделяется страница. Сама библиотека курсор не меняет.
+(function () {
+  const box = el('chart');
+  box.addEventListener('mousedown', () => box.classList.add('dragging'));
+  window.addEventListener('mouseup', () => box.classList.remove('dragging'));
+})();
+
+// Состояния по номеру и бары по времени — для подсказки и подписей.
+let stateNames = new Map();
+let barsByTime = new Map();
+// Бары окна по порядку — инспектору нужен предыдущий бар, чтобы посчитать
+// изменение цены, а по времени соседа не найти: пропуски в истории бывают.
+let bars = [];
+// Русские подписи атомов приходят одним словарём на ответ: в каждом баре
+// лежат идентификаторы.
+let atomLabels = {};
+// Значения выбранного признака по времени бара — для подсказки и инспектора.
+let indicatorValues = new Map();
+
+// Сколько баров подряд должно держаться состояние, чтобы получить подпись.
+// Порог адаптивный: на 1500 барах смен состояния под две сотни при медианном
+// отрезке в пять баров — подписать все значит залить график номерами. Целимся
+// примерно в 40 подписей независимо от масштаба окна.
+const LABELS_TARGET = 40;
+
+function stateMarkers(bars) {
+  const mode = el('stateLabels').value;
+  if (mode === 'none' || !bars.length) return [];
+
+  // Отрезки одного состояния: подпись ставится на ПЕРВЫЙ бар отрезка,
+  // то есть ровно там, где состояние сменилось.
+  const runs = [];
+  bars.forEach((b, i) => {
+    if (b.group_id === null || b.group_id === undefined) return;
+    const prev = runs[runs.length - 1];
+    if (prev && prev.group_id === b.group_id && prev.end === i - 1) prev.end = i;
+    else runs.push({ group_id: b.group_id, start: i, end: i, bar: b });
+  });
+
+  // Порог берём из фактического распределения длин, а не из «всего баров /
+  // сколько хотим подписей»: отрезки сильно разной длины (медиана около пяти
+  // баров при максимуме в семьдесят), и пропорция дала бы порог в десятки
+  // баров и пяток подписей вместо сорока.
+  let minLength = 1;
+  if (mode !== 'all') {
+    const lengths = runs.map(r => r.end - r.start + 1).sort((a, b) => b - a);
+    minLength = lengths[LABELS_TARGET - 1] || 1;
+  }
+
+  return runs
+    .filter(r => r.end - r.start + 1 >= minLength)
+    .map(r => ({
+      time: r.bar.time,
+      position: 'aboveBar',
+      // Цвет берём у самого состояния: номер и заливка свечей связываются
+      // глазом сразу, без сверки с легендой.
+      color: r.bar.color,
+      shape: 'circle',
+      text: String(r.group_id),
+    }));
+}
+
+// Монета страницы. Идёт в каждый запрос: без неё сервер взял бы прогон
+// монеты по умолчанию и молча раскрасил чужой график.
+const SYMBOL = {{ symbol | tojson }};
+
+async function load() {
+  const params = new URLSearchParams({
+    run: el('run').value, limit: el('limit').value, symbol: SYMBOL,
+  });
+  const start = el('start').value;
+  const end = el('end').value;
+  const rating = el('rating').value;
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  if (rating) params.set('rating', rating);
+
+  const response = await fetch('/api/chart?' + params);
+  const data = await response.json();
+  if (!response.ok) {
+    // 422 = монета и прогон не согласованы. Без явного сообщения это выглядит
+    // как «граф ничего не нашёл»: LEFT JOIN просто не совпадает по symbol.
+    el('legend').innerHTML =
+      `<span class="chip warn">${data.detail || 'ошибка запроса'}</span>`;
+    series.setData([]);
+    series.setMarkers([]);
+    volumeSeries.setData([]);
+    indicatorSeries.setData([]);
+    return;
+  }
+  series.setData(data.bars);
+  volumeSeries.setData(volumeData(data.bars));
+
+  // Имена состояний под рукой: и подсказке, и подписям нужен номер → имя,
+  // а приходит он один раз в легенде.
+  stateNames = new Map(data.groups.map(g => [g.group_id, g.name || '']));
+  barsByTime = new Map(data.bars.map(b => [b.time, b]));
+  atomLabels = data.atom_labels || {};
+  bars = data.bars;
+  fillIndicatorSelect(data.indicators || []);
+
+  // Маркеры кандидатов и подписи состояний живут в одном списке серии,
+  // и он обязан быть отсортирован по времени.
+  const marks = data.markers.concat(stateMarkers(data.bars));
+  marks.sort((a, b) => a.time - b.time);
+  series.setMarkers(marks);
+
+  // Имя состояния в легенде: «состояние 7» само по себе ничего не значит,
+  // а сверяться с таблицей ради каждого цвета никто не станет.
+  el('legend').innerHTML = data.groups.map(g =>
+    `<span class="chip" title="состояние ${g.group_id}${g.name ? ': ' + g.name : ''}">` +
+    `<i style="background:${g.color}"></i>${g.group_id}` +
+    `${g.name ? ' <span class="chip-name">(' + g.name + ')</span>' : ''}</span>`
+  ).join('');
+  // Про обрезку маркеров нужно сказать вслух: иначе «кандидата нет на графике»
+  // неотличимо от «кандидат не выпущен».
+  const cut = data.markers_truncated
+    ? ' — показаны только последние, сузьте период'
+    : '';
+  el('chartInfo').textContent =
+    `${data.bars.length} баров, ${data.markers.length} кандидатов${cut}, ${data.groups.length} состояний в окне`;
+
+  // Показываем правый край в читаемом масштабе, а не всю выборку целиком:
+  // остальная история остаётся слева и достаётся перетаскиванием. Кому нужен
+  // весь период разом — кнопка «Вписать всё».
+  chart.timeScale().applyOptions({ barSpacing: BAR_SPACING });
+  chart.timeScale().scrollToPosition(5, false);
+  // Новая выборка — новый диапазон цен. Без этого график остался бы на
+  // масштабе прошлой выборки и мог оказаться целиком за краем окна.
+  fitPrice();
+
+  // Признак грузится отдельным запросом уже по готовым барам: его диапазон
+  // задаётся ими, а не формой — окно могло быть обрезано лимитом.
+  await loadIndicator();
+}
+
+// ─── Объём ──────────────────────────────────────────────────────────────────
+// Цвет столбца несёт то, чего нет на самих свечах: они раскрашены состоянием,
+// и вырос бар или упал — по ним не видно вовсе. Отдельно выделяем бары с
+// атомом volume_spike: это ровно тот всплеск, который видит событийный слой,
+// и глазомерная оценка «высокий столбик» с ним не всегда совпадает.
+function volumeData(rows) {
+  if (el('volume').value !== 'on') return [];
+  return rows.map(b => ({
+    time: b.time,
+    value: b.volume,
+    color: (b.atoms || []).includes('volume_spike')
+      ? cssVar('--chart-vol-spike')
+      : (b.close >= b.open ? cssVar('--chart-vol-up') : cssVar('--chart-vol-down')),
+  }));
+}
+
+// ─── Панель признака ────────────────────────────────────────────────────────
+// Признаки в селекторе — те же, которыми названы состояния, и сгруппированы
+// по тем же осям (naming.AXES). Это не косметика: имя состояния и линия под
+// свечами обязаны говорить об одном и том же, иначе панель начнёт объяснять
+// граф не тем, из чего он построен.
+function fillIndicatorSelect(items) {
+  const select = el('indicator');
+  const chosen = select.value;
+  const axes = new Map();
+  items.forEach((item) => {
+    if (!axes.has(item.axis)) axes.set(item.axis, []);
+    axes.get(item.axis).push(item);
+  });
+
+  let html = '<option value="">нет</option>';
+  axes.forEach((list, axis) => {
+    html += `<optgroup label="${axis}">`;
+    html += list.map(item => {
+      const hint = item.high ? ` — ${item.high} / ${item.low}` : '';
+      return `<option value="${item.name}">${item.name}${hint}</option>`;
+    }).join('');
+    html += '</optgroup>';
+  });
+  select.innerHTML = html;
+  // Выбор переживает смену прогона, но только если признак есть и в новом
+  // наборе: у v1 нет SMC-признаков, и молча оставленное имя дало бы пустую
+  // панель без объяснения.
+  select.value = items.some(item => item.name === chosen) ? chosen : '';
+}
+
+async function loadIndicator() {
+  const name = el('indicator').value;
+  const pane = el('indicator-pane');
+  indicatorValues = new Map();
+
+  if (!name || !bars.length) {
+    pane.classList.remove('on');
+    // Панель занимает место под графиком — вернуть его нужно ровно тогда,
+    // когда панель скрыта, иначе свечи останутся сплюснутыми.
+    document.documentElement.style.setProperty('--chart-extra', '0px');
+    indicatorSeries.setData([]);
+    return;
+  }
+
+  const params = new URLSearchParams({
+    run: el('run').value, symbol: SYMBOL, name,
+    start: new Date(bars[0].time * 1000).toISOString(),
+    end: new Date(bars[bars.length - 1].time * 1000).toISOString(),
+  });
+  const response = await fetch('/api/chart/indicator?' + params);
+  const data = await response.json();
+
+  indicatorValues = new Map((data.points || []).map(p => [p.time, p.value]));
+  // Точка на КАЖДЫЙ бар: там, где значения нет, уходит whitespace `{time}`.
+  // Иначе логические индексы серий разойдутся и панель поедет относительно
+  // свечей — см. linkTimeScales выше.
+  indicatorSeries.setData(bars.map(b => (
+    indicatorValues.has(b.time) ? { time: b.time, value: indicatorValues.get(b.time) }
+                                : { time: b.time }
+  )));
+
+  pane.classList.add('on');
+  document.documentElement.style.setProperty('--chart-extra', '190px');
+  const range = chart.timeScale().getVisibleLogicalRange();
+  if (range) subChart.timeScale().setVisibleLogicalRange(range);
+
+  const scale = data.high ? ` — вверх: ${data.high}, вниз: ${data.low}` : '';
+  const note = data.note ? ` <span class="chip warn">${data.note}</span>` : '';
+  el('subTitle').innerHTML =
+    `<b>${data.name}</b>${scale} · набор ${data.version || '—'}${note}`;
+}
+
+// ─── Инспектор бара ─────────────────────────────────────────────────────────
+// Всё, что система знает про один бар: цифры свечи, объём, значение выбранного
+// признака и атомы событийного слоя. Стоит под графиком, а не в подсказке у
+// курсора, потому что длина строки скачет: атомов бывает от нуля до десятка.
+
+// Точность цены — по её порядку: у BTC пять знаков после запятой были бы шумом,
+// у монеты за десятые доллара два знака съели бы всё движение.
+function fmtPrice(value) {
+  if (value === null || value === undefined) return '—';
+  const digits = Math.abs(value) >= 1000 ? 1 : Math.abs(value) >= 10 ? 2 : 5;
+  return value.toLocaleString('ru-RU', { maximumFractionDigits: digits });
+}
+
+function fmtVolume(value) {
+  if (value === null || value === undefined) return '—';
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return (value / 1e9).toFixed(2) + ' млрд';
+  if (abs >= 1e6) return (value / 1e6).toFixed(2) + ' млн';
+  if (abs >= 1e3) return (value / 1e3).toFixed(1) + ' тыс';
+  return value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+}
+
+// Время баров хранится в UTC, ось графика подписывает его же. Локальный
+// часовой пояс здесь был бы прямым враньём: он сдвинул бы подпись
+// относительно оси на том же экране.
+function fmtTime(seconds) {
+  return new Date(seconds * 1000).toLocaleString('ru-RU', {
+    timeZone: 'UTC', day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  }) + ' UTC';
+}
+
+function showBar(bar) {
+  const change = bar.open ? (bar.close - bar.open) / bar.open * 100 : 0;
+  const cls = change >= 0 ? 'bi-up' : 'bi-down';
+  const name = stateNames.get(bar.group_id) || '';
+  const parts = [
+    `<span class="bi-ts">${fmtTime(bar.time)}</span>`,
+    `O ${fmtPrice(bar.open)} · H ${fmtPrice(bar.high)} · L ${fmtPrice(bar.low)} · ` +
+    `C ${fmtPrice(bar.close)} <span class="${cls}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>`,
+    `объём ${fmtVolume(bar.volume)}`,
+  ];
+  if (bar.group_id !== null && bar.group_id !== undefined) {
+    parts.push(`состояние <b>${bar.group_id}</b>${name ? ' — ' + name : ''}`);
+  } else {
+    // Хвост, который train ещё не размечал, — обычное дело, а не поломка.
+    parts.push('<span class="bi-hint">бар без разметки</span>');
+  }
+  if (bar.transition_id) parts.push(`переход ${bar.transition_id}`);
+
+  const indicator = el('indicator').value;
+  if (indicator) {
+    const value = indicatorValues.get(bar.time);
+    parts.push(`${indicator} = ` +
+      (value === undefined ? '—' : value.toLocaleString('ru-RU', { maximumFractionDigits: 3 })));
+  }
+
+  // Атомы двух видов разделены намеренно: signature-атомы входят в
+  // event_block_id и определяют выборку кандидата, контекстные — нет.
+  if (bar.atoms === null || bar.atoms === undefined) {
+    // Не то же самое, что пустой список: событийный слой этот бар ещё не
+    // считал, и «событий нет» было бы неправдой.
+    parts.push('<span class="bi-hint">бар без событийной разметки</span>');
+  } else {
+    const atoms = bar.atoms.map(
+      a => `<span class="bi-atom" title="${a}">${atomLabels[a] || a}</span>`);
+    const context = (bar.context || []).map(
+      a => `<span class="bi-atom ctx" title="${a} (фон, в блок событий не входит)">${atomLabels[a] || a}</span>`);
+    parts.push(atoms.length || context.length
+      ? atoms.concat(context).join(' ')
+      : '<span class="bi-hint">событий на баре нет</span>');
+  }
+
+  el('barInspect').innerHTML = parts.join('<span class="tt-sep">·</span>');
+}
+
+// ─── Подсказка при наведении ────────────────────────────────────────────────
+// Цветов на графике десятки, часть похожа между собой, и «угадай состояние
+// по оттенку» — плохая механика. Наведение отвечает точно.
+// Крестик ведётся в обе стороны, и это ровно та связь, которая зацикливается:
+// программная установка позиции на соседнем графике снова поднимает событие
+// движения. Флаг разрывает круг — как и у синхронизации диапазона выше.
+let crosshairSyncing = false;
+
+chart.subscribeCrosshairMove((param) => {
+  const tooltip = el('tooltip');
+  if (crosshairSyncing) return;
+  if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+    tooltip.style.display = 'none';
+    crosshairSyncing = true;
+    subChart.clearCrosshairPosition();
+    crosshairSyncing = false;
+    return;
+  }
+  const bar = barsByTime.get(param.time);
+  if (!bar) {
+    tooltip.style.display = 'none';
+    return;
+  }
+
+  // Инспектор наполняется для любого бара, даже неразмеченного: цифры свечи
+  // и события у него есть всегда.
+  showBar(bar);
+  // Крестик ведём и по панели признака — иначе на ней приходится угадывать,
+  // какая точка соответствует бару под курсором.
+  const value = indicatorValues.get(param.time);
+  crosshairSyncing = true;
+  if (value !== undefined) {
+    subChart.setCrosshairPosition(value, param.time, indicatorSeries);
+  } else {
+    subChart.clearCrosshairPosition();
+  }
+  crosshairSyncing = false;
+
+  if (bar.group_id === null || bar.group_id === undefined) {
+    tooltip.style.display = 'none';
+    return;
+  }
+
+  // Одна строка: цвет, номер, имя, переход. Время не дублируем — его и так
+  // показывает подпись оси под крестиком.
+  const name = stateNames.get(bar.group_id) || '';
+  const sep = '<span class="tt-sep">·</span>';
+  tooltip.innerHTML =
+    `<i style="background:${bar.color}"></i><b>${bar.group_id}</b>` +
+    (name ? sep + `<span class="tt-name">${name}</span>` : '') +
+    (bar.transition_id
+      ? sep + `<span class="tt-tr">переход ${bar.transition_id}</span>` : '');
+
+  // Держим подсказку в пределах области графика, иначе у правого края
+  // она уезжает за границу и обрезается. Ширину меряем по факту: содержимое
+  // разной длины, а фиксированная ширина заставила бы текст переноситься —
+  // и высота снова начала бы скакать.
+  tooltip.style.display = 'block';
+  const box = el('chart').getBoundingClientRect();
+  const width = tooltip.offsetWidth;
+  const x = Math.min(Math.max(param.point.x + 16, 8), Math.max(8, box.width - width - 8));
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = Math.max(8, param.point.y - 34) + 'px';
+});
+
+// Обратная сторона той же связи: курсор над панелью признака ведёт крестик по
+// свечам и наполняет инспектор — панель без этого читалась бы отдельно от
+// графика, к которому относится.
+subChart.subscribeCrosshairMove((param) => {
+  if (crosshairSyncing) return;
+  if (!param.time || !param.point || param.point.x < 0) {
+    crosshairSyncing = true;
+    chart.clearCrosshairPosition();
+    crosshairSyncing = false;
+    return;
+  }
+  const bar = barsByTime.get(param.time);
+  if (!bar) return;
+  showBar(bar);
+  crosshairSyncing = true;
+  chart.setCrosshairPosition(bar.close, param.time, series);
+  crosshairSyncing = false;
+});
+
+el('reload').addEventListener('click', load);
+// «Вписать всё» возвращает обе оси разом: время — в окно, цену — по данным.
+// Только timeScale.fitContent() было бы полдела, вертикаль осталась бы там,
+// куда её утащили.
+el('fit').addEventListener('click', () => {
+  chart.timeScale().fitContent();
+  fitPrice();
+});
+['run', 'limit', 'rating', 'stateLabels'].forEach(
+  id => el(id).addEventListener('change', load));
+// Признак меняется без перезагрузки баров: иначе график сбрасывал бы позицию
+// и масштаб на каждое переключение панели.
+el('indicator').addEventListener('change', loadIndicator);
+// Объём — тем более: данные для него уже в барах.
+el('volume').addEventListener('change', () => {
+  volumeSeries.setData(volumeData(bars));
+  applyPriceMargins();
+});
+
+// Тема графика задаётся опциями, а не CSS — перекрашиваем вручную. Оба
+// графика разом: панель признака рисуется той же библиотекой и про CSS знает
+// ровно столько же, то есть ничего.
+window.addEventListener('btcproc:theme', () => {
+  chart.applyOptions(chartTheme());
+  subChart.applyOptions(subChartOptions());
+  indicatorSeries.applyOptions({ color: cssVar('--chart-indicator') });
+  volumeSeries.setData(volumeData(bars));
+});
+
+load();
+</script>
+{% endblock %}

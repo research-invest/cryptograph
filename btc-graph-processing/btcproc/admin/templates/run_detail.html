@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Прогон #{{ run.run_id }}{% endblock %}
+
+{% block content %}
+<h1>Прогон #{{ run.run_id }} <span class="status {{ run.status }}">{{ run.status }}</span></h1>
+<p class="muted">
+  {{ run.kind }} · старт {{ run.started_at.strftime('%Y-%m-%d %H:%M:%S') }}
+  {% if run.finished_at %} · финиш {{ run.finished_at.strftime('%H:%M:%S') }}{% endif %}
+</p>
+
+{% if run.status == 'done' %}
+<form method="post" action="/runs/{{ run.run_id }}/emit">
+  <button type="submit">Дослать кандидатов в btc-graph</button>
+</form>
+{% endif %}
+
+<div hx-get="/runs/{{ run.run_id }}" hx-trigger="every 3s" hx-target="this">
+  {% include "partials/run_log.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}crypto-graph{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/assets/css/app.css">
+  <!-- Тема выставляется до отрисовки: иначе при загрузке мигает чужой фон. -->
+  <script>
+    (function () {
+      var saved = localStorage.getItem('btcproc-theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
+  {# Библиотеки лежат локально в static/assets/js: админка не должна ходить в CDN
+     ни за чем — она работает во внутреннем контуре, и внешний запрос там либо
+     висит до таймаута, либо не проходит вовсе. Версии закреплены в именах
+     соседнего README. #}
+  <script src="/static/assets/js/htmx.min.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    {# Знак и название ведут на сводку — привычный короткий путь «домой».
+       Монета сохраняется: без ?symbol= клик по логотипу молча возвращал бы
+       на монету по умолчанию, то есть менял бы контекст страницы заодно.
+       Селектор монеты в ссылку НЕ входит намеренно — клик по нему обязан
+       открывать список, а не уводить со страницы.
+
+       Сам знак — фрагмент графа состояний: узел и два расходящихся перехода.
+       currentColor, поэтому следует за темой без второго набора цветов. #}
+    <a class="brand-link" href="/?{{ symbol_qs }}" title="На сводку">
+      <svg class="mark" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+        <path d="M7 6.5 17 12 7 17.5" fill="none" stroke="currentColor"
+              stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+              opacity="0.5"/>
+        <circle cx="7" cy="6.5" r="3" fill="currentColor"/>
+        <circle cx="17" cy="12" r="3" fill="currentColor"/>
+        <circle cx="7" cy="17.5" r="3" fill="currentColor"/>
+      </svg>
+      crypto-graph
+    </a>
+    {# Селектор монеты. Выбор живёт в ?symbol= и прокидывается во все ссылки:
+       без этого переход на соседнюю вкладку молча возвращал бы на дефолтную
+       монету, а страницы графа и состояний показывали бы чужие group_id. #}
+    {% if symbols and symbols|length > 1 %}
+      <select class="symbol-picker" id="symbolPicker" title="Монета">
+        {% for ticker in symbols %}
+          <option value="{{ ticker }}" {{ 'selected' if ticker == symbol }}>{{ ticker }}</option>
+        {% endfor %}
+      </select>
+    {% else %}
+      <small>{{ symbol }}</small>
+    {% endif %}
+  </div>
+  <nav>
+    <a href="/?{{ symbol_qs }}" class="{{ 'on' if active == 'dashboard' }}">Сводка</a>
+    <a href="/graph?{{ symbol_qs }}" class="{{ 'on' if active == 'graph' }}">Граф состояний</a>
+    <a href="/chart?{{ symbol_qs }}" class="{{ 'on' if active == 'chart' }}">График</a>
+    <a href="/candidates?{{ symbol_qs }}" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
+    <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
+    {# Уведомления без ?symbol=: правило само выбирает монету, и подставлять
+       ей текущую из шапки было бы враньём — фильтр там свой. #}
+    <a href="/notifications" class="{{ 'on' if active == 'notifications' }}">Уведомления</a>
+    {# Справка последней и без ?symbol=: она про систему в целом, не про монету. #}
+    <a href="/help" class="{{ 'on' if active == 'help' }}">Справка</a>
+  </nav>
+  <div class="user">
+    <button type="button" class="theme-toggle" id="themeToggle" title="Переключить тему"></button>
+    <span>{{ user }} · <a href="/logout">выйти</a></span>
+  </div>
+</header>
+
+<main class="{% block main_class %}{% endblock %}">
+  {% block content %}{% endblock %}
+</main>
+
+<script>
+// Переключатель темы. Страницы графа и чарта слушают btcproc:theme —
+// их палитра живёт в JS и сама по CSS не перекрашивается.
+(function () {
+  var btn = document.getElementById('themeToggle');
+  function current() {
+    return document.documentElement.getAttribute('data-theme') || 'dark';
+  }
+  function render() {
+    btn.textContent = current() === 'light' ? '☾ тёмная' : '☀ светлая';
+  }
+  btn.addEventListener('click', function () {
+    var next = current() === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('btcproc-theme', next);
+    render();
+    window.dispatchEvent(new CustomEvent('btcproc:theme', { detail: next }));
+  });
+  render();
+})();
+
+// Селектор монеты: переключение перезагружает страницу с новым ?symbol=.
+// Остальные параметры (фильтры, номер прогона) при этом СБРАСЫВАЮТСЯ намеренно —
+// прогон другой монеты в фильтре дал бы пустую выдачу без объяснения.
+(function () {
+  var picker = document.getElementById('symbolPicker');
+  if (!picker) return;
+  picker.addEventListener('change', function () {
+    window.location.search = '?symbol=' + encodeURIComponent(picker.value);
+  });
+})();
+
+// Читалка CSS-переменных: единственный источник цветов для Cytoscape и чарта.
+window.cssVar = function (name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+};
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

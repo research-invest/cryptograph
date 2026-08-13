@@ -1,0 +1,42 @@
+# Свои сервисы не поднимают БД: используется стек btc-graph (postgres/redis/neo4j).
+# Поэтому compose btc-graph должен быть запущен раньше — из него берётся сеть.
+#
+# Имя внешней сети зависит от каталога btc-graph. Проверить:
+#   docker network ls | grep btc
+# и при необходимости поправить networks.default.name ниже.
+
+services:
+  admin:
+    build: .
+    container_name: btcproc_admin
+    env_file: .env
+    environment:
+      # Внутри сети адреса — это имена сервисов btc-graph.
+      DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
+      REDIS_URL: redis://redis:6379/1
+      BTC_GRAPH_REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      BTC_GRAPH_PATH: /opt/btc-graph
+      BTC_GRAPH_URL: http://api:8000
+      ADMIN_HOST: 0.0.0.0
+    volumes:
+      # Пакет btc-graph нужен для SINK_MODE=direct: его pipeline вызывается
+      # как библиотека, отсюда монтирование, а не копирование в образ.
+      - ../btc-graph:/opt/btc-graph:ro
+      - binance_cache:/app/data
+    ports:
+      - "127.0.0.1:8100:8100"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  binance_cache:
+
+networks:
+  default:
+    name: btc-graph_default
+    external: true

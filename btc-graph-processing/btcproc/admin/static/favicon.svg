@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Знак проекта — фрагмент графа состояний: узел, из которого расходятся
+  два перехода. Ровно то, что система строит, и то, что видно на главной
+  странице админки.
+
+  Лежит файлом, а не data-URI в шаблоне: так его видно в диффе и можно
+  открыть глазами. Цвет — accent из палитры (--accent, #7aa2f7); он
+  читается и на светлой, и на тёмной вкладке браузера.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M7 6.5 17 12 7 17.5"
+        fill="none" stroke="#7aa2f7" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+  <circle cx="7"  cy="6.5"  r="3.1" fill="#7aa2f7"/>
+  <circle cx="17" cy="12"   r="3.1" fill="#7aa2f7"/>
+  <circle cx="7"  cy="17.5" r="3.1" fill="#7aa2f7"/>
+</svg>

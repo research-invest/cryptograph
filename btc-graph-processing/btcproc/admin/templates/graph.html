@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% block title %}Граф состояний {{ symbol }} · crypto-graph{% endblock %}
+{% block main_class %}wide{% endblock %}
+
+{% block head %}
+<script src="/static/assets/js/cytoscape.min.js"></script>
+{% endblock %}
+
+{% block content %}
+{# Монета в заголовке обязательна: «состояние 7» существует в графе каждой
+   монеты и означает у каждой свой рынок. Это главный способ запутаться
+   в мультимонетном интерфейсе. #}
+<h1>Граф состояний · {{ symbol }}</h1>
+<form class="toolbar" onsubmit="return false;">
+  <label>Прогон
+    <select id="run">
+      {% for run in runs if run.kind == 'train' %}
+        <option value="{{ run.run_id }}" {{ 'selected' if run.run_id == run_id }}>
+          #{{ run.run_id }} — {{ run.started_at.strftime('%Y-%m-%d %H:%M') }} ({{ run.status }})
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Редкость перехода
+    <select id="rarity">
+      <option value="">все</option>
+      <option value="rare">только rare</option>
+      <option value="rare,uncommon">rare + uncommon</option>
+      <option value="uncommon">только uncommon</option>
+      <option value="common">только common</option>
+    </select>
+  </label>
+  <label>Показывать рёбер
+    <select id="topEdges">
+      <option value="60">60 самых частых</option>
+      <option value="120" selected>120 самых частых</option>
+      <option value="250">250</option>
+      <option value="0">все</option>
+    </select>
+  </label>
+  <label>Мин. случаев перехода
+    <input type="number" id="minCount" value="1" min="1" step="1" style="width: 74px">
+  </label>
+  {# Имена длинные, а узлов десятки — по умолчанию на самих узлах только номер.
+     Имя всегда доступно в подсказке и в панели справа; переключатель нужен,
+     когда граф отфильтрован до десятка узлов и место есть. #}
+  <label><input type="checkbox" id="showNames"> имена на узлах</label>
+  <label>Раскладка
+    <select id="layout">
+      <option value="cose">силовая</option>
+      <option value="concentric">кольцами по размеру</option>
+      <option value="circle">по кругу</option>
+      <option value="grid">сеткой</option>
+      <option value="breadthfirst">по уровням</option>
+    </select>
+  </label>
+  <label>Найти состояние
+    <input type="text" id="findNode" placeholder="напр. 7" style="width: 90px">
+  </label>
+  <label><input type="checkbox" id="hideIsolated" checked> скрывать без связей</label>
+
+  <div class="spacer"></div>
+  <button id="fit" type="button">Уместить</button>
+  <button id="reload" type="button" class="primary">Обновить</button>
+</form>
+
+<div class="legend-box">
+  <div class="legend-group">
+    <b>Узел = состояние</b>
+    <span class="legend-item"><i style="width:12px;height:12px;background:var(--bias-long)"></i>чаще рос</span>
+    <span class="legend-item"><i style="width:12px;height:12px;background:var(--bias-short)"></i>чаще падал</span>
+    <span class="legend-item"><i style="width:12px;height:12px;background:var(--bias-neutral)"></i>без перекоса</span>
+    <span class="legend-item"><i class="sz-s"></i><i class="sz-m"></i><i class="sz-l"></i>размер = доля истории</span>
+  </div>
+  <div class="legend-group">
+    <b>Ребро = переход</b>
+    <span class="legend-item"><i class="line" style="background:var(--rarity-rare)"></i>rare</span>
+    <span class="legend-item"><i class="line" style="background:var(--rarity-uncommon)"></i>uncommon</span>
+    <span class="legend-item"><i class="line" style="background:var(--rarity-common)"></i>common</span>
+    <span class="legend-item">толщина = сколько раз случался</span>
+  </div>
+  <div class="legend-group">
+    <span class="legend-item" id="graphInfo"></span>
+  </div>
+</div>
+
+<div class="graph-wrap">
+  <div id="cy"></div>
+  <aside id="details" class="details">
+    <p class="muted">
+      Клик по узлу — состояние и его переходы, соседи подсвечиваются.
+      Клик по ребру — статистика перехода. Клик по пустому месту — сброс подсветки.
+      Колесо — зум, узлы можно перетаскивать.
+    </p>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const el = (id) => document.getElementById(id);
+// Монета текущей страницы. Нужна подписям: group_id осмыслен только в паре
+// с ней, «состояние 7» без монеты — это состояние неизвестно чего.
+const SYMBOL = {{ symbol | tojson }};
+let raw = { nodes: [], edges: [] };
+
+function palette() {
+  return {
+    long_skew: cssVar('--bias-long'),
+    short_skew: cssVar('--bias-short'),
+    neutral: cssVar('--bias-neutral'),
+    rare: cssVar('--rarity-rare'),
+    uncommon: cssVar('--rarity-uncommon'),
+    common: cssVar('--rarity-common'),
+    label: cssVar('--node-label'),
+    border: cssVar('--node-border'),
+    accent: cssVar('--accent'),
+    // Подпись ИМЕНИ висит под узлом, на фоне страницы, а не на заливке узла.
+    // Поэтому ей нужен обычный цвет текста и подложка панели: --node-label
+    // белый по замыслу (он для текста ПОВЕРХ цветного узла), и на светлой
+    // теме давал белое по почти белому — надписи просто не было видно.
+    textOutside: cssVar('--text'),
+    panel: cssVar('--panel'),
+  };
+}
+
+function styleSheet() {
+  const p = palette();
+  return [
+    { selector: 'node', style: {
+        'label': 'data(label)', 'width': 'data(w)', 'height': 'data(w)',
+        'background-color': 'data(color)', 'color': p.label, 'font-size': 11,
+        'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center',
+        'border-width': 1, 'border-color': p.border,
+        // Тёмная обводка вокруг номера: заливка узла бывает зелёной, красной
+        // и серой, и белая цифра на сером читалась плохо в обеих темах.
+        'text-outline-width': 1.6, 'text-outline-color': 'rgba(0,0,0,.55)',
+        'transition-property': 'opacity', 'transition-duration': '120ms'
+    }},
+    // Режим «имена на узлах»: подпись уезжает под узел и переносится по
+    // словам. Внутри кружка имя не помещается, а поверх соседей — не читается.
+    { selector: 'node.named', style: {
+        'label': 'data(labelFull)', 'text-valign': 'bottom',
+        'text-margin-y': 4, 'text-wrap': 'wrap', 'text-max-width': 120,
+        'font-size': 10, 'font-weight': 500,
+        'color': p.textOutside, 'text-outline-width': 0,
+        'text-background-color': p.panel, 'text-background-opacity': .92,
+        'text-background-padding': 3, 'text-background-shape': 'roundrectangle',
+        'text-border-width': 1, 'text-border-color': p.border,
+        'text-border-opacity': .5
+    }},
+    { selector: 'edge', style: {
+        'width': 'data(w)', 'line-color': 'data(color)',
+        'target-arrow-color': 'data(color)', 'target-arrow-shape': 'triangle',
+        'arrow-scale': .8, 'curve-style': 'bezier', 'opacity': .65
+    }},
+    // Приглушение всего, кроме выбранного соседства: без этого 120 рёбер
+    // читаются как клубок.
+    { selector: '.faded', style: { 'opacity': .08, 'text-opacity': .15 } },
+    { selector: '.highlight', style: {
+        'border-width': 3, 'border-color': p.accent, 'opacity': 1 } },
+    { selector: 'edge.highlight', style: { 'opacity': 1, 'width': 'data(wHi)' } },
+    { selector: '.found', style: {
+        'border-width': 4, 'border-color': p.accent } },
+  ];
+}
+
+const cy = cytoscape({
+  container: el('cy'),
+  style: styleSheet(),
+  wheelSensitivity: 0.25,
+  minZoom: 0.15,
+  maxZoom: 3,
+});
+
+function layoutOptions(name) {
+  const common = { animate: false, fit: true, padding: 30 };
+  if (name === 'cose') {
+    return Object.assign({ name: 'cose', nodeRepulsion: 18000, idealEdgeLength: 140,
+                           nodeOverlap: 24, gravity: 0.6, numIter: 1200 }, common);
+  }
+  if (name === 'concentric') {
+    return Object.assign({ name: 'concentric', minNodeSpacing: 28,
+                           concentric: (n) => n.data('size'),
+                           levelWidth: () => 3 }, common);
+  }
+  if (name === 'breadthfirst') {
+    return Object.assign({ name: 'breadthfirst', spacingFactor: 1.3 }, common);
+  }
+  return Object.assign({ name: name, spacingFactor: 1.2 }, common);
+}
+
+function runLayout() {
+  cy.layout(layoutOptions(el('layout').value)).run();
+}
+
+function render() {
+  const p = palette();
+  const minCount = Number(el('minCount').value || 1);
+  const topN = Number(el('topEdges').value || 0);
+  const hideIsolated = el('hideIsolated').checked;
+
+  let edges = raw.edges.filter(e => e.data.count >= minCount);
+  edges.sort((a, b) => b.data.count - a.data.count);
+  if (topN > 0) edges = edges.slice(0, topN);
+
+  const used = new Set();
+  edges.forEach(e => { used.add(e.data.source); used.add(e.data.target); });
+  let nodes = raw.nodes;
+  if (hideIsolated) nodes = nodes.filter(n => used.has(n.data.id));
+
+  const maxSize = Math.max(1, ...nodes.map(n => n.data.size));
+  const maxCount = Math.max(1, ...edges.map(e => e.data.count));
+
+  const elements = [
+    ...nodes.map(n => ({ data: Object.assign({}, n.data, {
+      w: 22 + 44 * Math.sqrt(n.data.size / maxSize),
+      color: p[n.data.bias] || p.neutral,
+      // Подпись с именем — отдельным полем: переключатель меняет источник
+      // label, а не пересобирает граф.
+      labelFull: n.data.name ? `${n.data.label}\n${n.data.name}` : n.data.label,
+    })})),
+    ...edges.map(e => {
+      const w = 1 + 6 * Math.sqrt(e.data.count / maxCount);
+      return { data: Object.assign({}, e.data, {
+        w: w, wHi: w + 2, color: p[e.data.rarity] || p.common,
+      })};
+    }),
+  ];
+
+  cy.elements().remove();
+  cy.add(elements);
+  applyNames();
+  runLayout();
+
+  el('graphInfo').textContent =
+    `${nodes.length} из ${raw.nodes.length} состояний · ` +
+    `${edges.length} из ${raw.edges.length} переходов`;
+}
+
+async function load() {
+  const params = new URLSearchParams({
+    run: el('run').value, min_count: 1, symbol: SYMBOL,
+  });
+  const rarity = el('rarity').value;
+  if (rarity) params.set('rarity', rarity);
+  raw = await (await fetch('/api/graph?' + params)).json();
+  render();
+  // Прогрев фона состояний: он считается секундами, а нужен по первому клику
+  // на узел. Намеренно без await и без обработки результата — граф уже
+  // отрисован, а сорвавшийся прогрев означает лишь ожидание при клике.
+  fetch(`/api/graph/context?run=${el('run').value}&symbol=${encodeURIComponent(SYMBOL)}`)
+    .catch(() => {});
+}
+
+function applyNames() {
+  const on = el('showNames').checked;
+  cy.nodes().toggleClass('named', on);
+}
+
+function pct(x) { return x === null || x === undefined ? '—' : (x * 100).toFixed(1) + '%'; }
+function num(x, d = 3) { return x === null || x === undefined ? '—' : Number(x).toFixed(d); }
+
+function focusOn(collection) {
+  cy.elements().addClass('faded');
+  collection.removeClass('faded').addClass('highlight');
+}
+
+function resetFocus() {
+  cy.elements().removeClass('faded highlight found');
+}
+
+cy.on('tap', 'node', async (evt) => {
+  const node = evt.target;
+  const d = node.data();
+  resetFocus();
+  focusOn(node.closedNeighborhood());
+
+  const run = el('run').value;
+  const info = await (await fetch(
+    `/api/graph/group/${d.group_id}?run=${run}&symbol=${encodeURIComponent(SYMBOL)}`
+  )).json();
+  const feats = Object.entries(d.top_features || {})
+    .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
+    .join('');
+  // Атомы приходят из того же вызова, что и переходы: запрос тяжёлый, и в
+  // payload графа ему делать нечего. Подпись уже русская — словарь один на
+  // проект и живёт в naming.py, дублировать его в шаблоне нельзя.
+  const atoms = (info.context_atoms || [])
+    .map(a => `<li>${a.label} <span class="up">×${a.lift.toFixed(2)}</span>
+               <span class="muted">${pct(a.share)} баров</span></li>`)
+    .join('');
+  const rows = (list) => list.map(t => `
+    <tr><td><code>${t.transition_id}</code></td><td class="num">${t.count}</td>
+        <td><span class="tag ${t.rarity}">${t.rarity}</span></td>
+        <td class="num">${pct(t.up_share)}</td></tr>`).join('') ||
+    '<tr><td class="muted">нет</td></tr>';
+
+  el('details').innerHTML = `
+    <h3>${SYMBOL} · состояние ${d.label}</h3>
+    ${d.name ? `<p class="state-name">${d.name}</p>` : ''}
+    <p>Баров: <b>${d.size.toLocaleString('ru')}</b> (${pct(d.share)} истории)<br>
+       Что бывало дальше: <b>${d.bias === 'long_skew' ? 'чаще рост' : d.bias === 'short_skew' ? 'чаще падение' : 'без перекоса'}</b>,
+       рост в ${pct(d.up_share)} случаев<br>
+       Средний исход за 24ч: ${num(d.avg_ret_pct, 2)}%</p>
+    <h4>Чем отличается от рынка в среднем</h4>
+    <p class="muted" style="font-size:11px;margin:2px 0">Отклонение признака в стандартных отклонениях</p>
+    <ul class="feats">${feats || '<li class="muted">нет данных</li>'}</ul>
+    <h4>Фон состояния</h4>
+    <p class="muted" style="font-size:11px;margin:2px 0">Контекстные атомы, включая Smart Money.
+       Во сколько раз чаще, чем в среднем по истории</p>
+    <ul class="feats">${atoms || '<li class="muted">фон как у рынка в целом</li>'}</ul>
+    <h4>Входящие переходы</h4>
+    <table><tbody>${rows(info.incoming || [])}</tbody></table>
+    <h4>Исходящие переходы</h4>
+    <table><tbody>${rows(info.outgoing || [])}</tbody></table>
+    <p><a href="/candidates?run=${run}">кандидаты этого прогона</a></p>`;
+});
+
+cy.on('tap', 'edge', (evt) => {
+  const edge = evt.target;
+  const d = edge.data();
+  resetFocus();
+  focusOn(edge.connectedNodes().union(edge));
+
+  const run = el('run').value;
+  el('details').innerHTML = `
+    <h3>Переход ${d.label}</h3>
+    <p>Случаев в истории: <b>${d.count.toLocaleString('ru')}</b> (${pct(d.share)} всех переходов)<br>
+       Редкость: <span class="tag ${d.rarity}">${d.rarity}</span><br>
+       Рост после перехода: ${pct(d.up_share)} случаев<br>
+       Средний исход за 24ч: ${num(d.avg_horizon_return, 2)}%</p>
+    <p class="muted">Чем реже переход, тем специфичнее сигнал — в btc-graph это
+       ось rarity, 15% итогового quality_score.</p>
+    <p><a href="/candidates?run=${run}&transition=${encodeURIComponent(d.label)}">
+       кандидаты по этому переходу →</a></p>`;
+});
+
+cy.on('tap', (evt) => { if (evt.target === cy) resetFocus(); });
+
+el('findNode').addEventListener('input', (e) => {
+  const value = e.target.value.trim();
+  cy.nodes().removeClass('found');
+  if (!value) return;
+  const node = cy.nodes().filter(n => String(n.data('label')) === value);
+  if (node.length) {
+    node.addClass('found');
+    cy.animate({ center: { eles: node }, zoom: 1.2 }, { duration: 250 });
+  }
+});
+
+['rarity', 'run'].forEach(id => el(id).addEventListener('change', load));
+['topEdges', 'minCount', 'hideIsolated'].forEach(id => el(id).addEventListener('change', render));
+el('layout').addEventListener('change', runLayout);
+// Переключение имён не трогает раскладку: перестраивать граф ради подписи
+// значило бы каждый раз терять взаимное расположение узлов.
+el('showNames').addEventListener('change', applyNames);
+el('reload').addEventListener('click', load);
+el('fit').addEventListener('click', () => cy.fit(undefined, 30));
+
+// Смена темы перекрашивает узлы и рёбра: их цвета заданы в data, а не в CSS.
+window.addEventListener('btcproc:theme', () => {
+  cy.style(styleSheet());
+  render();
+});
+
+load();
+</script>
+{% endblock %}
