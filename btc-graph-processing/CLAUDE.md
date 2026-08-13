@@ -155,7 +155,7 @@ session-scoped.
 | Разметка | `states/assign.py` | `group_id` по барам, сглаживание, возраст, переходы, энтропия траектории |
 | Граф | `states/graph.py` | статистика узлов и рёбер, `transition_rarity` |
 | Исходы | `candidates/outcomes.py` | `ret` / `MFE` / `MAE` на горизонте 24h, валидность метки |
-| Кандидаты | `candidates/builder.py` | снимки конфигураций → 37 полей схемы btc-graph |
+| Кандидаты | `candidates/builder.py` | снимки конфигураций → 39 полей схемы btc-graph |
 | Отправка | `sink/graph_sink.py` | `direct` / `http` / `none` |
 | Уведомления | `notify/` | вебхук на кандидата: правило = адрес + фильтр, отправка фоновым потоком, формат — `docs/notifications.md` |
 
@@ -367,6 +367,9 @@ signature и контекстные визуально: первые входя�
 | Проверить лифт по ГРАДАЦИИ непрерывного признака | `scripts/measure_feature_gradation.py`, методика — `btcproc/analysis/gradation.py` |
 | Откалибровать порог дробления состояний | `scripts/calibrate_split_gain.py` (свип по устойчивости + контроль на шуме) |
 | Проверить, работает ли система целиком на невиданных данных | `scripts/validate_holdout.py` (`make validate-holdout`), методика — `btcproc/analysis/holdout.py` |
+| Понять, потолок в графе или в самих признаках | `scripts/control_model.py` (`make control-model`) — бустинг на тех же признаках без графа, методика и критерий — `btcproc/analysis/control.py` |
+| Померить, что дала правка расчёта кандидата | `scripts/measure_block_a.py` — прогон одних и тех же снимков старым и новым кодом, парное сравнение |
+| Пересобрать кандидатов текущим кодом на действующей модели | `btcproc/analysis/replay.py` (переобучения нет), выгрузка для калибровки — `scripts/dump_candidates.py` |
 | Завести новый источник сигнала (ончейн, индексы) | `btcproc/features/registry.py` + порядок в `docs/extending_features.md` |
 | Убрать лишние модели состояний из базы | `scripts/prune_runs.py` (по умолчанию сухой прогон) |
 | Недельная уборка базы: разметка старых live + вакуум | `scripts/maintenance.py` (`make maintenance`), стоит в кроне |

@@ -63,6 +63,31 @@ from btcproc.analysis.lift import (
 MIN_BUCKET_ROWS = 100
 
 
+# ─── Разбиение истории ──────────────────────────────────────────────────────
+def split_bar(index: pd.DatetimeIndex, frac: float,
+              min_part: int = 1000) -> pd.Timestamp:
+    """
+    Бар, на котором заканчиваются первые `frac` истории.
+
+    Граница берётся по числу БАРОВ, а не по календарю: история монеты
+    неравномерна (у BTC ранние годы разрежены дырами), и календарная
+    середина дала бы не ту долю данных, которую заявляем.
+
+    Живёт здесь, а не в скрипте, ровно по одной причине: контрольная модель
+    без графа (D1) обязана делить историю ТЕМ ЖЕ бором, что и валидация
+    графа, иначе сравнивать их числа нельзя. Две реализации одной формулы
+    разъехались бы молча.
+    """
+    total = len(index)
+    cut = int(total * frac)
+    if cut < min_part or total - cut < min_part:
+        raise ValueError(
+            f"разбиение {frac} на {total} барах даёт слишком короткую часть "
+            f"({cut} / {total - cut})"
+        )
+    return index[cut]
+
+
 # ─── Карты редкости без заглядывания вперёд ─────────────────────────────────
 def prefix_maps(states: pd.DataFrame, events: pd.DataFrame,
                 outcomes: pd.DataFrame, split_ts: pd.Timestamp

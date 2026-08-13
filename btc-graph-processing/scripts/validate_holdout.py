@@ -123,13 +123,12 @@ def resolve_split(symbol: str, start: str, end: str,
         raise SystemExit(
             f"{symbol}: в БД нет баров до {end}. Сначала ingest."
         )
-    cut = int(len(base) * frac)
-    if cut < 1000 or len(base) - cut < 1000:
-        raise SystemExit(
-            f"{symbol}: разбиение {frac} на {len(base)} барах даёт слишком "
-            f"короткую часть ({cut} / {len(base) - cut})."
-        )
-    return base.index[cut], len(base)
+    # Формула живёт в analysis/holdout: контрольная модель без графа (D1)
+    # обязана делить историю тем же бором, иначе её числа несравнимы с этими.
+    try:
+        return ho.split_bar(base.index, frac), len(base)
+    except ValueError as exc:
+        raise SystemExit(f"{symbol}: {exc}.") from exc
 
 
 def train_prefix_model(symbol: str, start: str, split_ts: pd.Timestamp,
@@ -218,7 +217,7 @@ def build_candidates(symbol: str, model_run: int, start: str, end: str,
             "long_outcome_share": candidate["long_outcome_share"],
             "sample_size": candidate["sample_size"],
             "research_score": candidate["research_score"],
-            "scope": meta["scope"],
+            "scope": candidate["sample_scope"],
             "transition_rarity": candidate["transition_rarity"],
         })
         payloads.append(cand.strip_meta(candidate))

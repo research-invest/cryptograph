@@ -267,7 +267,7 @@ def run_train(
         ):
             buffer.append(candidate)
             produced += 1
-            scope = candidate["_meta"]["scope"]
+            scope = candidate["sample_scope"]
             scopes[scope] = scopes.get(scope, 0) + 1
             if len(buffer) >= 5000:
                 repo.save_candidates(run_id, buffer)

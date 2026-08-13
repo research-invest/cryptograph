@@ -28,7 +28,8 @@ SCHEMA = "btcproc.candidate.v1"
 #: списком, чтобы docs/notifications.md и тест сверялись с одним источником.
 SUMMARY_FIELDS = (
     "candidate_id", "symbol", "ts", "side", "rating", "quality_score",
-    "research_score", "sample_size", "transition_id", "event_block_id",
+    "research_score", "sample_size", "effective_sample_size", "sample_scope",
+    "transition_id", "event_block_id",
     "primary_event_family", "horizon", "run_id",
 )
 
@@ -61,6 +62,15 @@ def build(rule, row: dict, sent_at: datetime | None = None) -> dict:
         "quality_score": _float_or_none(row.get("quality_score")),
         "research_score": _float_or_none(candidate.get("research_score")),
         "sample_size": candidate.get("sample_size"),
+        # Рядом с sample_size, а не вместо него: первое — строки снимков
+        # (до четырёх на один случай), второе — число реализаций перехода.
+        # Получателю, читающему только сводку, разница видна должна быть.
+        # Оба поля появились 2026-08-13; у кандидатов, выпущенных раньше,
+        # их в payload нет, и здесь будет None.
+        "effective_sample_size": candidate.get("effective_sample_size"),
+        # "transition+event_block" | "transition". Второе значит, что выборка
+        # собрана по переходу целиком, и поля блока событий к ней не относятся.
+        "sample_scope": candidate.get("sample_scope"),
         "transition_id": candidate.get("transition_id"),
         "event_block_id": candidate.get("event_block_id"),
         "primary_event_family": candidate.get("primary_event_family"),
@@ -76,7 +86,7 @@ def build(rule, row: dict, sent_at: datetime | None = None) -> dict:
     if rule.payload_mode == "compact":
         return body
 
-    # full: кандидат целиком (те же 37 полей, что уходят в btc-graph) и его
+    # full: кандидат целиком (те же 39 полей, что уходят в btc-graph) и его
     # оценка целиком — включая summary, strengths и risks, если приёмник их
     # считал.
     body["candidate"] = candidate
@@ -108,7 +118,7 @@ def example_row() -> dict:
             "candidate_id": "3f2a1c9b8e7d6a5c4b30",
             "symbol": "BTCUSDT",
             "configuration_hash": "9c1d4e77a0b3f215",
-            "candidate_family_key": "BTCUSDT|7|42->7|b19f0c2a|long_skew",
+            "candidate_family_key": "BTCUSDT|7|42->7|b19f0c2a|long_skew|long",
             "research_score": 0.63,
             "previous_group_id": 42.0,
             "current_group_id": 7.0,
@@ -127,6 +137,8 @@ def example_row() -> dict:
             "event_block_row_share": 0.006,
             "horizon": "24h",
             "sample_size": 412,
+            "effective_sample_size": 118,
+            "sample_scope": "transition+event_block",
             "valid_label_count": 401,
             "invalid_label_count": 11,
             "valid_label_pct": 0.973,

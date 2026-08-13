@@ -73,6 +73,12 @@ maintenance:
 validate-holdout:
 	$(PY) scripts/validate_holdout.py --all
 
+# Контроль к предыдущей цели (D1): те же признаки и то же разбиение, но
+# бустинг вместо графа состояний. Отвечает на вопрос «потолок в графе или в
+# признаках»; критерий заявлен в шапке btcproc/analysis/control.py.
+control-model:
+	$(PY) scripts/control_model.py --all --importance
+
 test:
 	$(PY) -m pytest -q
 

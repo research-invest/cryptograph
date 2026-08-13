@@ -74,6 +74,8 @@ python3 -m btcproc.cli notify-example --mode compact
   "quality_score": 0.71,
   "research_score": 0.63,
   "sample_size": 412,
+  "effective_sample_size": 118,
+  "sample_scope": "transition+event_block",
   "transition_id": "42->7",
   "event_block_id": "b19f0c2a",
   "primary_event_family": "volatility_events",
@@ -86,7 +88,7 @@ python3 -m btcproc.cli notify-example --mode compact
     "candidate_id": "3f2a1c9b8e7d6a5c4b30",
     "symbol": "BTCUSDT",
     "configuration_hash": "9c1d4e77a0b3f215",
-    "candidate_family_key": "BTCUSDT|7|42->7|b19f0c2a|long_skew",
+    "candidate_family_key": "BTCUSDT|7|42->7|b19f0c2a|long_skew|long",
     "research_score": 0.63,
 
     "previous_group_id": 42.0,
@@ -108,6 +110,8 @@ python3 -m btcproc.cli notify-example --mode compact
 
     "horizon": "24h",
     "sample_size": 412,
+    "effective_sample_size": 118,
+    "sample_scope": "transition+event_block",
     "valid_label_count": 401,
     "invalid_label_count": 11,
     "valid_label_pct": 0.973,
@@ -169,7 +173,9 @@ python3 -m btcproc.cli notify-example --mode compact
 | `rating` | `STRONG` \| `MODERATE` \| `WEAK` \| `null` | Оценка btc-graph. `null` — кандидат не оценивался (см. §3.2). |
 | `quality_score` | float 0..1 \| null | Оценка качества от btc-graph. |
 | `research_score` | float 0..1 | Наша синтетическая оценка силы аналогии. Это **не** вероятность прибыли. |
-| `sample_size` | int | Сколько исторических случаев в выборке. |
+| `sample_size` | int | Сколько СТРОК снимков в выборке. Одна реализация перехода даёт до четырёх строк — см. `effective_sample_size`. |
+| `effective_sample_size` | int \| null | Сколько НЕЗАВИСИМЫХ случаев в выборке. Именно это число отвечает на вопрос «сколько раз такое было». `null` — кандидат выпущен до 2026-08-13. |
+| `sample_scope` | string \| null | На что обусловлена выборка: `transition+event_block` (по паре «переход + блок событий») или `transition` (откат на переход целиком — поля блока тогда описывают текущий бар, а не выборку). `null` — кандидат выпущен до 2026-08-13. |
 | `transition_id` | string | Переход между состояниями, вида `42->7`. |
 | `event_block_id` | string | Идентификатор блока сопровождающих событий. |
 | `primary_event_family` | string \| null | Ведущее семейство событий — «тип события» (список в §5). |
@@ -180,8 +186,8 @@ python3 -m btcproc.cli notify-example --mode compact
 
 ### 2.3. Блок `candidate` (только `full`)
 
-Кандидат ровно в том виде, в каком он уходит в btc-graph — те же 37 полей его
-схемы. Смысл групп полей:
+Кандидат ровно в том виде, в каком он уходит в btc-graph — те же 39 полей его
+схемы (было 37; 2026-08-13 добавились `effective_sample_size` и `sample_scope`). Смысл групп полей:
 
 * **Идентичность.** `configuration_hash` — хэш конфигурации (монета + переход +
   блок + возраст + энтропия). `candidate_family_key` — ключ «семьи»: кандидаты
@@ -201,8 +207,12 @@ python3 -m btcproc.cli notify-example --mode compact
   (`sparse`/`moderate`/`dense`), `event_rarity_bucket`
   (`common`/`uncommon`/`rare`), `event_block_total_rows` и
   `event_block_row_share` — насколько такой блок событий вообще част в истории.
-* **Историческая выборка.** `sample_size` — всего случаев; `valid_label_count` —
-  из них с созревшим исходом; `repeatability_days` / `repeatability_months` — по
+* **Историческая выборка.** `sample_size` — всего СТРОК снимков;
+  `effective_sample_size` — сколько за ними стоит независимых случаев (снимок
+  конфигурации берётся в момент перехода и спустя 45/90/180 минут, поэтому
+  строк до четырёх на случай, и окна их исходов почти совпадают);
+  `sample_scope` — обусловлена ли выборка блоком событий или собрана по
+  переходу целиком; `valid_label_count` — строк с созревшим исходом; `repeatability_days` / `repeatability_months` — по
   скольким разным дням и месяцам они разбросаны; `monthly_concentration` — доля
   самого «густого» месяца. Высокая концентрация означает, что выборка на самом
   деле про одну рыночную эпоху, а не про рынок вообще.
@@ -280,6 +290,14 @@ btc-graph»). Если её снять, будут приходить и кан�
 
 Рекомендация для принимающей стороны: сверять префикс `btcproc.candidate.v1` и
 на незнакомой версии писать в свой лог, а не падать.
+
+**История совместимых правок**
+
+* *2026-08-13* — добавлены `effective_sample_size` и `sample_scope` (в сводке и
+  в блоке `candidate`), в `candidate_family_key` добавлена сторона последним
+  сегментом. Версия не менялась: поля новые, смысл прежних не тронут. Но если
+  вы строили что-то на `sample_size` как на числе случаев — читайте
+  `effective_sample_size`, оно примерно вчетверо меньше и означает именно это.
 
 ---
 
