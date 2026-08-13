@@ -52,6 +52,25 @@ class ResearchSide(str, Enum):
     short = "short"
 
 
+class SampleScope(str, Enum):
+    """
+    На что обусловлена историческая выборка кандидата.
+
+    `transition_event_block` — статистика собрана по паре (переход × блок
+    событий), то есть ровно по той конфигурации, которую кандидат описывает.
+
+    `transition` — генератор откатился на выборку по переходу целиком: пары
+    не набралось до его порога. Поля блока событий у такого кандидата
+    заполнены (они описывают текущий бар), но выборка о блоке не знает
+    ничего, и начислять баллы за «редкий блок» по ней нельзя.
+    По выгрузкам генератора это большинство кандидатов: 68–81% на BTC/ETH/SOL
+    и 100% на HYPEUSDT.
+    """
+
+    transition_event_block = "transition+event_block"
+    transition = "transition"
+
+
 class Candidate(BaseModel):
     # Identity
     candidate_id: str
@@ -82,6 +101,18 @@ class Candidate(BaseModel):
     # Historical Sample
     horizon: str
     sample_size: int = Field(ge=0)
+    # Число НЕЗАВИСИМЫХ реализаций перехода в выборке.
+    #
+    # `sample_size` считает строки снимков: генератор берёт снимок конфигурации
+    # в момент перехода и спустя 45/90/180 минут, то есть до четырёх строк на
+    # один случай, и окна их исходов при горизонте 24h совпадают на 87.5%.
+    # «Выборка 1000» на деле означала около 250 случаев.
+    #
+    # Optional с дефолтом None — старые выгрузки поля не несут. Ступень
+    # statistical.sample_size переводить на него можно только вместе с
+    # перекалибровкой профилей: пороги вида 2342 откалиброваны на строках.
+    effective_sample_size: Optional[int] = Field(default=None, ge=0)
+    sample_scope: Optional[SampleScope] = None
     valid_label_count: int = Field(ge=0)
     invalid_label_count: int = Field(ge=0)
     valid_label_pct: float = Field(ge=0.0, le=1.0)

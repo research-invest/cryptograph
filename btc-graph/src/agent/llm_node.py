@@ -10,7 +10,7 @@ from typing import Optional
 import anthropic
 
 from src.config.profiles import ScoringProfile, get_profile
-from src.models.candidate import Candidate, CandidateEvaluation
+from src.models.candidate import Candidate, CandidateEvaluation, SampleScope
 from src.scorer.candidate_scorer import ScoreBreakdown, fa_ratio_for, get_rating, win_rate_for
 
 logger = logging.getLogger(__name__)
@@ -53,11 +53,11 @@ research_side: {research_side} | horizon: {horizon}
 research_score: {research_score}
 transition: {transition_id} ({transition_rarity})
 context_status: {context_status} | age: {current_group_age_bucket} | entropy: {trajectory_entropy}
-sample_size: {sample_size} | valid: {valid_label_count} ({valid_label_pct:.1%})
+{sample_line}
 {win_rate_line}
 {fa_line}
 repeatability: {repeatability_months} мес, {repeatability_days} дней | monthly_conc: {monthly_concentration:.1%}
-event_block: {event_block_id} | intensity: {event_intensity_bucket} | rarity: {event_rarity_bucket}
+{event_block_line}
 quality_score: {quality_score:.3f} | rating: {rating}
 warning_flags: {warning_flags}
 
@@ -113,7 +113,37 @@ def _build_prompt(
             "(в данных есть только long-перцентили p70/p80)"
         )
 
+    # sample_size — это строки снимков, а не случаи: генератор берёт снимок
+    # конфигурации в момент перехода и спустя 45/90/180 минут. Без второго
+    # числа модель описывает выборку вчетверо больше настоящей.
+    sample_line = (
+        f"sample_size: {candidate.sample_size} | "
+        f"valid: {candidate.valid_label_count} ({candidate.valid_label_pct:.1%})"
+    )
+    if candidate.effective_sample_size is not None:
+        sample_line += (
+            f" | независимых случаев: {candidate.effective_sample_size} "
+            f"(остальное — снимки той же реализации перехода)"
+        )
+
+    event_block_line = (
+        f"event_block: {candidate.event_block_id} | "
+        f"intensity: {candidate.event_intensity_bucket.value} | "
+        f"rarity: {candidate.event_rarity_bucket.value}"
+    )
+    if candidate.sample_scope == SampleScope.transition:
+        # Иначе LLM запишет «редкий блок событий» в сильные стороны, хотя
+        # историческая выборка на блок не обусловлена вовсе.
+        event_block_line += (
+            "\nВНИМАНИЕ: выборка собрана по переходу целиком (sample_scope="
+            "transition), а не по паре «переход + блок событий». Блок описывает "
+            "текущий бар; статистика выше к нему не относится, и называть его "
+            "редкость сильной стороной нельзя."
+        )
+
     return _USER_TEMPLATE.format(
+        sample_line=sample_line,
+        event_block_line=event_block_line,
         win_rate_line=win_rate_line,
         fa_line=fa_line,
         candidate_id=candidate.candidate_id,
@@ -127,15 +157,9 @@ def _build_prompt(
         context_status=candidate.context_status.value,
         current_group_age_bucket=candidate.current_group_age_bucket.value,
         trajectory_entropy=candidate.trajectory_entropy.value,
-        sample_size=candidate.sample_size,
-        valid_label_count=candidate.valid_label_count,
-        valid_label_pct=candidate.valid_label_pct,
         repeatability_months=candidate.repeatability_months,
         repeatability_days=candidate.repeatability_days,
         monthly_concentration=candidate.monthly_concentration,
-        event_block_id=candidate.event_block_id,
-        event_intensity_bucket=candidate.event_intensity_bucket.value,
-        event_rarity_bucket=candidate.event_rarity_bucket.value,
         quality_score=score.total,
         rating=rating,
         warning_flags=", ".join(warning_flags) if warning_flags else "нет",

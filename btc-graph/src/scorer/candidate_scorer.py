@@ -26,6 +26,7 @@ from src.models.candidate import (
     AgeBucket,
     Candidate,
     ResearchSide,
+    SampleScope,
 )
 
 
@@ -63,12 +64,31 @@ def _resolve(candidate: Candidate, profile: ScoringProfile | None) -> ScoringPro
     return profile if profile is not None else get_profile(candidate.symbol)
 
 
+def _sample_size_score(c: Candidate, spec: Any) -> float:
+    """
+    Балл за объём выборки — по реализациям, если их знают обе стороны.
+
+    «Обе стороны» — это профиль (у него определена ступень
+    `effective_sample_size`) и кандидат (он несёт поле, то есть выпущен после
+    2026-08-13). Если хотя бы одной нет, считаем по `sample_size` — той самой
+    ступени, на которой кандидат и был выпущен.
+
+    Смешивать нельзя ни в какую сторону: ступень по реализациям примерно вдвое
+    ниже ступени по строкам, и применить её к `sample_size` значит завысить
+    оценку всем старым кандидатам, а обратное — занизить всем новым. Ошибка
+    была бы тихой: числа остаются правдоподобными.
+    """
+    if spec.effective_sample_size is not None and c.effective_sample_size is not None:
+        return _ladder(c.effective_sample_size, spec.effective_sample_size)
+    return _ladder(c.sample_size, spec.sample_size)
+
+
 def _score_statistical(c: Candidate, profile: ScoringProfile | None = None) -> float:
     """A. Статистическая надёжность выборки."""
     spec = _resolve(c, profile).statistical
     score = (
         _ladder(c.valid_label_pct, spec.valid_label_pct)
-        + _ladder(c.sample_size, spec.sample_size)
+        + _sample_size_score(c, spec)
         + _ladder(c.monthly_concentration, spec.monthly_concentration)
         + _ladder(c.repeatability_months, spec.repeatability_months)
     )
@@ -146,14 +166,32 @@ def _score_context(c: Candidate, profile: ScoringProfile | None = None) -> float
 
 
 def _score_rarity(c: Candidate, profile: ScoringProfile | None = None) -> float:
-    """D. Редкость и специфичность."""
+    """
+    D. Редкость и специфичность.
+
+    Три критерия — но только если выборка обусловлена блоком событий. При
+    `sample_scope == "transition"` генератор откатился на статистику по
+    переходу целиком: «редкий блок» тогда описывает текущий бар, а не то,
+    из чего собрана выборка. Начислять за него баллы — то же самое, что
+    начислять long-кандидату за чужую сторону рынка, и решается так же, как
+    в `_score_directional`: критерий выбывает, ось усредняется по двум.
+
+    `sample_scope is None` (старые выгрузки без поля) трактуется как «не
+    знаем» — поведение прежнее, три критерия. Иначе появление поля молча
+    сдвинуло бы оценку всей накопленной истории.
+    """
     spec = _resolve(c, profile).rarity
     score = (
-        _map(c.event_rarity_bucket.value, spec.event_rarity_bucket)
-        + _map(c.transition_rarity.value, spec.transition_rarity)
+        _map(c.transition_rarity.value, spec.transition_rarity)
         + _ladder(c.research_score, spec.research_score)
     )
-    return score / 3.0
+    criteria = 2
+
+    if c.sample_scope != SampleScope.transition:
+        criteria = 3
+        score += _map(c.event_rarity_bucket.value, spec.event_rarity_bucket)
+
+    return score / criteria
 
 
 def _weighted_total(

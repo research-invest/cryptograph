@@ -34,6 +34,8 @@ _FIELD_MAP = {
     "event_block_row_share": float,
     "horizon": str,
     "sample_size": int,
+    "effective_sample_size": int,
+    "sample_scope": str,
     "valid_label_count": int,
     "invalid_label_count": int,
     "valid_label_pct": float,

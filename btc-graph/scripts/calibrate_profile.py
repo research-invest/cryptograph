@@ -81,6 +81,9 @@ from src.scorer.candidate_scorer import (  # noqa: E402
 
 AXES = ("statistical", "directional", "context", "rarity")
 
+#: Откуда брать `floor` для ступеней, которых в базовом профиле нет.
+_FLOOR_TWIN = {"effective_sample_size": "sample_size"}
+
 # Перцентили → баллы. Верхняя ступень отсекает лучшую десятину выборки,
 # нижняя — медиану: ниже медианы признак перестаёт различать кандидатов.
 HIGHER_BETTER_PERCENTILES = ((90, 1.0), (75, 0.7), (50, 0.4))
@@ -90,6 +93,10 @@ LOWER_BETTER_PERCENTILES = ((10, 1.0), (25, 0.7), (50, 0.3))
 LADDER_FIELDS = {
     ("statistical", "valid_label_pct"): ("valid_label_pct", "higher_better", 4),
     ("statistical", "sample_size"): ("sample_size", "higher_better", 0),
+    # Ступень по реализациям заводится рядом со ступенью по строкам, а не
+    # вместо неё: первая применяется к кандидатам, которые поле несут, вторая
+    # остаётся для выпущенных до 2026-08-13 (см. _sample_size_score в скорере).
+    ("statistical", "effective_sample_size"): ("effective_sample_size", "higher_better", 0),
     ("statistical", "monthly_concentration"): ("monthly_concentration", "lower_better", 4),
     ("statistical", "repeatability_months"): ("repeatability_months", "higher_better", 0),
     ("directional", "win_rate"): ("__win_rate", "higher_better", 4),
@@ -158,7 +165,12 @@ def _feature_values(candidates: Iterable[Candidate], field: str) -> list[float]:
             if ratio is not None:
                 values.append(ratio)
         else:
-            values.append(float(getattr(c, field)))
+            raw = getattr(c, field)
+            # Optional-поля у старых выгрузок пусты. None — это «признака нет»,
+            # а не ноль: подставив ноль, мы бы уронили все перцентили.
+            if raw is None:
+                continue
+            values.append(float(raw))
     return values
 
 
@@ -215,7 +227,12 @@ def suggest_ladders(candidates: list[Candidate]) -> dict[str, dict[str, Any]]:
         suggestion.setdefault(axis, {})[key] = {
             "mode": mode,
             "ladder": ladder,
-            "floor": current.floor,
+            # Пол наследуем у базовой линейки. У ступени, которой в `_default`
+            # нет вовсе (effective_sample_size — она опциональна и заводится
+            # только в профилях монет), берём пол её строкового двойника:
+            # это одна и та же ось, выраженная в других единицах.
+            "floor": current.floor if current is not None
+            else getattr(getattr(base, axis), _FLOOR_TWIN.get(key, key)).floor,
         }
 
     return suggestion

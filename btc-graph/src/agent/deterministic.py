@@ -12,7 +12,13 @@
 from __future__ import annotations
 
 from src.config.profiles import ScoringProfile, get_profile
-from src.models.candidate import AgeBucket, Candidate, CandidateEvaluation, TransitionRarity
+from src.models.candidate import (
+    AgeBucket,
+    Candidate,
+    CandidateEvaluation,
+    SampleScope,
+    TransitionRarity,
+)
 from src.scorer.candidate_scorer import ScoreBreakdown, fa_ratio_for, get_rating, win_rate_for
 
 
@@ -68,6 +74,22 @@ def deterministic_evaluation(
 
     if candidate.current_group_age_bucket == AgeBucket.age_gt_120:
         risks.append("Состояние группы > 120 мин — возможна смена рыночной фазы")
+
+    if candidate.sample_scope == SampleScope.transition:
+        risks.append(
+            f"Выборка собрана по переходу целиком, а не по паре «переход + блок "
+            f"{candidate.event_block_id}»: характеристики блока (редкость "
+            f"{candidate.event_rarity_bucket.value}, доля строк) описывают текущий "
+            f"бар, но к этой статистике не относятся"
+        )
+
+    if (candidate.effective_sample_size is not None
+            and candidate.effective_sample_size < candidate.sample_size):
+        risks.append(
+            f"Независимых случаев {candidate.effective_sample_size} из "
+            f"{candidate.sample_size} строк выборки: остальное — снимки той же "
+            f"реализации перехода со смещением 45/90/180 минут"
+        )
 
     if candidate.transition_rarity == TransitionRarity.common:
         risks.append(f"Переход {candidate.transition_id} часто встречается (common) — менее специфичный сигнал")

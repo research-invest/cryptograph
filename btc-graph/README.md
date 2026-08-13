@@ -146,10 +146,29 @@ quality_score = w_stat·statistical + w_dir·directional + w_ctx·context + w_ra
 
 | Ось | Вес | Из чего складывается | 1.0 при |
 |---|---|---|---|
-| **statistical** | 30% | `valid_label_pct`, `sample_size`, `monthly_concentration`, `repeatability_months` | > 0.85, > 1000, < 0.10, > 15 |
+| **statistical** | 30% | `valid_label_pct`, объём выборки, `monthly_concentration`, `repeatability_months` | > 0.85, > 1000, < 0.10, > 15 |
 | **directional** | 35% | win rate, \|`outcome_skew`\|, F/A ratio (только long) | > 0.70, > 0.40, > 4.0 |
 | **context** | 20% | `context_status`, `age_bucket`, `trajectory_entropy` | fresh, `age_lt_30`, low |
 | **rarity** | 15% | `event_rarity_bucket`, `transition_rarity`, `research_score` | rare, rare, > 0.85 |
+
+**Объём выборки берётся из двух разных полей, и это не дубль.** Ступень
+`statistical.effective_sample_size` считает НЕЗАВИСИМЫЕ реализации перехода;
+ступень `statistical.sample_size` — строки снимков, которых на реализацию
+приходится 1.5…2.8. Работает первая, если она есть в профиле монеты И поле
+есть у кандидата (то есть он выпущен после 2026-08-13); иначе вторая. Смешивать
+нельзя ни в какую сторону: ступень по реализациям примерно вдвое ниже, и
+применить её к `sample_size` значит завысить оценку всем старым кандидатам, а
+обратное — занизить всем новым. `_default` ступени по реализациям не имеет
+намеренно: baseline обязан мерить всех одной линейкой, в этом вся его роль.
+
+У двух осей число критериев переменное, и это не исключение, а одно правило,
+применённое дважды: **критерий, к которому у кандидата нет данных, выбывает, а
+ось усредняется по оставшимся.** В `directional` так выпадает F/A ratio для
+short (p70/p80 описывают движение вверх, симметричных short-полей источник не
+даёт). В `rarity` так выпадает `event_rarity_bucket`, когда
+`sample_scope == "transition"`: генератор откатился на статистику по переходу
+целиком, и «редкий блок» описывает текущий бар, а не выборку. По замеру
+2026-08-13 это большинство выдачи — 72–87% на BTC/ETH/SOL и 100% на HYPE.
 
 Итоговый рейтинг по базовому профилю: `STRONG` ≥ 0.75, `MODERATE` ≥ 0.55, иначе `WEAK`. У монеты со своим профилем границы свои — **никогда не сравнивай `quality_score` с числом напрямую**, зови `get_rating(score, profile)`.
 
@@ -166,7 +185,7 @@ quality_score = w_stat·statistical + w_dir·directional + w_ctx·context + w_ra
 
 ```
 src/
-├── models/candidate.py       Candidate (37 полей) + CandidateEvaluation + 8 enum.
+├── models/candidate.py       Candidate (39 полей) + CandidateEvaluation + 9 enum.
 │                             Единственный источник правды по схеме данных.
 ├── parser/candidate_parser.py
 │                             parse_candidate()  — dict / JSON-строка / raw text
@@ -611,7 +630,7 @@ evaluation = run_pipeline(candidate_dict, use_llm=False, save=False, print_repor
 
 ## 9. Формат входных данных
 
-Кандидат — 37 полей, из них обязательных большинство. Полное описание блоков —
+Кандидат — 39 полей, из них обязательных большинство. Полное описание блоков —
 в [`README_agent_spec.md`](README_agent_spec.md); краткая карта:
 
 | Блок | Поля |
@@ -619,13 +638,30 @@ evaluation = run_pipeline(candidate_dict, use_llm=False, save=False, print_repor
 | Identity | `candidate_id`, `symbol`, `configuration_hash`, `candidate_family_key`, `research_score` |
 | State / Trajectory | `previous_group_id`, `current_group_id`, `transition_id`, `current_group_age_bucket`, `context_status`, `trajectory_entropy`, `transition_rarity` |
 | Event Context | `event_block_id`, `primary_event_family`, `event_intensity_bucket`, `event_rarity_bucket`, `signature_atom_count`, `event_family_count`, `event_block_total_rows`, `event_block_row_share` |
-| Historical Sample | `horizon`, `sample_size`, `valid_label_count`, `invalid_label_count`, `valid_label_pct`, `repeatability_days`, `repeatability_months`, `monthly_concentration` |
+| Historical Sample | `horizon`, `sample_size`, `effective_sample_size`, `sample_scope`, `valid_label_count`, `invalid_label_count`, `valid_label_pct`, `repeatability_days`, `repeatability_months`, `monthly_concentration` |
 | Outcome Profile | `historical_bias_context`, `research_side`, `long_outcome_count`, `short_outcome_count`, `long_outcome_share`, `historical_outcome_skew` |
 | Favorable / Adverse | `p70_long_favorable_pct`, `p80_long_adverse_pct`, `long_favorable_adverse_ratio_p70_p80` |
 
 Опциональны: `configuration_hash`, `candidate_family_key`, `previous_group_id`,
-`primary_event_family`. Всё остальное обязательно — иначе Pydantic вернёт 422 с
-перечнем недостающих полей.
+`primary_event_family`, `effective_sample_size`, `sample_scope`. Всё остальное
+обязательно — иначе Pydantic вернёт 422 с перечнем недостающих полей.
+
+Два последних поля появились 2026-08-13 и опциональны именно поэтому: старые
+выгрузки их не несут, и валидатор обязан их принимать. Смысл:
+
+* **`effective_sample_size`** — сколько за `sample_size` стоит НЕЗАВИСИМЫХ
+  случаев. Генератор берёт снимок конфигурации в момент перехода и спустя
+  45/90/180 минут, то есть до четырёх строк на одну реализацию, и окна их
+  исходов при горизонте 24h совпадают на 87.5%. Замеренное завышение — 2.2–2.7
+  раза по медиане. **Ось A считает объём выборки по этому полю** — если
+  ступень `statistical.effective_sample_size` есть в профиле монеты и поле
+  есть у кандидата; иначе по `sample_size` (см. ниже).
+* **`sample_scope`** — обусловлена ли историческая выборка блоком событий
+  (`transition+event_block`) или собрана по переходу целиком (`transition`).
+  Во втором случае поля блока описывают текущий бар, но к статистике
+  отношения не имеют, поэтому ось rarity считается по двум критериям вместо
+  трёх — ровно так же, как ось directional для short. `None` (старая выгрузка)
+  трактуется как «не знаем» и поведения не меняет.
 
 Принимаются три формата:
 
@@ -896,9 +932,10 @@ pytest tests/test_scorer.py -v    # отдельный файл
 ```
 config/symbols/
 ├── _default.yaml      ← неподвижная общая линейка: baseline и монеты без профиля
-├── BTCUSDT.yaml       ← своя калибровка с версии 2 (было пустое наследование)
-├── ETHUSDT.yaml       ← откалиброван по 9628 свежим кандидатам
-├── SOLUSDT.yaml       ← откалиброван по 5710 свежим кандидатам
+├── BTCUSDT.yaml       ← @3: перекалиброван 2026-08-13 под правки блока A
+├── ETHUSDT.yaml       ← @2: то же
+├── SOLUSDT.yaml       ← @2: то же
+├── HYPEUSDT.yaml      ← @2: то же, пресет young
 └── <SYMBOL>.yaml      ← только отличия, остальное наследуется
 ```
 
@@ -925,9 +962,14 @@ config/symbols/
 ### Как завести новую монету
 
 ```bash
-# 1. Выгрузить кандидатов монеты из генератора. ORDER BY ts ОБЯЗАТЕЛЕН:
-#    в схеме кандидата нет поля времени, и скрипт считает порядок строк
-#    хронологическим — на нём держатся --tail и --holdout.
+# 1. Выгрузить кандидатов монеты. Предпочтительный способ — из генератора:
+#    он проигрывает историю ТЕКУЩИМ кодом одной моделью, а в таблице лежит
+#    смесь прогонов разных версий сборки кандидата.
+cd ../btc-graph-processing && python3 scripts/dump_candidates.py --symbol ETHUSDT
+
+# Запасной путь — прямо из таблицы. ORDER BY ts ОБЯЗАТЕЛЕН: в схеме кандидата
+# нет поля времени, и скрипт считает порядок строк хронологическим — на нём
+# держатся --tail и --holdout.
 docker compose exec -T postgres psql -U btc_user -d btc_graph -tA -c \
   "SELECT payload::text FROM processing.candidates \
    WHERE symbol='ETHUSDT' ORDER BY ts;" > dumps/eth_candidates.jsonl
@@ -970,6 +1012,25 @@ make reload
 | STRONG на калибровочной части | 1.0% | 1.0% | 1.2% |
 | STRONG на отложенной трети | 0.2% | 1.9% | 2.9% |
 
+**Перекалибровка 2026-08-13** (версии BTCUSDT@3, ETHUSDT@2, SOLUSDT@2,
+HYPEUSDT@2) — по новой выгрузке действующих моделей, после правок блока A
+внешнего аудита. Сравнение честное: обе колонки посчитаны на ОДНОЙ выборке
+(`scripts/profile_shift.py`), различаются только профили.
+
+| на новой выгрузке | BTC | ETH | SOL | HYPE |
+|---|---|---|---|---|
+| STRONG старым профилем | 0.5% | 0.1% | 0.9% | 0.0% |
+| MODERATE старым профилем | 20.1% | 31.6% | 37.3% | 24.3% |
+| STRONG новым | 1.0% | 0.9% | 1.1% | 1.3% |
+| MODERATE новым | 37.8% | 38.1% | 37.1% | 37.8% |
+
+Читается это так: **профили успели устареть, и не только из-за аудита.**
+Калибровки @2/@1 сняты с моделей состояний, которые в бою заменило
+переобучение 2026-08-11, — у ETH и HYPE STRONG к моменту перекалибровки
+практически исчез (0.1% и 0.0%), то есть верхняя ступень стала недостижимой.
+Профиль привязан к модели теснее, чем кажется; полное переобучение — повод
+проверить селективность, а не только `group_id`.
+
 Главный вывод неожиданный: **линейка `_default` оказалась не слишком строгой, а слишком мягкой — и для альткоинов, и для самого биткоина.** Ось `statistical` насыщалась у всех трёх монет: почти все кандидаты упирались в потолок, и ось переставала различать. Причина в накоплении — ступень `sample_size > 1000` ставилась под эталонный кандидат ТЗ с выборкой 1339, а за девять лет истории типичная выборка выросла кратно. Калибровка вернула оси разрешающую способность везде.
 
 Отсюда смена роли `_default`: он больше не «калибровка под BTC», а **неподвижная общая мерка** для `quality_score_baseline`. Его не калибруют — иначе обесценятся все накопленные baseline разом.
@@ -1003,6 +1064,14 @@ make reload
 6. **Калибровка — событие, а не правка.** Меняешь профиль → бампаешь `version`. Старые записи остаются со старым `scoring_profile`, новые пишутся с новым; пересчёта нет, сравнение идёт внутри одного профиля. `profile_fingerprint` ловит правку порогов без бампа версии.
 
 Защита от подгонки под прошлое: `--holdout 0.3` калибрует по первым 70% выгрузки (по времени, не случайно) и печатает распределение на отложенных 30%. Расходятся доли рейтингов — профиль подогнан.
+
+**Перекалибровка существующей монеты — тот же путь, плюс один шаг перед ним.** `calibrate_profile.py` сравнивает черновик с базовой линейкой `_default`; при перекалибровке нужен другой вопрос — что на новой выгрузке делает профиль, который сейчас в работе. Его задаёт `scripts/profile_shift.py`:
+
+```bash
+python3 scripts/profile_shift.py --symbol ETHUSDT --input dumps/eth_candidates_v2.jsonl
+```
+
+Он же умеет отвечать, откуда взялся сдвиг: `--ignore-sample-scope` считает ось rarity по трём критериям, как до 2026-08-13, и разница двух прогонов показывает вклад именно этой правки.
 
 ### Изоляция данных между монетами
 

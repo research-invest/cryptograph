@@ -336,6 +336,134 @@ def test_rarity_research_score_steps(make_candidate, research_score, expected):
     assert _score_rarity(c) == pytest.approx((expected + 2.0) / 3.0)
 
 
+def test_rarity_ignores_event_block_when_sample_is_not_conditioned(make_candidate):
+    """
+    Ось D не начисляет за редкость блока, если выборка на блок не обусловлена.
+
+    `sample_scope="transition"` означает откат генератора на статистику по
+    переходу целиком: блок описывает текущий бар, а не выборку. Ось считается
+    по двум критериям — как для short в `_score_directional`.
+    """
+    conditioned = make_candidate(
+        event_rarity_bucket="rare",
+        transition_rarity="rare",
+        research_score=0.9,
+        sample_scope="transition+event_block",
+    )
+    fallback = make_candidate(
+        event_rarity_bucket="rare",
+        transition_rarity="rare",
+        research_score=0.9,
+        sample_scope="transition",
+    )
+
+    assert _score_rarity(conditioned) == pytest.approx(3.0 / 3.0)
+    assert _score_rarity(fallback) == pytest.approx(2.0 / 2.0)
+
+    # Ключевое: при откате «редкий» блок не даёт преимущества над «обычным».
+    common_block = make_candidate(
+        event_rarity_bucket="common",
+        transition_rarity="rare",
+        research_score=0.9,
+        sample_scope="transition",
+    )
+    assert _score_rarity(fallback) == pytest.approx(_score_rarity(common_block))
+
+
+def test_rarity_keeps_three_criteria_without_sample_scope(make_candidate):
+    """
+    Старые выгрузки поля не несут — их оценка не должна поехать.
+
+    Появление нового поля не имеет права задним числом сдвинуть quality_score
+    всей накопленной истории: `sample_scope is None` — это «не знаем», а не
+    «выборка не обусловлена».
+    """
+    legacy = make_candidate(
+        event_rarity_bucket="rare",
+        transition_rarity="rare",
+        research_score=0.9,
+    )
+    assert legacy.sample_scope is None
+    assert _score_rarity(legacy) == pytest.approx(1.0)
+
+    legacy_common = make_candidate(
+        event_rarity_bucket="common",
+        transition_rarity="rare",
+        research_score=0.9,
+    )
+    assert _score_rarity(legacy_common) < _score_rarity(legacy)
+
+
+def test_effective_sample_size_ignored_when_profile_has_no_ladder(make_candidate):
+    """
+    Профиль без ступени `effective_sample_size` считает ось как раньше.
+
+    Ступень опциональна, и это несущая конструкция, а не поблажка: так
+    остаётся неподвижным `_default` — baseline у всех кандидатов, старых и
+    новых, меряется одной линейкой. Замороженные тестовые профили ступени не
+    объявляют, значит поле не должно менять ничего.
+    """
+    from src.scorer.candidate_scorer import _score_statistical
+
+    without = make_candidate()
+    with_field = make_candidate(effective_sample_size=42)
+
+    assert without.effective_sample_size is None
+    assert with_field.effective_sample_size == 42
+    assert _score_statistical(without) == pytest.approx(_score_statistical(with_field))
+
+
+def test_effective_sample_size_ladder_is_used_when_both_sides_have_it(
+    make_candidate, shipped_profiles
+):
+    """
+    Профиль монеты со ступенью считает ось по РЕАЛИЗАЦИЯМ, а не по строкам.
+
+    Проверяется на поставляемом профиле: в замороженных тестовых ступени нет
+    по построению. Два кандидата с одинаковым `sample_size` и разным числом
+    реализаций обязаны получить разный балл — иначе перевод оси не состоялся.
+    """
+    from src.scorer.candidate_scorer import _score_statistical
+
+    profile = shipped_profiles.get_profile("BTCUSDT")
+    ladder = profile.statistical.effective_sample_size
+    assert ladder is not None, "у поставляемого профиля BTC должна быть ступень"
+
+    top, bottom = ladder.ladder[0][0], ladder.ladder[-1][0]
+    rich = make_candidate(sample_size=5000, effective_sample_size=int(top) + 1)
+    poor = make_candidate(sample_size=5000, effective_sample_size=int(bottom) - 1)
+
+    assert _score_statistical(rich, profile) > _score_statistical(poor, profile)
+
+
+def test_legacy_candidate_falls_back_to_sample_size_ladder(
+    make_candidate, shipped_profiles
+):
+    """
+    Кандидат без поля считается ступенью, на которой был выпущен.
+
+    Смешивать нельзя ни в какую сторону: ступень по реализациям примерно вдвое
+    ниже ступени по строкам. Применить её к `sample_size` — завысить оценку
+    всем старым кандидатам; обратное — занизить всем новым. Ошибка была бы
+    тихой, числа остались бы правдоподобными.
+    """
+    from src.scorer.candidate_scorer import _score_statistical
+
+    profile = shipped_profiles.get_profile("BTCUSDT")
+    rows_top = profile.statistical.sample_size.ladder[0][0]
+    eff_top = profile.statistical.effective_sample_size.ladder[0][0]
+    assert eff_top < rows_top, "ступень по реализациям обязана быть ниже"
+
+    # Значение между двумя верхними ступенями: по строковой лесенке это ещё
+    # не верхняя ступень, по лесенке реализаций — уже да.
+    between = int((eff_top + rows_top) / 2)
+    legacy = make_candidate(sample_size=between)
+    modern = make_candidate(sample_size=between, effective_sample_size=between)
+
+    assert legacy.effective_sample_size is None
+    assert _score_statistical(modern, profile) > _score_statistical(legacy, profile)
+
+
 # ─── Агрегация ────────────────────────────────────────────────────────────────
 
 def test_weights_sum_to_one():
