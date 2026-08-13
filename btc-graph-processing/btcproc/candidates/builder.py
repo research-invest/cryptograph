@@ -49,6 +49,14 @@ class Accumulator:
     ret_sum: float = 0.0
     mfe_up: list[float] = field(default_factory=list)   # отсортирован
     mae_up: list[float] = field(default_factory=list)   # отсортирован, значения ≥ 0
+    # То же самое для ПАДЕНИЙ — «путь хорошего случая» short-кандидата.
+    # До 2026-08-13 их не было вовсе, и следствие было тихим: F/A ratio
+    # существовал только для long, приёмник честно ставил short'у None и
+    # считал ось directional по двум критериям вместо трёх. Разметка горизонта
+    # при этом симметрична с самого начала (`outcomes.py` считает mfe и mae
+    # каждому бару), не хватало ровно этих двух накопителей.
+    fav_down: list[float] = field(default_factory=list)  # отсортирован, ≥ 0
+    adv_down: list[float] = field(default_factory=list)  # отсортирован, ≥ 0
     days: set = field(default_factory=set)
     months: Counter = field(default_factory=Counter)
     # Идентификаторы РЕАЛИЗАЦИЙ перехода, попавших в выборку (`state_seq`).
@@ -89,6 +97,17 @@ class Accumulator:
             # а ноль означает «цена ни разу не была ниже входа». Это
             # содержательное значение, а не отсутствующее.
             bisect.insort(self.mae_up, max(0.0, -float(mae)))
+        elif ret < 0:
+            # Зеркало для short: хороший случай — падение. Выгода это глубина
+            # хода ВНИЗ, риск — то, что пришлось пересидеть ВВЕРХ. Величины те
+            # же, что у long, только роли mfe и mae меняются местами.
+            #
+            # `ret == 0` не попадает ни сюда, ни в ветку выше — ровно как и
+            # раньше: нулевой исход не является «хорошим случаем» ни для одной
+            # из сторон. В short_outcome_count он при этом входит, потому что
+            # там считается «не вверх», а не «вниз».
+            bisect.insort(self.fav_down, max(0.0, -float(mae)))
+            bisect.insort(self.adv_down, max(0.0, float(mfe)))
 
     @property
     def invalid(self) -> int:
@@ -383,6 +402,22 @@ def _assemble(
     adverse = _percentile_sorted(acc.mae_up, cfg.adverse_percentile)
     ratio = favorable / adverse if adverse > 1e-9 else float(favorable)
 
+    # Зеркальный ratio для short. Считается ВСЕГДА, а не только short-кандидату:
+    # это свойство конфигурации, а не стороны, и решать, что с ним делать,
+    # должен приёмник — ровно как с long-версией.
+    #
+    # None, когда падений в выборке не было вовсе: пустой список дал бы
+    # ratio = 0.0, а это не «плохое отношение», это отсутствие данных. Правило
+    # то же, что для sample_scope и F/A ratio у short: критерий без данных
+    # выбывает, а не начисляет ноль.
+    ratio_short = None
+    if acc.fav_down:
+        fav_short = _percentile_sorted(acc.fav_down, cfg.favorable_percentile)
+        adv_short = _percentile_sorted(acc.adv_down, cfg.adverse_percentile)
+        ratio_short = (
+            fav_short / adv_short if adv_short > 1e-9 else float(fav_short)
+        )
+
     ts: pd.Timestamp = row["ts"]
     group_label = _fmt_group(row["current_group_id"])
     bias = _bias_context(long_share, cfg.bias_skew_threshold)
@@ -473,10 +508,13 @@ def _assemble(
         "long_outcome_share": long_share,
         "historical_outcome_skew": skew,
 
-        # Favorable / adverse (всегда в терминах long — как в схеме btc-graph)
+        # Favorable / adverse. Long-тройка описывает путь случаев ret > 0,
+        # short-версия — путь случаев ret < 0. Обе стороны считаются всегда;
+        # какую применить, решает приёмник по research_side.
         "p70_long_favorable_pct": favorable,
         "p80_long_adverse_pct": adverse,
         "long_favorable_adverse_ratio_p70_p80": ratio,
+        "short_favorable_adverse_ratio_p70_p80": ratio_short,
     }
 
     # Служебные поля: в btc-graph не уходят, нужны нам для админки и разбора.

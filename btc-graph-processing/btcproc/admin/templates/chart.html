@@ -268,7 +268,22 @@ let indicatorValues = new Map();
 // примерно в 40 подписей независимо от масштаба окна.
 const LABELS_TARGET = 40;
 
-function stateMarkers(bars) {
+// `taken` — занятые маркерами кандидатов слоты, ключ «время|позиция».
+//
+// Зачем это нужно. Подпись состояния ставится на бар СМЕНЫ состояния и всегда
+// `aboveBar`. Кандидаты выпускаются ровно на переходах, а short-кандидат тоже
+// идёт `aboveBar` (long — `belowBar`). Значит на баре перехода подпись и
+// short-маркер претендуют на один слот, и lightweight-charts рисует что-то
+// одно: кандидат пропадает с графика, оставаясь в базе и в списке.
+//
+// Дефект был тихим вдвойне: пропадали только short'ы и только на переходах,
+// то есть ровно там, где кандидат и должен быть. Найден на HYPEUSDT
+// afa71cdb9396f64d9a07 (STRONG 0.8533, бар 2026-08-12 16:00).
+//
+// Слот отдаётся кандидату: заливка свечи и легенда состояние всё равно
+// показывают, а маркер кандидата не показывает больше ничто. Подпись при
+// этом не выбрасывается сразу — сначала пробует свободную сторону.
+function stateMarkers(bars, taken) {
   const mode = el('stateLabels').value;
   if (mode === 'none' || !bars.length) return [];
 
@@ -294,15 +309,24 @@ function stateMarkers(bars) {
 
   return runs
     .filter(r => r.end - r.start + 1 >= minLength)
-    .map(r => ({
-      time: r.bar.time,
-      position: 'aboveBar',
-      // Цвет берём у самого состояния: номер и заливка свечей связываются
-      // глазом сразу, без сверки с легендой.
-      color: r.bar.color,
-      shape: 'circle',
-      text: String(r.group_id),
-    }));
+    .map(r => {
+      // Свободная сторона: обычная — сверху, при занятой пробуем снизу.
+      const position =
+        !taken.has(r.bar.time + '|aboveBar') ? 'aboveBar'
+        : !taken.has(r.bar.time + '|belowBar') ? 'belowBar'
+        : null;
+      if (position === null) return null;   // обе заняты — подпись уступает
+      return {
+        time: r.bar.time,
+        position,
+        // Цвет берём у самого состояния: номер и заливка свечей связываются
+        // глазом сразу, без сверки с легендой.
+        color: r.bar.color,
+        shape: 'circle',
+        text: String(r.group_id),
+      };
+    })
+    .filter(Boolean);
 }
 
 // Монета страницы. Идёт в каждый запрос: без неё сервер взял бы прогон
@@ -346,7 +370,8 @@ async function load() {
 
   // Маркеры кандидатов и подписи состояний живут в одном списке серии,
   // и он обязан быть отсортирован по времени.
-  const marks = data.markers.concat(stateMarkers(data.bars));
+  const taken = new Set(data.markers.map(m => m.time + '|' + m.position));
+  const marks = data.markers.concat(stateMarkers(data.bars, taken));
   marks.sort((a, b) => a.time - b.time);
   series.setMarkers(marks);
 

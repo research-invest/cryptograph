@@ -132,6 +132,11 @@ class Candidate(BaseModel):
     p70_long_favorable_pct: float
     p80_long_adverse_pct: float
     long_favorable_adverse_ratio_p70_p80: float
+    # Зеркало long-версии для случаев падения. Optional, потому что кандидаты,
+    # выпущенные до 2026-08-13, поля не несут; None означает «не знаем», и ось
+    # directional тогда считается по двум критериям, как и раньше. Пустым оно
+    # приходит и у конфигураций, где падений в выборке не было вовсе.
+    short_favorable_adverse_ratio_p70_p80: Optional[float] = None
 
 
 class CandidateEvaluation(BaseModel):

@@ -277,3 +277,70 @@ def _load_btc_graph_model():
     except ImportError:  # pragma: no cover — репозиторий рядом не лежит
         pytest.skip(f"btc-graph не найден по пути {path}")
     return Candidate
+
+
+# ─── Короткая сторона: зеркало F/A ratio (2026-08-13) ─────────────────────────
+
+def test_down_cases_fill_the_short_side_only():
+    """
+    Накопители короткой стороны собираются по случаям ПАДЕНИЯ и меняют роли
+    mfe и mae местами: выгода short — глубина хода вниз, риск — то, что
+    пришлось пересидеть вверх.
+
+    До этой правки списков не было вовсе, F/A ratio существовал только для
+    long, и приёмник считал short'у ось directional по двум критериям.
+    """
+    acc = cand.Accumulator()
+    ts = pd.Timestamp("2024-01-01", tz="UTC")
+
+    # Падение: mfe=+1% (сходили вверх против), mae=−5% (глубина вниз).
+    acc.add(ts, -3.0, 1.0, -5.0, True, 1)
+    # Рост: должен попасть только в long-накопители.
+    acc.add(ts, +3.0, 5.0, -1.0, True, 2)
+    # Нулевой исход не «хороший случай» ни для одной стороны.
+    acc.add(ts, 0.0, 2.0, -2.0, True, 3)
+
+    assert acc.fav_down == [5.0], "выгода short — это глубина хода ВНИЗ"
+    assert acc.adv_down == [1.0], "риск short — это ход ВВЕРХ"
+    assert acc.mfe_up == [5.0] and acc.mae_up == [1.0]
+    assert acc.up == 1
+
+
+def test_short_ratio_is_none_without_falls():
+    """
+    Пустой список дал бы ratio = 0.0, а это не «плохое отношение», это
+    отсутствие данных. Правило то же, что у sample_scope: критерий без данных
+    выбывает, а не начисляет ноль.
+    """
+    acc = cand.Accumulator()
+    ts = pd.Timestamp("2024-01-01", tz="UTC")
+    acc.add(ts, +3.0, 5.0, -1.0, True, 1)
+
+    assert acc.fav_down == []
+
+
+def test_short_ratio_mirrors_long_on_mirrored_data(pipeline_data):
+    """
+    Зеркальность проверяется на настоящей выдаче: у кандидатов, где падения в
+    выборке были, short-ratio обязан присутствовать и быть положительным.
+    Поле считается ВСЕГДА — оно свойство конфигурации, а не стороны, — и
+    применить его решает приёмник.
+    """
+    rarity = dict(zip(pipeline_data["transitions"]["transition_id"],
+                      pipeline_data["transitions"]["rarity"]))
+    blocks = pipeline_data["blocks"].set_index("event_block_id").to_dict("index")
+    candidates = list(cand.generate(
+        pipeline_data["snapshots"], rarity, blocks, "BTCUSDT", cfg=TEST_CAND_CFG
+    ))
+    assert candidates, "конвейер не выпустил кандидатов"
+
+    with_ratio = [
+        c for c in candidates
+        if c.get("short_favorable_adverse_ratio_p70_p80") is not None
+    ]
+    assert with_ratio, "ни у одного кандидата нет short-стороны F/A ratio"
+    assert all(c["short_favorable_adverse_ratio_p70_p80"] > 0 for c in with_ratio)
+
+    # Поле есть у обеих сторон, а не только у short-кандидатов.
+    sides = {c["research_side"] for c in with_ratio}
+    assert "long" in sides

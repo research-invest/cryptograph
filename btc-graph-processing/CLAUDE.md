@@ -155,7 +155,7 @@ session-scoped.
 | Разметка | `states/assign.py` | `group_id` по барам, сглаживание, возраст, переходы, энтропия траектории |
 | Граф | `states/graph.py` | статистика узлов и рёбер, `transition_rarity` |
 | Исходы | `candidates/outcomes.py` | `ret` / `MFE` / `MAE` на горизонте 24h, валидность метки |
-| Кандидаты | `candidates/builder.py` | снимки конфигураций → 39 полей схемы btc-graph |
+| Кандидаты | `candidates/builder.py` | снимки конфигураций → 40 полей схемы btc-graph |
 | Отправка | `sink/graph_sink.py` | `direct` / `http` / `none` |
 | Уведомления | `notify/` | вебхук на кандидата: правило = адрес + фильтр, отправка фоновым потоком, формат — `docs/notifications.md` |
 

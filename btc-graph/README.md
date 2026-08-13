@@ -185,7 +185,7 @@ short (p70/p80 описывают движение вверх, симметри�
 
 ```
 src/
-├── models/candidate.py       Candidate (39 полей) + CandidateEvaluation + 9 enum.
+├── models/candidate.py       Candidate (40 полей) + CandidateEvaluation + 9 enum.
 │                             Единственный источник правды по схеме данных.
 ├── parser/candidate_parser.py
 │                             parse_candidate()  — dict / JSON-строка / raw text
@@ -630,7 +630,7 @@ evaluation = run_pipeline(candidate_dict, use_llm=False, save=False, print_repor
 
 ## 9. Формат входных данных
 
-Кандидат — 39 полей, из них обязательных большинство. Полное описание блоков —
+Кандидат — 40 полей, из них обязательных большинство. Полное описание блоков —
 в [`README_agent_spec.md`](README_agent_spec.md); краткая карта:
 
 | Блок | Поля |
