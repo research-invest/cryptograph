@@ -1,0 +1,1191 @@
+<title>Граф состояний рынка</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     Палитра «лабораторный прибор»: холодные нейтрали с уклоном в
+     синий, единственный акцент — глубокая бирюза (показания
+     инструмента), и два семантических цвета для «внимание» и
+     «отрицательный результат». Никакого зелёного/красного
+     трейдерского неона: предмет здесь измерение, а не торговля.
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    --ground:      #EEF1F4;
+    --surface:     #FFFFFF;
+    --surface-2:   #E4E9EE;
+    --ink:         #101820;
+    --ink-2:       #3D4A57;
+    --muted:       #66757F;
+    --line:        #CDD6DE;
+    --line-soft:   #DFE5EB;
+    --accent:      #0B6B78;
+    --accent-soft: #D7E9EB;
+    --warn:        #9A5A16;
+    --warn-soft:   #F2E4D0;
+    --neg:         #8A3446;
+    --neg-soft:    #F1DCE1;
+    --rail:        #C3CDD6;
+    --shadow:      0 1px 2px rgba(16, 24, 32, .06), 0 8px 24px rgba(16, 24, 32, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0D1317;
+      --surface:     #141C22;
+      --surface-2:   #1B252C;
+      --ink:         #E6ECF1;
+      --ink-2:       #B7C3CD;
+      --muted:       #8494A0;
+      --line:        #253038;
+      --line-soft:   #1E282F;
+      --accent:      #56C2CD;
+      --accent-soft: #10333A;
+      --warn:        #D69B52;
+      --warn-soft:   #33261465;
+      --neg:         #D4808F;
+      --neg-soft:    #33191F;
+      --rail:        #2C3942;
+      --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:      #0D1317;
+    --surface:     #141C22;
+    --surface-2:   #1B252C;
+    --ink:         #E6ECF1;
+    --ink-2:       #B7C3CD;
+    --muted:       #8494A0;
+    --line:        #253038;
+    --line-soft:   #1E282F;
+    --accent:      #56C2CD;
+    --accent-soft: #10333A;
+    --warn:        #D69B52;
+    --warn-soft:   #332614;
+    --neg:         #D4808F;
+    --neg-soft:    #33191F;
+    --rail:        #2C3942;
+    --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .3);
+  }
+
+  /* Моноширинный — дисплейный и служебный; засечный — для прозы.
+     Пара выбрана по предмету: журнал замеров и таблицы чисел. */
+  :root {
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "IBM Plex Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Charter", "Bitstream Charter", "Source Serif 4", Cambria, Georgia, serif;
+    --step--1: clamp(.76rem, .72rem + .2vw, .84rem);
+    --step-0:  clamp(1rem, .96rem + .25vw, 1.12rem);
+    --step-1:  clamp(1.2rem, 1.1rem + .5vw, 1.45rem);
+    --step-2:  clamp(1.5rem, 1.3rem + 1vw, 2.1rem);
+    --step-3:  clamp(2rem, 1.6rem + 2.2vw, 3.4rem);
+    --step-4:  clamp(2.6rem, 1.8rem + 4vw, 5.2rem);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: var(--step-0);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    scroll-snap-type: y proximity;
+    scroll-behavior: smooth;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body { scroll-behavior: auto; }
+  }
+
+  /* ── Слайд ────────────────────────────────────────────────── */
+  .slide {
+    scroll-snap-align: start;
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: clamp(2.5rem, 5vw, 5rem) clamp(1.25rem, 5vw, 4rem) clamp(4rem, 6vw, 5rem);
+    border-bottom: 1px solid var(--line-soft);
+    position: relative;
+  }
+  .wrap { width: 100%; max-width: 1080px; margin-inline: auto; }
+  .wrap.narrow { max-width: 760px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 1.2rem;
+    display: flex;
+    align-items: baseline;
+    gap: .75rem;
+  }
+  .eyebrow .num {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: var(--step-4);
+    line-height: 1.02;
+    letter-spacing: -.03em;
+    font-weight: 600;
+    margin: 0 0 1.5rem;
+    text-wrap: balance;
+  }
+  h2 {
+    font-family: var(--mono);
+    font-size: var(--step-2);
+    line-height: 1.15;
+    letter-spacing: -.02em;
+    font-weight: 600;
+    margin: 0 0 1.5rem;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--mono);
+    font-size: var(--step-0);
+    letter-spacing: .01em;
+    font-weight: 600;
+    margin: 0 0 .5rem;
+  }
+  p { margin: 0 0 1.1rem; max-width: 68ch; }
+  p:last-child { margin-bottom: 0; }
+  .lede { font-size: var(--step-1); line-height: 1.5; color: var(--ink-2); }
+  strong { font-weight: 700; color: var(--ink); }
+  em { font-style: italic; }
+  code, .mono { font-family: var(--mono); font-size: .92em; font-variant-numeric: tabular-nums; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 3px; }
+
+  .stack { display: flex; flex-direction: column; gap: 1.4rem; }
+  .cols { display: grid; gap: clamp(1.25rem, 3vw, 2.5rem); }
+  @media (min-width: 820px) {
+    .cols.two { grid-template-columns: 1fr 1fr; }
+    .cols.side { grid-template-columns: 1.1fr .9fr; }
+    .cols.three { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  /* ── Карточки и плашки ────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1.25rem 1.4rem;
+    box-shadow: var(--shadow);
+  }
+  .card h3 { color: var(--accent); }
+  .card p { font-size: var(--step--1); line-height: 1.55; color: var(--ink-2); }
+
+  .flag {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 1rem 1.25rem;
+    border-radius: 0 4px 4px 0;
+  }
+  .flag.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .flag.neg  { border-left-color: var(--neg);  background: var(--neg-soft); }
+  .flag p { font-size: var(--step--1); line-height: 1.55; margin-bottom: .6rem; }
+  .flag p:last-child { margin-bottom: 0; }
+
+  /* Число + подпись */
+  .figures { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .figure .n {
+    font-family: var(--mono);
+    font-size: var(--step-2);
+    font-weight: 600;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+    display: block;
+    line-height: 1.1;
+  }
+  .figure .l {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    color: var(--muted);
+    letter-spacing: .04em;
+    display: block;
+    margin-top: .35rem;
+  }
+  .figure.pos .n { color: var(--accent); }
+  .figure.neg .n { color: var(--neg); }
+
+  /* ── Таблицы ──────────────────────────────────────────────── */
+  .scroll-x { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: var(--step--1); }
+  th, td {
+    text-align: left;
+    padding: .6rem .8rem;
+    border-bottom: 1px solid var(--line-soft);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    font-size: .8em;
+    border-bottom-color: var(--line);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; }
+  td.name { color: var(--ink); font-weight: 600; }
+  .v-neg { color: var(--neg); font-weight: 600; }
+  .v-pos { color: var(--accent); font-weight: 600; }
+  .v-mute { color: var(--muted); }
+  .wrapcell { white-space: normal; min-width: 22ch; font-family: var(--serif); font-size: 1.02em; }
+
+  /* ── Списки ───────────────────────────────────────────────── */
+  ul.plain { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1rem; }
+  ul.plain > li { padding-left: 1.5rem; position: relative; }
+  ul.plain > li::before {
+    content: "";
+    position: absolute;
+    left: 0; top: .62em;
+    width: .55rem; height: .55rem;
+    border: 1.5px solid var(--accent);
+    border-radius: 50%;
+  }
+  ul.plain.minus > li::before { border-color: var(--neg); }
+  ul.plain > li h3 { margin-bottom: .25rem; }
+  ul.plain > li p { font-size: var(--step--1); line-height: 1.55; color: var(--ink-2); margin: 0; }
+
+  /* ── Схема конвейера ──────────────────────────────────────── */
+  .pipe { display: grid; gap: .5rem; font-family: var(--mono); font-size: var(--step--1); }
+  .pipe .box {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 4px;
+    padding: .8rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+  }
+  .pipe .box .role { color: var(--muted); text-align: right; white-space: nowrap; }
+  .pipe .arrow { color: var(--accent); text-align: center; line-height: 1; font-size: 1.1em; }
+  .pipe .box.gen { border-left: 3px solid var(--accent); }
+  .pipe .box.rec { border-left: 3px solid var(--warn); }
+
+  /* ── График доверительных интервалов ──────────────────────── */
+  .chart { width: 100%; height: auto; display: block; }
+  .chart .grid { stroke: var(--line-soft); stroke-width: 1; }
+  .chart .zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .chart .bar { stroke: var(--rail); stroke-width: 6; stroke-linecap: round; }
+  .chart .bar.hit { stroke: var(--accent); }
+  .chart .dot { fill: var(--ink); }
+  .chart .dot.hit { fill: var(--accent); }
+  .chart text { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+  .chart text.lbl { fill: var(--ink); font-size: 12px; }
+
+  /* ── Титульный слайд ──────────────────────────────────────── */
+  #s0 { justify-content: flex-end; overflow: hidden; }
+  #graph-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: .5;
+    pointer-events: none;
+  }
+  #s0 .wrap { position: relative; }
+  .title-meta {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    color: var(--muted);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+  }
+
+  /* ── Навигация ────────────────────────────────────────────── */
+  .rail {
+    position: fixed;
+    left: clamp(.5rem, 1.5vw, 1.25rem);
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+    z-index: 10;
+  }
+  .rail a {
+    width: 1.5rem;
+    height: 2px;
+    background: var(--rail);
+    border-radius: 2px;
+    transition: background .2s, width .2s;
+  }
+  .rail a:hover, .rail a:focus-visible { background: var(--ink-2); width: 2rem; }
+  .rail a.on { background: var(--accent); width: 2.25rem; }
+  @media (max-width: 700px) { .rail { display: none; } }
+
+  .counter {
+    position: fixed;
+    right: clamp(.75rem, 2vw, 1.75rem);
+    bottom: clamp(.75rem, 2vw, 1.5rem);
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: .25rem .6rem;
+    z-index: 10;
+  }
+
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+</style>
+
+<nav class="rail" aria-label="Слайды"></nav>
+<div class="counter" id="counter">01</div>
+
+<!-- ══ 01 ═══════════════════════════════════════════════════════ -->
+<section class="slide" id="s0" data-title="Титул">
+  <canvas id="graph-canvas" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <p class="eyebrow">crypto-graph · разбор проекта · 13 августа 2026</p>
+    <h1>Граф состояний<br>рынка</h1>
+    <p class="lede">Система размечает историю криптовалютного рынка на устойчивые
+      режимы, строит граф переходов между ними и отвечает на вопрос
+      «что бывало раньше, когда рынок выглядел похоже».</p>
+    <div class="title-meta">
+      <span>2 сервиса</span>
+      <span>4 монеты</span>
+      <span>32 признака</span>
+      <span>655 тестов</span>
+      <span>1 отрицательный результат</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 02 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Что это">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">01</span> Что это</p>
+    <h2>Досье на конфигурацию рынка</h2>
+    <div class="cols side">
+      <div class="stack">
+        <p>Кластеризация по 32 признакам находит <strong>состояния</strong> —
+          устойчивые режимы рынка. Переходы между ними образуют граф. Когда рынок
+          переходит из состояния в состояние, система находит все похожие случаи
+          в прошлом и показывает, чем они кончались через 24 часа.</p>
+        <p>Результат называется <strong>кандидатом</strong>: «такая конфигурация
+          встречалась 174 раза, в 61% случаев цена шла вверх». Второй сервис
+          оценивает его по четырём осям, объясняет текстом и фильтрует.</p>
+      </div>
+      <div class="flag neg">
+        <p><strong>Главное, что нужно знать сразу.</strong> Утверждение «после
+          такой конфигурации чаще бывало вверх» проверено на отложенной части
+          истории и <strong>не подтвердилось</strong>.</p>
+        <p>Система осталась рабочим описательным инструментом, но не
+          предсказательным. Это установлено двумя независимыми замерами — они на
+          слайдах 09 и 10, и именно они определяют, как читать всё остальное.</p>
+      </div>
+    </div>
+    <div class="figures">
+      <div class="figure"><span class="n">314 237</span><span class="l">баров 15m у BTC</span></div>
+      <div class="figure"><span class="n">51</span><span class="l">состояние в графе</span></div>
+      <div class="figure"><span class="n">760</span><span class="l">рёбер-переходов</span></div>
+      <div class="figure"><span class="n">39</span><span class="l">полей кандидата</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 03 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Два сервиса">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">02</span> Архитектура</p>
+    <h2>Два сервиса, жёсткое разделение ролей</h2>
+    <div class="cols side">
+      <div class="pipe">
+        <div class="box"><span>Binance · Bybit</span><span class="role">источник баров</span></div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="box gen">
+          <span>btcproc — генератор<br>
+            <span class="v-mute">бары → признаки → события → исходы →<br>состояния → граф → кандидаты</span></span>
+          <span class="role">считает статистику<br>и не решает,<br>что хорошо</span>
+        </div>
+        <div class="arrow" aria-hidden="true">↓ 39 полей схемы</div>
+        <div class="box rec">
+          <span>btc-graph — приёмник<br>
+            <span class="v-mute">валидатор → скорер →<br>LLM-объяснение → фильтр</span></span>
+          <span class="role">оценивает<br>и фильтрует,<br>но не вычисляет</span>
+        </div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="box"><span>PostgreSQL · Neo4j · Redis · вебхуки</span><span class="role">хранение и выход</span></div>
+      </div>
+      <div class="stack">
+        <p>Разделение не косметическое. Генератор не имеет права решать, какой
+          кандидат «хороший»: он считает частоты. Приёмник не имеет права
+          пересчитывать статистику: он применяет линейку.</p>
+        <div class="flag">
+          <p><strong>Внутри приёмника тот же принцип этажом ниже: LLM только
+            формулирует, все числа считает детерминированный скорер.</strong>
+            Отключите языковую модель — результат останется полностью валидным,
+            изменятся только формулировки.</p>
+        </div>
+        <p>В работе четыре пары: BTCUSDT, ETHUSDT, SOLUSDT со спота Binance и
+          HYPEUSDT с Bybit — на Binance такой пары нет вовсе, и бары для неё
+          собираются из тиковых архивов.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 04 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Конвейер">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">03</span> Конвейер</p>
+    <h2>Семь слоёв от свечи до кандидата</h2>
+    <div class="scroll-x">
+      <table>
+        <thead>
+          <tr><th>Слой</th><th class="wrapcell">Что делает</th><th>Размерность</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="name">Бары</td><td class="wrapcell">15-минутные свечи с 2017 года</td><td>~314 000 на монету</td></tr>
+          <tr><td class="name">Признаки</td><td class="wrapcell">Доходности, позиция в диапазоне, наклоны EMA, реализованная волатильность, RSI, доля покупок тейкеров, перекос распределения. Старшие ТФ — со сдвигом на бар</td><td>32 колонки</td></tr>
+          <tr><td class="name">События</td><td class="wrapcell">Детекторы-«атомы» в 11 семействах: пробои, всплески объёма, кроссы, развороты, тренд, сессии. Сигнатурные кодируются битовой маской</td><td>45 атомов, 20 бит</td></tr>
+          <tr><td class="name">Исходы</td><td class="wrapcell">Доходность через 24 часа, максимальное движение за и против</td><td>3 числа + валидность</td></tr>
+          <tr><td class="name">Состояния</td><td class="wrapcell">Адаптивная кластеризация 32-мерного вектора</td><td>35–55 на монету</td></tr>
+          <tr><td class="name">Граф</td><td class="wrapcell">Узлы — состояния, рёбра — переходы с частотой и редкостью</td><td>471–851 ребро</td></tr>
+          <tr><td class="name">Кандидаты</td><td class="wrapcell">Снимки конфигураций и историческая выборка по ним</td><td>39 полей схемы</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="mono v-mute" style="font-size: var(--step--1)">Текущие модели:
+      BTC 51 состояние / 760 рёбер · ETH 35 / 471 · SOL 55 / 851 · HYPE 42 / 476</p>
+  </div>
+</section>
+
+<!-- ══ 05 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Зачем граф">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">04</span> Теория · задача</p>
+    <h2>Зачем здесь граф</h2>
+    <p class="lede">Рынок в момент <code>t</code> описан вектором из 32 чисел.
+      Вопрос, который хочется задать: <em>что бывало раньше, когда рынок выглядел
+      похоже?</em> Наивный ответ — искать ближайших соседей — упирается в две
+      стены.</p>
+    <div class="cols two">
+      <div class="card">
+        <h3>Проклятие размерности</h3>
+        <p>В высокой размерности расстояния концентрируются: отношение расстояния
+          до ближайшего соседа к расстоянию до дальнего стремится к единице.
+          «Похожесть» перестаёт что-либо означать.</p>
+        <p>Это не техническая трудность, а свойство пространства — и оно же ломает
+          наивные критерии кластеризации: радиус группы растёт как <code>√d</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Нет естественного порога</h3>
+        <p>Насколько близко — значит «похоже»? Любой порог произволен, а результат
+          от него зависит сильно. Выбирать его — значит подгонять ответ до того,
+          как задан вопрос.</p>
+      </div>
+    </div>
+    <div class="flag">
+      <p>Граф состояний — ответ через <strong>дискретизацию</strong>: вместо
+        непрерывной меры похожести вводится конечный алфавит режимов, и «похоже»
+        означает «в том же состоянии». Дискретизация всегда теряет информацию —
+        это цена, — но взамен даёт счётность, интерпретируемость и структуру.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 06 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Что даёт граф">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">05</span> Теория · что это даёт</p>
+    <h2>Три вещи, которых нет без дискретизации</h2>
+    <div class="cols three">
+      <div class="card">
+        <h3>Счётность</h3>
+        <p>Можно сказать «переход 42→7 случался 340 раз». Сказать «похожих
+          векторов было 340» нельзя без произвольного порога — а с ним число
+          означает выбор порога, а не свойство рынка.</p>
+      </div>
+      <div class="card">
+        <h3>Интерпретируемость</h3>
+        <p>Состояние можно назвать словами, выведенными из его собственной
+          статистики: «сжатие волатильности у верхней границы месячного
+          диапазона». Имена считаются, а не пишутся руками — иначе они протухают
+          молча при первом переобучении.</p>
+      </div>
+      <div class="card">
+        <h3>Структура</h3>
+        <p>Переходы образуют граф, и у него есть топология: редкие рёбра,
+          узлы-хабы, циклы. Это язык, на котором можно описывать рынок, а не
+          только считать по нему средние.</p>
+      </div>
+    </div>
+    <div class="cols two">
+      <div class="stack">
+        <h3>Динамика важнее точки</h3>
+        <p>Кластеризация даёт метку бара. Граф добавляет направление: важно не
+          только где рынок сейчас, но и откуда он пришёл. Состояние «высокая
+          волатильность», в которое пришли из сжатия, и то же состояние, в которое
+          пришли из тренда, — <strong>разные ситуации с разной статистикой</strong>.</p>
+      </div>
+      <div class="stack">
+        <h3>Второй слой: события</h3>
+        <p>Поверх перехода накладывается битовая маска сработавших на баре
+          детекторов. <strong>Конфигурация = переход × блок событий</strong> — это
+          и есть ключ, по которому собирается историческая выборка.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 07 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Гранулярность">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">06</span> Теория · гранулярность</p>
+    <h2>Сколько должно быть состояний</h2>
+    <p>Фиксированное <code>k = 40</code> неверно по построению: рынок неоднороден,
+      где-то режимы дробные, где-то один занимает годы. Поэтому гранулярность
+      адаптивная — рекурсивное дробление плюс слияние, и у каждого решения свой
+      критерий.</p>
+    <div class="cols two">
+      <div class="card">
+        <h3>Дробить? Gap statistic в сигмах</h3>
+        <p>Силуэт реального разбиения сравнивается с силуэтом такого же разбиения
+          <em>случайного облака той же формы</em>, и превышение меряется в
+          собственных сигмах референса:</p>
+        <p class="mono" style="color: var(--ink); font-size: 1em; margin: .8rem 0">
+          gain = sil(real) − mean(sil(ref)) − k·σ(ref)</p>
+        <p>Формулировка в сигмах самонормируется. Пока порог был абсолютным, он
+          зависел от размерности: <strong>любые двенадцать новых признаков
+          обрушивали граф с 43 состояний до 22 — включая чистый шум</strong>. Это
+          было свойство калибровки, а не источника данных.</p>
+      </div>
+      <div class="card">
+        <h3>Сливать? d-prime</h3>
+        <p>Две группы объединяются, если центроиды разнесены меньше чем на сумму
+          разбросов <em>вдоль оси между центроидами</em>:</p>
+        <p class="mono" style="color: var(--ink); font-size: 1em; margin: .8rem 0">
+          d′ = ‖c₁ − c₂‖ / (σ₁∥ + σ₂∥)</p>
+        <p>Проекция на ось сравнения, а не полный радиус группы. Радиус в 32
+          измерениях растёт как <code>√d</code>, и критерий «центроиды ближе суммы
+          радиусов» <strong>схлопнул бы весь граф в 3–4 состояния</strong>.
+          d-prime от размерности не зависит — это мера различимости из теории
+          обнаружения сигнала.</p>
+      </div>
+    </div>
+    <div class="flag warn">
+      <p><strong>Честная оговорка.</strong> Починка критерия убрала зависимость от
+        размерности, но не дала воспроизводимого числа состояний. Отбрасывание
+        пятидесяти баров — 0.016% истории BTC — меняет его с 40 на 46. Причина
+        структурная: рекурсивное дробление с бинарным решением разрывно по
+        данным, и один перевёрнутый выбор у границы усиливается во всё поддерево.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 08 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Кандидат">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">07</span> Кандидат</p>
+    <h2>Три правила, без которых это самообман</h2>
+    <div class="cols side">
+      <ul class="plain">
+        <li>
+          <h3>Только прошлое</h3>
+          <p>Выборка в момент <code>t</code> собирается из случаев, произошедших
+            раньше <code>t</code>. Проверяется отдельным тестом, а не намерением.</p>
+        </li>
+        <li>
+          <h3>Только созревшие исходы</h3>
+          <p>Случай попадает в выборку не раньше, чем пройдёт горизонт: в момент
+            <code>t</code> исход события часовой давности ещё неизвестен.</p>
+        </li>
+        <li>
+          <h3>Символ во всех идентификаторах</h3>
+          <p>«Переход 42→7» у BTC и у ETH — разные рынки. Без символа приёмник
+            отдал бы эфиру готовую оценку биткоина по совпавшему хэшу, и по данным
+            это не диагностируется никак.</p>
+        </li>
+      </ul>
+      <div class="stack">
+        <div class="flag neg">
+          <p><strong>Кандидат — исследовательская идея, а не торговый сигнал.</strong>
+            В нём нет entry timing, стопов и размера позиции.</p>
+          <p>После замеров августа это не осторожная формулировка, а измеренный
+            факт. В текстах системы и в ответах пользователю слова «вероятность»,
+            «предсказание» и «сигнал» неуместны.</p>
+        </div>
+        <p>Кандидат выпускается в момент перехода и ещё трижды — через 45, 90 и
+          180 минут. Иначе все исторические кандидаты были бы «свежими», и ось
+          контекста никогда бы ничего не различала.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 09 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Оценка">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">08</span> Оценка</p>
+    <h2>Четыре оси и линейка на каждую монету</h2>
+    <div class="scroll-x">
+      <table>
+        <thead><tr><th>Ось</th><th class="wrapcell">Что меряет</th><th class="wrapcell">Из чего складывается</th></tr></thead>
+        <tbody>
+          <tr><td class="name">statistical</td><td class="wrapcell">надёжность выборки</td><td class="wrapcell">доля валидных меток, объём выборки, сезонная концентрация, повторяемость по месяцам</td></tr>
+          <tr><td class="name">directional</td><td class="wrapcell">силу перекоса</td><td class="wrapcell">win rate, модуль перекоса, отношение favorable / adverse</td></tr>
+          <tr><td class="name">context</td><td class="wrapcell">свежесть</td><td class="wrapcell">статус контекста, возраст состояния, энтропия траектории</td></tr>
+          <tr><td class="name">rarity</td><td class="wrapcell">специфичность</td><td class="wrapcell">редкость блока событий, редкость перехода, research_score</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cols two">
+      <div class="card">
+        <h3>Порогов в коде нет</h3>
+        <p>Все ступени, веса и границы рейтинга живут в YAML-профиле монеты.
+          Ступень «выборка больше 1000» откалибрована под рынок с десятилетней
+          историей; для монеты помоложе та же линейка означает «всё WEAK» —
+          свойство линейки, а не кандидатов.</p>
+      </div>
+      <div class="card">
+        <h3>Критерий без данных выбывает</h3>
+        <p>Для short-кандидата неприменимо отношение favorable / adverse —
+          перцентили описывают движение вверх, симметричных полей источник не
+          даёт. Ось считается по двум критериям вместо трёх. С 13 августа то же
+          правило применяется к редкости блока событий, когда выборка на блок не
+          обусловлена.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 10 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Методология">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">09</span> Методология</p>
+    <h2>Как в проекте принято проверять</h2>
+    <p class="lede">Возможно, самая ценная часть системы — и самая незаметная.</p>
+    <ul class="plain">
+      <li>
+        <h3>Блочный бутстрап вместо наивных интервалов</h3>
+        <p>Наблюдения зависимы: горизонт 24 часа — это 96 баров, кандидаты идут
+          каждые ~11 баров, снимки офсетов дают до четырёх строк на одну
+          реализацию перехода. Наивный z-тест на таких данных завышает
+          <code>z</code> примерно втрое — он находит эффекты, которых нет.
+          Значимость считается только стационарным блочным бутстрапом.</p>
+      </li>
+      <li>
+        <h3>Критерий заявляется до запуска замера</h3>
+        <p>И записывается в журнал вместе с тем, что будет означать провал.
+          Не после.</p>
+      </li>
+      <li>
+        <h3>Подтверждение — два зерна и две монеты из трёх</h3>
+        <p>С оговоркой, которая записана рядом: BTC и ETH коррелированы на 0.8+,
+          это полтора независимых наблюдения, а не два. Расширять список монет
+          ради «3 из 3» прямо запрещено внутренними правилами.</p>
+      </li>
+      <li>
+        <h3>Журнал решений важнее кода</h3>
+        <p>Оба репозитория ведут <code>development_log.md</code>: что менялось,
+          почему именно так, что было отвергнуто и какие выводы впоследствии
+          снимались. Отрицательные результаты записываются так же подробно, как
+          положительные.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ══ 11 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Замер 1">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">10</span> Замер · walk-forward</p>
+    <h2>Эффект не воспроизводится</h2>
+    <p>Модель обучается на первых 70% истории, кандидаты меряются на остальных
+      30%. Шесть замеров из шести — три монеты × две модели состояний.</p>
+    <div class="cols two">
+      <ul class="plain minus">
+        <li><p><strong>Directional accuracy 0.497–0.516</strong>, блочные
+          доверительные интервалы накрывают 0.5.</p></li>
+        <li><p>Парная разница с бенчмарком «всегда long» <strong>не значима ни
+          разу</strong>, знак отрицательный в 10 замерах из 12.</p></li>
+        <li><p>Brier skill относительно константного прогноза
+          <strong>отрицателен</strong> на всех трёх монетах: −0.027 / −0.032 /
+          −0.048.</p></li>
+        <li><p>Наклон калибровки <strong>0.02–0.07</strong> при идеале 1.0.</p></li>
+        <li><p>Рейтинг STRONG не отличается от WEAK ни разу.</p></li>
+      </ul>
+      <div class="stack">
+        <div class="flag neg">
+          <p><strong>На обучающей части эффекта тоже нет</strong> — 0.5175 /
+            0.5243 / 0.5013.</p>
+          <p>Эта строка важнее остальных: значит дело не в переобучении.
+            Эффекта нет вообще.</p>
+        </div>
+        <p>Замер воспроизводится одной командой и записан в журнал целиком,
+          вместе с процедурой и заявленным заранее критерием.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 12 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Замер 2">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">11</span> Замер · контроль без графа</p>
+    <h2>Дело в графе или в признаках?</h2>
+    <p>Дискретизация теряет информацию — может быть, сигнал есть, а граф его
+      съедает? Проверка: градиентный бустинг на тех же 32 признаках, с той же
+      целевой, на том же разбиении, с purged walk-forward CV — зазор между
+      обучением и проверкой равен полному горизонту, иначе модель учится на
+      исходах, которые сама же предсказывает.</p>
+    <div class="cols side">
+      <div>
+        <svg class="chart" viewBox="0 0 520 215" role="img"
+             aria-label="Доверительные интервалы directional accuracy: у BTC, SOL и HYPE интервал накрывает 0.5, у ETH — нет">
+          <line class="grid" x1="175" y1="20" x2="175" y2="185"></line>
+          <line class="grid" x1="425" y1="20" x2="425" y2="185"></line>
+          <line class="zero" x1="300" y1="20" x2="300" y2="185"></line>
+
+          <text class="lbl" x="10" y="49">BTC</text>
+          <line class="bar" x1="279" y1="45" x2="393" y2="45"></line>
+          <circle class="dot" cx="333" cy="45" r="4"></circle>
+
+          <text class="lbl" x="10" y="89">ETH</text>
+          <line class="bar hit" x1="331" y1="85" x2="416" y2="85"></line>
+          <circle class="dot hit" cx="373" cy="85" r="4"></circle>
+
+          <text class="lbl" x="10" y="129">SOL</text>
+          <line class="bar" x1="137" y1="125" x2="341" y2="125"></line>
+          <circle class="dot" cx="288" cy="125" r="4"></circle>
+
+          <text class="lbl" x="10" y="169">HYPE</text>
+          <line class="bar" x1="123" y1="165" x2="448" y2="165"></line>
+          <circle class="dot" cx="290" cy="165" r="4"></circle>
+
+          <line class="grid" x1="100" y1="185" x2="500" y2="185"></line>
+          <text x="175" y="202" text-anchor="middle">0.45</text>
+          <text x="300" y="202" text-anchor="middle">0.50</text>
+          <text x="425" y="202" text-anchor="middle">0.55</text>
+          <text x="500" y="202" text-anchor="end">directional accuracy, 95% ДИ</text>
+        </svg>
+      </div>
+      <div class="scroll-x">
+        <table>
+          <thead><tr><th>монета</th><th class="num">acc</th><th class="num">p</th><th class="num">vs long</th><th class="num">skill</th></tr></thead>
+          <tbody>
+            <tr><td class="name">BTC</td><td class="num">0.5131</td><td class="num v-mute">0.256</td><td class="num v-neg">−0.0038</td><td class="num v-neg">−0.0030</td></tr>
+            <tr><td class="name">ETH</td><td class="num v-pos">0.5292</td><td class="num v-pos">0.001</td><td class="num">+0.0184</td><td class="num v-pos">+0.0024</td></tr>
+            <tr><td class="name">SOL</td><td class="num">0.4953</td><td class="num v-mute">0.662</td><td class="num">+0.0063</td><td class="num v-neg">−0.0070</td></tr>
+            <tr><td class="name">HYPE</td><td class="num">0.4959</td><td class="num v-mute">0.892</td><td class="num v-mute">0.0000</td><td class="num v-neg">−0.0022</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="flag neg">
+      <p><strong>Критерий не прошла ни одна монета из четырёх. Вывод, объявленный
+        до запуска: нет сигнала у бустинга и нет у графа → потолок лежит в
+        признаках.</strong> Граф не виноват, и его доводка сигнала не добавит.</p>
+      <p>У ETH две трети критерия выполнены, но не прошла проверка против
+        рыночного дрейфа (p = 0.067). Результатом это не считается: нужны две
+        монеты из трёх, а у коррелированного с ETH биткоина знак противоположный
+        и значимый.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 13 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Доработки">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">12</span> Последний этап · 13 августа</p>
+    <h2>Четыре правки по итогам аудита</h2>
+    <p>Внешний аудит нашёл четыре дефекта, не покрытых прежними разборами. Каждая
+      правка сопровождена замером «до и после» на четырёх монетах — включая тот
+      случай, когда замер опроверг ожидания аудита.</p>
+    <div class="cols two">
+      <div class="card">
+        <h3>Знак MAE</h3>
+        <p>Модуль превращал «цена ни разу не сходила ниже входа» в просадку,
+          которой не было, причём инвертированно: чем чище рост, тем больше
+          записанная просадка. Правка верна — <strong>но её эффект на выдаче
+          оказался строго нулевым</strong>: загрязнено 0.2–0.3% случаев, медиана
+          ложной просадки — сотые доли процента, а измеряемый перцентиль берётся
+          из хвоста и головы списка не видит.</p>
+      </div>
+      <div class="card">
+        <h3>Размер выборки был завышен</h3>
+        <p>Считались строки снимков, а не случаи: одна реализация перехода даёт до
+          четырёх строк, окна исходов которых перекрываются на 87.5%. Замеренное
+          завышение — <strong>2.2 раза</strong> по медиане, не 4, как
+          предполагалось. Цена честного порога: 15–27% кандидатов у длинных
+          историй и 75% у годовалой HYPEUSDT.</p>
+      </div>
+      <div class="card">
+        <h3>Кандидат утверждал больше, чем знал</h3>
+        <p>При откате на статистику по переходу поля блока событий оставались
+          заполненными, и приёмник начислял баллы за «редкий блок», к которому
+          выборка отношения не имела. Так приходило <strong>72–100%
+          выдачи</strong>. Теперь область обусловленности едет наружу отдельным
+          полем, и ось редкости при откате считается по двум критериям.</p>
+      </div>
+      <div class="card">
+        <h3>Направление не входило в ключ семьи</h3>
+        <p>Два порога — минимальный перекос и порог метки — не согласованы, и в
+          полосе между ними long и short по одной конфигурации попадали в одну
+          «семью» и вытесняли друг друга. В полосе ~27% кандидатов, реальных
+          коллизий 2.6–4.7%.</p>
+      </div>
+    </div>
+    <div class="flag warn">
+      <p><strong>Побочный вывод перекалибровки, которого не было в задании.</strong>
+        Линейки оценки успели отстать не только из-за аудита: профили были сняты с
+        моделей состояний, заменённых переобучением двумя днями раньше, и у ETH с
+        HYPE доля STRONG упала до 0.1% и 0.0% — верхняя ступень стала
+        недостижимой. Полное переобучение обесценивает калибровку приёмника не
+        через номера состояний, про которые все помнят, а через распределение
+        размера выборки.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 14 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Плюсы">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">13</span> Сильные стороны</p>
+    <h2>Что здесь сделано хорошо</h2>
+    <div class="cols two">
+      <ul class="plain">
+        <li>
+          <h3>Методологическая дисциплина</h3>
+          <p>Блочный бутстрап вместо наивных интервалов; критерий, объявленный до
+            замера; требование воспроизведения; честный учёт того, что три
+            коррелированные монеты — это полтора наблюдения. Большинство проектов
+            такого класса делят выборку случайно и радуются p-value.</p>
+        </li>
+        <li>
+          <h3>Отрицательные результаты не заметаются</h3>
+          <p>Ключевой замер показал, что основное утверждение системы не работает,
+            — и это записано в README и в шапку плана работ, а не спрятано.
+            Интеграция Smart Money отвергнута по результатам пяти независимых
+            заходов. Это редкое свойство и дороже любой отдельной фичи.</p>
+        </li>
+        <li>
+          <h3>Инварианты защищены тестами, а не памятью</h3>
+          <p>Символ в идентификаторах, сдвиг старших ТФ, созревание исходов,
+            независимость критерия дробления от размерности, порядок битов в
+            маске, полнота словаря формулировок. На каждое — падающий тест с
+            объяснением, что именно сломается. 655 тестов, инфраструктура
+            для них не нужна.</p>
+        </li>
+      </ul>
+      <ul class="plain">
+        <li>
+          <h3>Тихие ошибки выведены на свет</h3>
+          <p>Класс дефектов, где ничего не падает, а числа медленно становятся
+            неправильными, отслежен отдельно: дедупликация между монетами,
+            счётчики поверх узлов прежнего поколения, смешение прогонов разных
+            моделей в агрегатах, оценка чужой линейкой.</p>
+        </li>
+        <li>
+          <h3>Ответственность разделена и выдержана</h3>
+          <p>Генератор не решает, приёмник не считает, LLM не влияет на числа.
+            Систему можно запустить без языковой модели, без графовой базы, без
+            Redis — она деградирует предсказуемо, а не молча.</p>
+        </li>
+        <li>
+          <h3>Мультимонетность реальная</h3>
+          <p>Своя модель состояний, свои пороги кластеризации, свой профиль
+            оценки, изоляция во всех хранилищах. Заведена монета с другой биржи,
+            бары для которой приходится собирать из тиковых архивов.</p>
+        </li>
+        <li>
+          <h3>Документация объясняет «почему»</h3>
+          <p>Комментарии описывают отвергнутые альтернативы и цену ошибки. Дороже
+            в написании — и единственное, что работает через полгода.</p>
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 15 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Минусы">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">14</span> Ограничения</p>
+    <h2>Что здесь слабо</h2>
+    <div class="flag neg">
+      <p><strong>Главное: предсказательной силы нет, и это измерено дважды.</strong>
+        Ни граф, ни контрольная модель на тех же признаках не бьют ни монетку, ни
+        рыночный дрейф. Всё, что построено вокруг оценки кандидата — четыре оси,
+        профили, рейтинги — работает исправно как ранжирование, но ранжирует
+        величину, не связанную с будущим.</p>
+    </div>
+    <div class="cols two">
+      <ul class="plain minus">
+        <li>
+          <h3>Потолок — в источнике данных</h3>
+          <p>32 признака построены исключительно по свечам и объёмам одной биржи.
+            Нет деривативов, ончейна, кросс-монетных величин, книги заявок.
+            Контроль показал: в имеющемся наборе информации о направлении на сутки
+            вперёд практически нет — значит расширение признаков внутри того же
+            источника ничего не даст.</p>
+        </li>
+        <li>
+          <h3>Число состояний — свойство прогона, а не рынка</h3>
+          <p>Отбрасывание 0.016% истории меняет его с 40 на 46; у HYPEUSDT две
+            строки из 36 741 меняли его вдвое. Это делает бессмысленным сравнение
+            графов двух прогонов по числу узлов и осложняет любой замер, чья
+            выборка порождена моделью.</p>
+        </li>
+        <li>
+          <h3>Остаточные look-ahead в боевом расчёте</h3>
+          <p>Нормировка признаков, редкость переходов и частота блоков считаются
+            по всей истории; сглаживание разметки подтверждает смену состояния
+            через два бара. Внутри валидации это закрыто, в боевом прогоне — нет.
+            На сегодняшний вывод не влияет, но <strong>любой будущий
+            положительный результат нельзя будет отличить от протечки</strong>.</p>
+        </li>
+      </ul>
+      <ul class="plain minus">
+        <li>
+          <h3>Профиль привязан к модели теснее, чем выглядит</h3>
+          <p>Еженедельное переобучение молча обесценивает калибровку приёмника.
+            Обнаружено 13 августа, автоматической проверки пока нет — ручная
+            процедура, которую надо не забыть.</p>
+        </li>
+        <li>
+          <h3>Молодым монетам данных просто мало</h3>
+          <p>После честного порога по числу реализаций у HYPEUSDT осталось 445
+            кандидатов из 1771. Год истории — это мало, и никакая калибровка
+            этого не лечит.</p>
+        </li>
+        <li>
+          <h3>Инженерные долги</h3>
+          <p>Инкрементальный прогон пересчитывает всю историю каждые полчаса —
+            корректно и быстро, но растёт линейно и умножается на число монет. У
+            части баров BTC кривые отметки времени: обработано на чтении, в данных
+            осталось. API приёмника без аутентификации — допустимо только
+            локально.</p>
+        </li>
+        <li>
+          <h3>Зерно у бустинга ничего не проверяет</h3>
+          <p>Для кластеризации зерно — настоящий источник нестабильности, для
+            градиентного бустинга оно влияет только на подвыборку биннинга: числа
+            совпали до четвёртого знака. Формально инвариант выполнен,
+            содержательно — нет.</p>
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 16 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Дальше">
+  <div class="wrap stack">
+    <p class="eyebrow"><span class="num">15</span> Развилки</p>
+    <h2>Куда идти дальше</h2>
+    <div class="cols three">
+      <div class="card">
+        <h3>Сменить предмет предсказания</h3>
+        <p>Направление доходности на сутки имеет автокорреляцию около нуля по
+          построению рынка. Волатильность — нет: её кластеризация одно из самых
+          устойчивых эмпирических свойств финансовых рядов. Предлагается мерить
+          размах относительно текущего уровня волатильности, с бенчмарком
+          «скользящая реализованная волатильность».</p>
+        <p><em>Оговорка честная: это объясняет, почему стоит попробовать, но
+          ничего не гарантирует для конкретно этого графа.</em></p>
+      </div>
+      <div class="card">
+        <h3>Расширить источники данных</h3>
+        <p>Деривативы (funding, open interest, ликвидации), ончейн, кросс-монетные
+          признаки. Механизм заведения нового источника обкатан и описан: три
+          канала с разной ценой и обязательные проверки перед включением.
+          Контроль показал, что это направление важнее доводки структуры.</p>
+      </div>
+      <div class="card">
+        <h3>Закрыть look-ahead</h3>
+        <p>Не ради метрик — честный расчёт их только ухудшит, — а ради
+          возможности вообще что-то измерять дальше.</p>
+      </div>
+    </div>
+    <div class="flag warn">
+      <p><strong>Чего делать не стоит по итогам замеров:</strong> доводить граф
+        состояний как способ найти сигнал — мягкое присвоение, GMM, вектор
+        расстояний вместо метки. Это улучшение представления, у которого нечего
+        представлять. Граф остаётся описательным инструментом, и в этом качестве
+        он не пострадал.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 17 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-title="Итог">
+  <div class="wrap narrow stack">
+    <p class="eyebrow"><span class="num">16</span> Итог</p>
+    <h2>Проект честно дошёл до отрицательного результата — и сам его установил</h2>
+    <p class="lede">Инженерно и методологически он сделан существенно лучше
+      среднего: дисциплина замеров, защищённые инварианты, честный журнал,
+      разделение ответственности, реальная мультимонетность.</p>
+    <p>Содержательно — перекос, который система приписывает конфигурации рынка, на
+      невиданных данных не реализуется, и потолок лежит не в структуре графа, а в
+      исходных данных.</p>
+    <div class="flag">
+      <p>Это неудобный, но полезный результат. Он стоил двух замеров и закрыл
+        направление, в которое иначе можно было вкладываться годами, — и он же
+        указывает, куда идти: <strong>менять предмет предсказания или источник
+        данных, а не полировать представление</strong>.</p>
+    </div>
+    <div class="title-meta">
+      <span>docs/presentation_2026-08-13.md</span>
+      <span>development_log.md · разделы 26, 29–31</span>
+    </div>
+  </div>
+</section>
+
+<script>
+  (function () {
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const rail = document.querySelector('.rail');
+    const counter = document.getElementById('counter');
+
+    slides.forEach(function (slide, i) {
+      if (!slide.id) slide.id = 's' + i;
+      const link = document.createElement('a');
+      link.href = '#' + slide.id;
+      link.setAttribute('aria-label', (i + 1) + '. ' + (slide.dataset.title || ''));
+      rail.appendChild(link);
+    });
+    const links = Array.from(rail.children);
+
+    let current = 0;
+    const observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        current = slides.indexOf(entry.target);
+        links.forEach(function (l, i) { l.classList.toggle('on', i === current); });
+        counter.textContent = String(current + 1).padStart(2, '0') + ' / ' +
+          String(slides.length).padStart(2, '0');
+      });
+    }, { threshold: 0.5 });
+    slides.forEach(function (s) { observer.observe(s); });
+
+    function go(delta) {
+      const next = Math.min(slides.length - 1, Math.max(0, current + delta));
+      slides[next].scrollIntoView({ block: 'start' });
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      switch (e.key) {
+        case 'ArrowRight': case 'ArrowDown': case 'PageDown': case ' ':
+          e.preventDefault(); go(1); break;
+        case 'ArrowLeft': case 'ArrowUp': case 'PageUp':
+          e.preventDefault(); go(-1); break;
+        case 'Home':
+          e.preventDefault(); slides[0].scrollIntoView({ block: 'start' }); break;
+        case 'End':
+          e.preventDefault(); slides[slides.length - 1].scrollIntoView({ block: 'start' }); break;
+      }
+    });
+
+    /* Фоновый граф на титуле: узлы-состояния и рёбра-переходы.
+       Canvas, а не SVG: рисунок генеративный и меняется каждый кадр. */
+    const canvas = document.getElementById('graph-canvas');
+    const ctx = canvas.getContext('2d');
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let nodes = [];
+    let raf = null;
+
+    function palette() {
+      const css = getComputedStyle(document.documentElement);
+      return {
+        line: css.getPropertyValue('--line').trim(),
+        accent: css.getPropertyValue('--accent').trim(),
+        muted: css.getPropertyValue('--muted').trim()
+      };
+    }
+
+    function seed() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = canvas.clientWidth * dpr;
+      canvas.height = canvas.clientHeight * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const count = canvas.clientWidth < 700 ? 26 : 46;
+      nodes = [];
+      for (let i = 0; i < count; i++) {
+        nodes.push({
+          x: Math.random() * canvas.clientWidth,
+          y: Math.random() * canvas.clientHeight,
+          vx: (Math.random() - 0.5) * 0.14,
+          vy: (Math.random() - 0.5) * 0.14,
+          r: Math.random() < 0.18 ? 3.2 : 1.6
+        });
+      }
+    }
+
+    function draw() {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      const p = palette();
+      ctx.clearRect(0, 0, w, h);
+      const reach = Math.min(w, h) * 0.28;
+
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y;
+          const d = Math.hypot(dx, dy);
+          if (d > reach) continue;
+          ctx.strokeStyle = p.line;
+          ctx.globalAlpha = (1 - d / reach) * 0.55;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+      nodes.forEach(function (n) {
+        ctx.fillStyle = n.r > 2 ? p.accent : p.muted;
+        ctx.globalAlpha = n.r > 2 ? 0.7 : 0.45;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    function step() {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      nodes.forEach(function (n) {
+        n.x += n.vx; n.y += n.vy;
+        if (n.x < 0 || n.x > w) n.vx *= -1;
+        if (n.y < 0 || n.y > h) n.vy *= -1;
+      });
+      draw();
+      raf = requestAnimationFrame(step);
+    }
+
+    function start() {
+      seed();
+      draw();
+      if (raf) cancelAnimationFrame(raf);
+      if (!reduced) raf = requestAnimationFrame(step);
+    }
+
+    start();
+    window.addEventListener('resize', start);
+    /* Титул ушёл с экрана — анимация не нужна. */
+    new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !reduced && !raf) raf = requestAnimationFrame(step);
+        else if (!e.isIntersecting && raf) { cancelAnimationFrame(raf); raf = null; }
+      });
+    }, { threshold: 0.05 }).observe(document.getElementById('s0'));
+  })();
+</script>
