@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: timescale/timescaledb-ha:pg16
+    container_name: btc_postgres
+    environment:
+      POSTGRES_DB: btc_graph
+      POSTGRES_USER: btc_user
+      POSTGRES_PASSWORD: btc_pass
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/home/postgres/pgdata/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U btc_user -d btc_graph"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: btc_redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5
+    container_name: btc_neo4j
+    environment:
+      NEO4J_AUTH: neo4j/btc_neo4j_pass
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O- http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  api:
+    build: .
+    container_name: btc_api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      PROFILES_DIR: /app/config/symbols
+    volumes:
+      # Профили калибровки правятся без пересборки образа: нужен только
+      # make reload (или POST /config/reload при ENABLE_CONFIG_RELOAD=true).
+      # Именно поэтому пороги живут в YAML, а не в коде.
+      - ./config:/app/config:ro
+    ports:
+      # Только петля, как у postgres/redis/neo4j: API без аутентификации и
+      # rate-limit, а use_llm=true тратит токены Anthropic по анонимному
+      # запросу. Публикация на 0.0.0.0 отдавала всё это в интернет на любой
+      # машине, развёрнутой мимо deploy-скриптов. Наружу — только через прокси.
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery-worker:
+    build: .
+    container_name: btc_celery_worker
+    # -Q обязателен: evaluate_candidate роутится в очередь «evaluate»
+    # (task_routes в celery_app). Без неё воркер слушает только «celery»,
+    # и задачи оценки копятся в Redis необработанными.
+    command: celery -A src.worker.celery_app worker --loglevel=info --concurrency=4 -Q evaluate,celery
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      PROFILES_DIR: /app/config/symbols
+    volumes:
+      # Профили калибровки правятся без пересборки образа: нужен только
+      # make reload (или POST /config/reload при ENABLE_CONFIG_RELOAD=true).
+      # Именно поэтому пороги живут в YAML, а не в коде.
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery-beat:
+    build: .
+    container_name: btc_celery_beat
+    command: celery -A src.worker.celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      PROFILES_DIR: /app/config/symbols
+    volumes:
+      # Профили калибровки правятся без пересборки образа: нужен только
+      # make reload (или POST /config/reload при ENABLE_CONFIG_RELOAD=true).
+      # Именно поэтому пороги живут в YAML, а не в коде.
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  flower:
+    build: .
+    container_name: btc_flower
+    command: celery -A src.worker.celery_app flower --port=5555
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://btc_user:btc_pass@postgres:5432/btc_graph
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+    ports:
+      # Flower тоже без аутентификации — см. комментарий у api.
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  neo4j_data:

@@ -1,0 +1,30 @@
+# API и runtime
+anthropic>=0.40.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+# Профили калибровки на монету (config/symbols/*.yaml)
+PyYAML>=6.0
+
+# PostgreSQL + ORM + миграции
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+alembic>=1.13.0
+pgvector>=0.3.0
+
+# Redis
+redis[hiredis]>=5.0.0
+
+# Neo4j
+neo4j>=5.0.0
+
+# Celery + мониторинг
+celery>=5.4.0
+flower>=2.0.0
+
+# Числовые операции (embeddings)
+numpy>=1.26.0
+
+# Тесты
+pytest>=8.0.0

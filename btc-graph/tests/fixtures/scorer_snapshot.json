@@ -1,0 +1,1602 @@
+[
+ {
+  "candidate_id": "snapshot_000",
+  "statistical": 0.475,
+  "directional": 0.8,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.6108
+ },
+ {
+  "candidate_id": "snapshot_001",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 0.1667,
+  "rarity": 0.7333,
+  "total": 0.4183
+ },
+ {
+  "candidate_id": "snapshot_002",
+  "statistical": 0.425,
+  "directional": 0.7,
+  "context": 0.9167,
+  "rarity": 0.6,
+  "total": 0.6458
+ },
+ {
+  "candidate_id": "snapshot_003",
+  "statistical": 0.425,
+  "directional": 0.55,
+  "context": 0.6667,
+  "rarity": 0.7333,
+  "total": 0.5633
+ },
+ {
+  "candidate_id": "snapshot_004",
+  "statistical": 0.675,
+  "directional": 1.0,
+  "context": 0.5833,
+  "rarity": 0.6333,
+  "total": 0.7642
+ },
+ {
+  "candidate_id": "snapshot_005",
+  "statistical": 0.45,
+  "directional": 0.8,
+  "context": 0.6667,
+  "rarity": 0.5333,
+  "total": 0.6283
+ },
+ {
+  "candidate_id": "snapshot_006",
+  "statistical": 0.5,
+  "directional": 0.3,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.4433
+ },
+ {
+  "candidate_id": "snapshot_007",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 0.5,
+  "rarity": 0.4667,
+  "total": 0.445
+ },
+ {
+  "candidate_id": "snapshot_008",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 0.5,
+  "rarity": 0.7333,
+  "total": 0.485
+ },
+ {
+  "candidate_id": "snapshot_009",
+  "statistical": 0.425,
+  "directional": 0.7,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.5592
+ },
+ {
+  "candidate_id": "snapshot_010",
+  "statistical": 0.525,
+  "directional": 0.4,
+  "context": 0.8333,
+  "rarity": 0.4667,
+  "total": 0.5342
+ },
+ {
+  "candidate_id": "snapshot_011",
+  "statistical": 0.275,
+  "directional": 0.8,
+  "context": 0.5833,
+  "rarity": 0.6333,
+  "total": 0.5742
+ },
+ {
+  "candidate_id": "snapshot_012",
+  "statistical": 0.125,
+  "directional": 0.7,
+  "context": 0.3333,
+  "rarity": 0.2,
+  "total": 0.3792
+ },
+ {
+  "candidate_id": "snapshot_013",
+  "statistical": 0.35,
+  "directional": 0.1,
+  "context": 0.3333,
+  "rarity": 0.6,
+  "total": 0.2967
+ },
+ {
+  "candidate_id": "snapshot_014",
+  "statistical": 0.225,
+  "directional": 0.1,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.2642
+ },
+ {
+  "candidate_id": "snapshot_015",
+  "statistical": 0.525,
+  "directional": 0.1,
+  "context": 0.1667,
+  "rarity": 0.2,
+  "total": 0.2558
+ },
+ {
+  "candidate_id": "snapshot_016",
+  "statistical": 0.825,
+  "directional": 0.55,
+  "context": 0.5,
+  "rarity": 0.4667,
+  "total": 0.61
+ },
+ {
+  "candidate_id": "snapshot_017",
+  "statistical": 0.125,
+  "directional": 0.3,
+  "context": 0.0,
+  "rarity": 0.6333,
+  "total": 0.2375
+ },
+ {
+  "candidate_id": "snapshot_018",
+  "statistical": 0.375,
+  "directional": 0.4,
+  "context": 0.8333,
+  "rarity": 0.3667,
+  "total": 0.4742
+ },
+ {
+  "candidate_id": "snapshot_019",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.2,
+  "total": 0.2808
+ },
+ {
+  "candidate_id": "snapshot_020",
+  "statistical": 0.525,
+  "directional": 0.4,
+  "context": 0.3333,
+  "rarity": 0.7667,
+  "total": 0.4792
+ },
+ {
+  "candidate_id": "snapshot_021",
+  "statistical": 0.45,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.2,
+  "total": 0.4242
+ },
+ {
+  "candidate_id": "snapshot_022",
+  "statistical": 0.75,
+  "directional": 0.55,
+  "context": 0.5,
+  "rarity": 0.2,
+  "total": 0.5475
+ },
+ {
+  "candidate_id": "snapshot_023",
+  "statistical": 0.2,
+  "directional": 1.0,
+  "context": 0.5833,
+  "rarity": 0.6333,
+  "total": 0.6217
+ },
+ {
+  "candidate_id": "snapshot_024",
+  "statistical": 0.6,
+  "directional": 0.1,
+  "context": 0.3333,
+  "rarity": 0.5,
+  "total": 0.3567
+ },
+ {
+  "candidate_id": "snapshot_025",
+  "statistical": 0.575,
+  "directional": 0.9,
+  "context": 0.3333,
+  "rarity": 0.7333,
+  "total": 0.6642
+ },
+ {
+  "candidate_id": "snapshot_026",
+  "statistical": 0.525,
+  "directional": 1.0,
+  "context": 0.8333,
+  "rarity": 0.9,
+  "total": 0.8092
+ },
+ {
+  "candidate_id": "snapshot_027",
+  "statistical": 0.2,
+  "directional": 0.7,
+  "context": 0.1667,
+  "rarity": 0.7333,
+  "total": 0.4483
+ },
+ {
+  "candidate_id": "snapshot_028",
+  "statistical": 0.3,
+  "directional": 0.3,
+  "context": 0.3333,
+  "rarity": 0.5333,
+  "total": 0.3417
+ },
+ {
+  "candidate_id": "snapshot_029",
+  "statistical": 0.2,
+  "directional": 0.1,
+  "context": 0.8333,
+  "rarity": 0.3667,
+  "total": 0.3167
+ },
+ {
+  "candidate_id": "snapshot_030",
+  "statistical": 0.425,
+  "directional": 0.4,
+  "context": 0.25,
+  "rarity": 0.4667,
+  "total": 0.3875
+ },
+ {
+  "candidate_id": "snapshot_031",
+  "statistical": 0.75,
+  "directional": 0.8,
+  "context": 0.1667,
+  "rarity": 0.3667,
+  "total": 0.5933
+ },
+ {
+  "candidate_id": "snapshot_032",
+  "statistical": 0.525,
+  "directional": 0.8,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.6658
+ },
+ {
+  "candidate_id": "snapshot_033",
+  "statistical": 0.375,
+  "directional": 0.4,
+  "context": 0.5,
+  "rarity": 0.6333,
+  "total": 0.4475
+ },
+ {
+  "candidate_id": "snapshot_034",
+  "statistical": 0.2,
+  "directional": 0.7,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.4667
+ },
+ {
+  "candidate_id": "snapshot_035",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.5,
+  "rarity": 0.6,
+  "total": 0.3075
+ },
+ {
+  "candidate_id": "snapshot_036",
+  "statistical": 0.375,
+  "directional": 0.4,
+  "context": 0.5,
+  "rarity": 0.9,
+  "total": 0.4875
+ },
+ {
+  "candidate_id": "snapshot_037",
+  "statistical": 0.2,
+  "directional": 0.6,
+  "context": 0.6667,
+  "rarity": 0.7667,
+  "total": 0.5183
+ },
+ {
+  "candidate_id": "snapshot_038",
+  "statistical": 0.225,
+  "directional": 0.8,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.5758
+ },
+ {
+  "candidate_id": "snapshot_039",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 1.0,
+  "rarity": 0.6333,
+  "total": 0.57
+ },
+ {
+  "candidate_id": "snapshot_040",
+  "statistical": 0.125,
+  "directional": 1.0,
+  "context": 0.6667,
+  "rarity": 0.5333,
+  "total": 0.6008
+ },
+ {
+  "candidate_id": "snapshot_041",
+  "statistical": 0.05,
+  "directional": 1.0,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.5267
+ },
+ {
+  "candidate_id": "snapshot_042",
+  "statistical": 0.05,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.2,
+  "total": 0.3042
+ },
+ {
+  "candidate_id": "snapshot_043",
+  "statistical": 0.35,
+  "directional": 0.7,
+  "context": 0.5,
+  "rarity": 0.9,
+  "total": 0.585
+ },
+ {
+  "candidate_id": "snapshot_044",
+  "statistical": 0.375,
+  "directional": 0.2,
+  "context": 0.5,
+  "rarity": 0.7667,
+  "total": 0.3975
+ },
+ {
+  "candidate_id": "snapshot_045",
+  "statistical": 0.35,
+  "directional": 0.55,
+  "context": 1.0,
+  "rarity": 0.7333,
+  "total": 0.6075
+ },
+ {
+  "candidate_id": "snapshot_046",
+  "statistical": 0.125,
+  "directional": 0.7,
+  "context": 0.5833,
+  "rarity": 1.0,
+  "total": 0.5492
+ },
+ {
+  "candidate_id": "snapshot_047",
+  "statistical": 0.275,
+  "directional": 0.7,
+  "context": 0.0,
+  "rarity": 0.6,
+  "total": 0.4175
+ },
+ {
+  "candidate_id": "snapshot_048",
+  "statistical": 0.3,
+  "directional": 1.0,
+  "context": 0.8333,
+  "rarity": 0.4667,
+  "total": 0.6767
+ },
+ {
+  "candidate_id": "snapshot_049",
+  "statistical": 0.125,
+  "directional": 0.1,
+  "context": 1.0,
+  "rarity": 0.4667,
+  "total": 0.3425
+ },
+ {
+  "candidate_id": "snapshot_050",
+  "statistical": 0.275,
+  "directional": 0.8,
+  "context": 0.6667,
+  "rarity": 0.6,
+  "total": 0.5858
+ },
+ {
+  "candidate_id": "snapshot_051",
+  "statistical": 0.45,
+  "directional": 0.8,
+  "context": 0.5,
+  "rarity": 0.6333,
+  "total": 0.61
+ },
+ {
+  "candidate_id": "snapshot_052",
+  "statistical": 0.125,
+  "directional": 0.55,
+  "context": 0.25,
+  "rarity": 0.5333,
+  "total": 0.36
+ },
+ {
+  "candidate_id": "snapshot_053",
+  "statistical": 0.3,
+  "directional": 0.1,
+  "context": 0.5,
+  "rarity": 0.7667,
+  "total": 0.34
+ },
+ {
+  "candidate_id": "snapshot_054",
+  "statistical": 0.45,
+  "directional": 0.1,
+  "context": 0.0,
+  "rarity": 0.8,
+  "total": 0.29
+ },
+ {
+  "candidate_id": "snapshot_055",
+  "statistical": 0.35,
+  "directional": 0.1,
+  "context": 0.5,
+  "rarity": 0.6333,
+  "total": 0.335
+ },
+ {
+  "candidate_id": "snapshot_056",
+  "statistical": 0.775,
+  "directional": 1.0,
+  "context": 0.8333,
+  "rarity": 0.6333,
+  "total": 0.8442
+ },
+ {
+  "candidate_id": "snapshot_057",
+  "statistical": 0.6,
+  "directional": 0.55,
+  "context": 0.5833,
+  "rarity": 0.6333,
+  "total": 0.5842
+ },
+ {
+  "candidate_id": "snapshot_058",
+  "statistical": 0.3,
+  "directional": 1.0,
+  "context": 0.3333,
+  "rarity": 0.4667,
+  "total": 0.5767
+ },
+ {
+  "candidate_id": "snapshot_059",
+  "statistical": 0.35,
+  "directional": 0.1,
+  "context": 0.5,
+  "rarity": 0.6333,
+  "total": 0.335
+ },
+ {
+  "candidate_id": "snapshot_060",
+  "statistical": 0.45,
+  "directional": 1.0,
+  "context": 1.0,
+  "rarity": 0.8667,
+  "total": 0.815
+ },
+ {
+  "candidate_id": "snapshot_061",
+  "statistical": 0.3,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.4667,
+  "total": 0.3283
+ },
+ {
+  "candidate_id": "snapshot_062",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.3458
+ },
+ {
+  "candidate_id": "snapshot_063",
+  "statistical": 0.05,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.3692
+ },
+ {
+  "candidate_id": "snapshot_064",
+  "statistical": 0.525,
+  "directional": 0.4,
+  "context": 0.5,
+  "rarity": 0.7667,
+  "total": 0.5125
+ },
+ {
+  "candidate_id": "snapshot_065",
+  "statistical": 0.225,
+  "directional": 0.6,
+  "context": 0.4167,
+  "rarity": 0.6333,
+  "total": 0.4558
+ },
+ {
+  "candidate_id": "snapshot_066",
+  "statistical": 0.425,
+  "directional": 0.1,
+  "context": 0.3333,
+  "rarity": 0.6,
+  "total": 0.3192
+ },
+ {
+  "candidate_id": "snapshot_067",
+  "statistical": 0.05,
+  "directional": 1.0,
+  "context": 0.6667,
+  "rarity": 0.2,
+  "total": 0.5283
+ },
+ {
+  "candidate_id": "snapshot_068",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.5833,
+  "rarity": 0.3667,
+  "total": 0.2892
+ },
+ {
+  "candidate_id": "snapshot_069",
+  "statistical": 0.275,
+  "directional": 1.0,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.6192
+ },
+ {
+  "candidate_id": "snapshot_070",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.5833,
+  "rarity": 0.7667,
+  "total": 0.3492
+ },
+ {
+  "candidate_id": "snapshot_071",
+  "statistical": 0.525,
+  "directional": 0.55,
+  "context": 0.4167,
+  "rarity": 0.3667,
+  "total": 0.4883
+ },
+ {
+  "candidate_id": "snapshot_072",
+  "statistical": 0.125,
+  "directional": 0.55,
+  "context": 0.6667,
+  "rarity": 0.9,
+  "total": 0.4983
+ },
+ {
+  "candidate_id": "snapshot_073",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.3333,
+  "rarity": 0.3667,
+  "total": 0.2392
+ },
+ {
+  "candidate_id": "snapshot_074",
+  "statistical": 0.525,
+  "directional": 0.7,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.5892
+ },
+ {
+  "candidate_id": "snapshot_075",
+  "statistical": 0.275,
+  "directional": 0.7,
+  "context": 0.9167,
+  "rarity": 0.3667,
+  "total": 0.5658
+ },
+ {
+  "candidate_id": "snapshot_076",
+  "statistical": 0.45,
+  "directional": 1.0,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.6733
+ },
+ {
+  "candidate_id": "snapshot_077",
+  "statistical": 0.35,
+  "directional": 1.0,
+  "context": 0.5,
+  "rarity": 0.2,
+  "total": 0.585
+ },
+ {
+  "candidate_id": "snapshot_078",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.5333,
+  "total": 0.3308
+ },
+ {
+  "candidate_id": "snapshot_079",
+  "statistical": 0.275,
+  "directional": 0.4,
+  "context": 0.25,
+  "rarity": 0.6333,
+  "total": 0.3675
+ },
+ {
+  "candidate_id": "snapshot_080",
+  "statistical": 0.125,
+  "directional": 1.0,
+  "context": 0.5,
+  "rarity": 0.2,
+  "total": 0.5175
+ },
+ {
+  "candidate_id": "snapshot_081",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.7333,
+  "total": 0.3608
+ },
+ {
+  "candidate_id": "snapshot_082",
+  "statistical": 0.375,
+  "directional": 0.4,
+  "context": 0.8333,
+  "rarity": 0.6333,
+  "total": 0.5142
+ },
+ {
+  "candidate_id": "snapshot_083",
+  "statistical": 0.3,
+  "directional": 0.1,
+  "context": 0.1667,
+  "rarity": 0.7333,
+  "total": 0.2683
+ },
+ {
+  "candidate_id": "snapshot_084",
+  "statistical": 0.275,
+  "directional": 0.7,
+  "context": 0.9167,
+  "rarity": 0.4667,
+  "total": 0.5808
+ },
+ {
+  "candidate_id": "snapshot_085",
+  "statistical": 0.275,
+  "directional": 1.0,
+  "context": 0.6667,
+  "rarity": 0.4667,
+  "total": 0.6358
+ },
+ {
+  "candidate_id": "snapshot_086",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.3058
+ },
+ {
+  "candidate_id": "snapshot_087",
+  "statistical": 0.35,
+  "directional": 0.2,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.3617
+ },
+ {
+  "candidate_id": "snapshot_088",
+  "statistical": 0.2,
+  "directional": 0.1,
+  "context": 0.9167,
+  "rarity": 0.6333,
+  "total": 0.3733
+ },
+ {
+  "candidate_id": "snapshot_089",
+  "statistical": 0.6,
+  "directional": 0.6,
+  "context": 1.0,
+  "rarity": 0.2,
+  "total": 0.62
+ },
+ {
+  "candidate_id": "snapshot_090",
+  "statistical": 0.45,
+  "directional": 0.7,
+  "context": 0.8333,
+  "rarity": 0.7333,
+  "total": 0.6567
+ },
+ {
+  "candidate_id": "snapshot_091",
+  "statistical": 0.45,
+  "directional": 1.0,
+  "context": 0.1667,
+  "rarity": 0.5333,
+  "total": 0.5983
+ },
+ {
+  "candidate_id": "snapshot_092",
+  "statistical": 0.3,
+  "directional": 0.55,
+  "context": 0.5833,
+  "rarity": 0.2,
+  "total": 0.4292
+ },
+ {
+  "candidate_id": "snapshot_093",
+  "statistical": 0.6,
+  "directional": 0.4,
+  "context": 0.1667,
+  "rarity": 0.5,
+  "total": 0.4283
+ },
+ {
+  "candidate_id": "snapshot_094",
+  "statistical": 0.6,
+  "directional": 0.1,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.4017
+ },
+ {
+  "candidate_id": "snapshot_095",
+  "statistical": 0.55,
+  "directional": 0.7,
+  "context": 0.5,
+  "rarity": 0.5333,
+  "total": 0.59
+ },
+ {
+  "candidate_id": "snapshot_096",
+  "statistical": 0.15,
+  "directional": 0.55,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.4658
+ },
+ {
+  "candidate_id": "snapshot_097",
+  "statistical": 0.425,
+  "directional": 1.0,
+  "context": 0.25,
+  "rarity": 0.3667,
+  "total": 0.5825
+ },
+ {
+  "candidate_id": "snapshot_098",
+  "statistical": 0.2,
+  "directional": 0.4,
+  "context": 0.8333,
+  "rarity": 0.5,
+  "total": 0.4417
+ },
+ {
+  "candidate_id": "snapshot_099",
+  "statistical": 0.2,
+  "directional": 1.0,
+  "context": 0.8333,
+  "rarity": 0.2,
+  "total": 0.6067
+ },
+ {
+  "candidate_id": "snapshot_100",
+  "statistical": 0.375,
+  "directional": 0.4,
+  "context": 0.8333,
+  "rarity": 0.4667,
+  "total": 0.4892
+ },
+ {
+  "candidate_id": "snapshot_101",
+  "statistical": 0.2,
+  "directional": 0.1,
+  "context": 0.5833,
+  "rarity": 0.3667,
+  "total": 0.2667
+ },
+ {
+  "candidate_id": "snapshot_102",
+  "statistical": 0.275,
+  "directional": 0.8,
+  "context": 0.0,
+  "rarity": 0.4667,
+  "total": 0.4325
+ },
+ {
+  "candidate_id": "snapshot_103",
+  "statistical": 0.2,
+  "directional": 0.55,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.4392
+ },
+ {
+  "candidate_id": "snapshot_104",
+  "statistical": 0.525,
+  "directional": 1.0,
+  "context": 0.5,
+  "rarity": 1.0,
+  "total": 0.7575
+ },
+ {
+  "candidate_id": "snapshot_105",
+  "statistical": 0.35,
+  "directional": 0.55,
+  "context": 0.5833,
+  "rarity": 1.0,
+  "total": 0.5642
+ },
+ {
+  "candidate_id": "snapshot_106",
+  "statistical": 0.275,
+  "directional": 1.0,
+  "context": 0.75,
+  "rarity": 0.6333,
+  "total": 0.6775
+ },
+ {
+  "candidate_id": "snapshot_107",
+  "statistical": 0.45,
+  "directional": 0.1,
+  "context": 0.5,
+  "rarity": 0.5333,
+  "total": 0.35
+ },
+ {
+  "candidate_id": "snapshot_108",
+  "statistical": 0.5,
+  "directional": 0.6,
+  "context": 0.5833,
+  "rarity": 0.6,
+  "total": 0.5667
+ },
+ {
+  "candidate_id": "snapshot_109",
+  "statistical": 0.35,
+  "directional": 0.2,
+  "context": 0.0,
+  "rarity": 0.2,
+  "total": 0.205
+ },
+ {
+  "candidate_id": "snapshot_110",
+  "statistical": 0.3,
+  "directional": 0.2,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.3217
+ },
+ {
+  "candidate_id": "snapshot_111",
+  "statistical": 0.05,
+  "directional": 0.5,
+  "context": 0.1667,
+  "rarity": 0.7333,
+  "total": 0.3333
+ },
+ {
+  "candidate_id": "snapshot_112",
+  "statistical": 0.425,
+  "directional": 0.7,
+  "context": 0.5,
+  "rarity": 1.0,
+  "total": 0.6225
+ },
+ {
+  "candidate_id": "snapshot_113",
+  "statistical": 0.3,
+  "directional": 0.4,
+  "context": 0.6667,
+  "rarity": 0.7333,
+  "total": 0.4733
+ },
+ {
+  "candidate_id": "snapshot_114",
+  "statistical": 0.525,
+  "directional": 1.0,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.6692
+ },
+ {
+  "candidate_id": "snapshot_115",
+  "statistical": 0.6,
+  "directional": 1.0,
+  "context": 0.0,
+  "rarity": 0.3667,
+  "total": 0.585
+ },
+ {
+  "candidate_id": "snapshot_116",
+  "statistical": 0.275,
+  "directional": 0.7,
+  "context": 0.1667,
+  "rarity": 0.4667,
+  "total": 0.4308
+ },
+ {
+  "candidate_id": "snapshot_117",
+  "statistical": 0.2,
+  "directional": 0.55,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.4808
+ },
+ {
+  "candidate_id": "snapshot_118",
+  "statistical": 0.425,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.4667,
+  "total": 0.4567
+ },
+ {
+  "candidate_id": "snapshot_119",
+  "statistical": 0.375,
+  "directional": 0.7,
+  "context": 1.0,
+  "rarity": 0.6333,
+  "total": 0.6525
+ },
+ {
+  "candidate_id": "snapshot_120",
+  "statistical": 0.2,
+  "directional": 0.7,
+  "context": 0.0,
+  "rarity": 0.6,
+  "total": 0.395
+ },
+ {
+  "candidate_id": "snapshot_121",
+  "statistical": 0.2,
+  "directional": 0.5,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.3967
+ },
+ {
+  "candidate_id": "snapshot_122",
+  "statistical": 0.45,
+  "directional": 0.7,
+  "context": 0.5,
+  "rarity": 0.5,
+  "total": 0.555
+ },
+ {
+  "candidate_id": "snapshot_123",
+  "statistical": 0.2,
+  "directional": 0.1,
+  "context": 0.5833,
+  "rarity": 0.5,
+  "total": 0.2867
+ },
+ {
+  "candidate_id": "snapshot_124",
+  "statistical": 0.425,
+  "directional": 0.8,
+  "context": 0.9167,
+  "rarity": 0.9,
+  "total": 0.7258
+ },
+ {
+  "candidate_id": "snapshot_125",
+  "statistical": 0.625,
+  "directional": 0.1,
+  "context": 0.5,
+  "rarity": 0.3333,
+  "total": 0.3725
+ },
+ {
+  "candidate_id": "snapshot_126",
+  "statistical": 0.2,
+  "directional": 0.1,
+  "context": 0.25,
+  "rarity": 0.3333,
+  "total": 0.195
+ },
+ {
+  "candidate_id": "snapshot_127",
+  "statistical": 0.45,
+  "directional": 0.55,
+  "context": 0.25,
+  "rarity": 0.3667,
+  "total": 0.4325
+ },
+ {
+  "candidate_id": "snapshot_128",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 0.4167,
+  "rarity": 0.2,
+  "total": 0.3883
+ },
+ {
+  "candidate_id": "snapshot_129",
+  "statistical": 0.675,
+  "directional": 1.0,
+  "context": 0.3333,
+  "rarity": 0.2,
+  "total": 0.6492
+ },
+ {
+  "candidate_id": "snapshot_130",
+  "statistical": 0.275,
+  "directional": 0.6,
+  "context": 0.3333,
+  "rarity": 0.6667,
+  "total": 0.4592
+ },
+ {
+  "candidate_id": "snapshot_131",
+  "statistical": 0.2,
+  "directional": 0.55,
+  "context": 0.5833,
+  "rarity": 0.5333,
+  "total": 0.4492
+ },
+ {
+  "candidate_id": "snapshot_132",
+  "statistical": 0.575,
+  "directional": 1.0,
+  "context": 0.1667,
+  "rarity": 0.4667,
+  "total": 0.6258
+ },
+ {
+  "candidate_id": "snapshot_133",
+  "statistical": 0.6,
+  "directional": 0.2,
+  "context": 0.6667,
+  "rarity": 0.4667,
+  "total": 0.4533
+ },
+ {
+  "candidate_id": "snapshot_134",
+  "statistical": 0.2,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.2,
+  "total": 0.3492
+ },
+ {
+  "candidate_id": "snapshot_135",
+  "statistical": 0.45,
+  "directional": 0.55,
+  "context": 0.4167,
+  "rarity": 0.4667,
+  "total": 0.4808
+ },
+ {
+  "candidate_id": "snapshot_136",
+  "statistical": 0.5,
+  "directional": 0.6,
+  "context": 0.9167,
+  "rarity": 0.4667,
+  "total": 0.6133
+ },
+ {
+  "candidate_id": "snapshot_137",
+  "statistical": 0.375,
+  "directional": 0.7,
+  "context": 0.5833,
+  "rarity": 0.4667,
+  "total": 0.5442
+ },
+ {
+  "candidate_id": "snapshot_138",
+  "statistical": 0.5,
+  "directional": 1.0,
+  "context": 0.5,
+  "rarity": 0.6333,
+  "total": 0.695
+ },
+ {
+  "candidate_id": "snapshot_139",
+  "statistical": 0.35,
+  "directional": 0.7,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.5383
+ },
+ {
+  "candidate_id": "snapshot_140",
+  "statistical": 0.5,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.3733
+ },
+ {
+  "candidate_id": "snapshot_141",
+  "statistical": 0.675,
+  "directional": 0.8,
+  "context": 0.3333,
+  "rarity": 0.9,
+  "total": 0.6842
+ },
+ {
+  "candidate_id": "snapshot_142",
+  "statistical": 0.45,
+  "directional": 0.7,
+  "context": 0.9167,
+  "rarity": 0.6333,
+  "total": 0.6583
+ },
+ {
+  "candidate_id": "snapshot_143",
+  "statistical": 0.275,
+  "directional": 0.3,
+  "context": 0.5,
+  "rarity": 0.5,
+  "total": 0.3625
+ },
+ {
+  "candidate_id": "snapshot_144",
+  "statistical": 0.35,
+  "directional": 0.6,
+  "context": 0.1667,
+  "rarity": 0.2,
+  "total": 0.3783
+ },
+ {
+  "candidate_id": "snapshot_145",
+  "statistical": 0.75,
+  "directional": 0.55,
+  "context": 0.6667,
+  "rarity": 0.7333,
+  "total": 0.6608
+ },
+ {
+  "candidate_id": "snapshot_146",
+  "statistical": 0.3,
+  "directional": 1.0,
+  "context": 0.5,
+  "rarity": 0.7333,
+  "total": 0.65
+ },
+ {
+  "candidate_id": "snapshot_147",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 0.9167,
+  "rarity": 0.2,
+  "total": 0.4883
+ },
+ {
+  "candidate_id": "snapshot_148",
+  "statistical": 0.525,
+  "directional": 0.6,
+  "context": 0.75,
+  "rarity": 0.7333,
+  "total": 0.6275
+ },
+ {
+  "candidate_id": "snapshot_149",
+  "statistical": 0.45,
+  "directional": 0.25,
+  "context": 0.3333,
+  "rarity": 0.7667,
+  "total": 0.4042
+ },
+ {
+  "candidate_id": "snapshot_150",
+  "statistical": 0.275,
+  "directional": 0.3,
+  "context": 0.1667,
+  "rarity": 0.6333,
+  "total": 0.3158
+ },
+ {
+  "candidate_id": "snapshot_151",
+  "statistical": 0.275,
+  "directional": 1.0,
+  "context": 0.9167,
+  "rarity": 0.3667,
+  "total": 0.6708
+ },
+ {
+  "candidate_id": "snapshot_152",
+  "statistical": 0.3,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.2,
+  "total": 0.2883
+ },
+ {
+  "candidate_id": "snapshot_153",
+  "statistical": 0.275,
+  "directional": 0.1,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.3458
+ },
+ {
+  "candidate_id": "snapshot_154",
+  "statistical": 0.45,
+  "directional": 0.55,
+  "context": 0.8333,
+  "rarity": 0.6333,
+  "total": 0.5892
+ },
+ {
+  "candidate_id": "snapshot_155",
+  "statistical": 0.225,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.3667,
+  "total": 0.3817
+ },
+ {
+  "candidate_id": "snapshot_156",
+  "statistical": 0.525,
+  "directional": 0.4,
+  "context": 0.9167,
+  "rarity": 0.6333,
+  "total": 0.5758
+ },
+ {
+  "candidate_id": "snapshot_157",
+  "statistical": 0.575,
+  "directional": 1.0,
+  "context": 0.6667,
+  "rarity": 0.3667,
+  "total": 0.7108
+ },
+ {
+  "candidate_id": "snapshot_158",
+  "statistical": 0.425,
+  "directional": 0.55,
+  "context": 0.75,
+  "rarity": 0.4667,
+  "total": 0.54
+ },
+ {
+  "candidate_id": "snapshot_159",
+  "statistical": 0.45,
+  "directional": 0.3,
+  "context": 0.8333,
+  "rarity": 0.4667,
+  "total": 0.4767
+ },
+ {
+  "candidate_id": "snapshot_160",
+  "statistical": 0.75,
+  "directional": 0.55,
+  "context": 0.5,
+  "rarity": 0.7333,
+  "total": 0.6275
+ },
+ {
+  "candidate_id": "snapshot_161",
+  "statistical": 0.375,
+  "directional": 0.55,
+  "context": 0.1667,
+  "rarity": 0.6333,
+  "total": 0.4333
+ },
+ {
+  "candidate_id": "snapshot_162",
+  "statistical": 0.125,
+  "directional": 0.4,
+  "context": 0.1667,
+  "rarity": 0.8667,
+  "total": 0.3408
+ },
+ {
+  "candidate_id": "snapshot_163",
+  "statistical": 0.275,
+  "directional": 1.0,
+  "context": 0.9167,
+  "rarity": 0.3667,
+  "total": 0.6708
+ },
+ {
+  "candidate_id": "snapshot_164",
+  "statistical": 0.7,
+  "directional": 0.8,
+  "context": 0.3333,
+  "rarity": 0.5333,
+  "total": 0.6367
+ },
+ {
+  "candidate_id": "snapshot_165",
+  "statistical": 0.525,
+  "directional": 1.0,
+  "context": 0.1667,
+  "rarity": 0.6333,
+  "total": 0.6358
+ },
+ {
+  "candidate_id": "snapshot_166",
+  "statistical": 0.3,
+  "directional": 0.25,
+  "context": 0.9167,
+  "rarity": 0.4667,
+  "total": 0.4308
+ },
+ {
+  "candidate_id": "snapshot_167",
+  "statistical": 0.275,
+  "directional": 0.2,
+  "context": 0.6667,
+  "rarity": 0.7333,
+  "total": 0.3958
+ },
+ {
+  "candidate_id": "snapshot_168",
+  "statistical": 0.125,
+  "directional": 1.0,
+  "context": 0.4167,
+  "rarity": 0.2,
+  "total": 0.5008
+ },
+ {
+  "candidate_id": "snapshot_169",
+  "statistical": 0.275,
+  "directional": 0.55,
+  "context": 0.4167,
+  "rarity": 0.4667,
+  "total": 0.4283
+ },
+ {
+  "candidate_id": "snapshot_170",
+  "statistical": 0.225,
+  "directional": 1.0,
+  "context": 0.8333,
+  "rarity": 0.7333,
+  "total": 0.6942
+ },
+ {
+  "candidate_id": "snapshot_171",
+  "statistical": 0.6,
+  "directional": 0.2,
+  "context": 0.6667,
+  "rarity": 0.2,
+  "total": 0.4133
+ },
+ {
+  "candidate_id": "snapshot_172",
+  "statistical": 0.35,
+  "directional": 0.7,
+  "context": 0.5,
+  "rarity": 0.6,
+  "total": 0.54
+ },
+ {
+  "candidate_id": "snapshot_173",
+  "statistical": 0.35,
+  "directional": 0.2,
+  "context": 0.8333,
+  "rarity": 0.5,
+  "total": 0.4167
+ },
+ {
+  "candidate_id": "snapshot_174",
+  "statistical": 0.775,
+  "directional": 0.55,
+  "context": 0.25,
+  "rarity": 0.6333,
+  "total": 0.57
+ },
+ {
+  "candidate_id": "snapshot_175",
+  "statistical": 0.525,
+  "directional": 0.55,
+  "context": 0.8333,
+  "rarity": 0.9,
+  "total": 0.6517
+ },
+ {
+  "candidate_id": "snapshot_176",
+  "statistical": 0.275,
+  "directional": 0.6,
+  "context": 0.5833,
+  "rarity": 0.5333,
+  "total": 0.4892
+ },
+ {
+  "candidate_id": "snapshot_177",
+  "statistical": 0.525,
+  "directional": 0.9,
+  "context": 0.5833,
+  "rarity": 0.6333,
+  "total": 0.6842
+ },
+ {
+  "candidate_id": "snapshot_178",
+  "statistical": 0.425,
+  "directional": 0.55,
+  "context": 0.3333,
+  "rarity": 0.3667,
+  "total": 0.4417
+ },
+ {
+  "candidate_id": "snapshot_179",
+  "statistical": 0.3,
+  "directional": 0.1,
+  "context": 0.8333,
+  "rarity": 0.5333,
+  "total": 0.3717
+ },
+ {
+  "candidate_id": "snapshot_180",
+  "statistical": 0.3,
+  "directional": 0.3,
+  "context": 0.4167,
+  "rarity": 0.3667,
+  "total": 0.3333
+ },
+ {
+  "candidate_id": "snapshot_181",
+  "statistical": 0.75,
+  "directional": 0.55,
+  "context": 0.75,
+  "rarity": 0.5333,
+  "total": 0.6475
+ },
+ {
+  "candidate_id": "snapshot_182",
+  "statistical": 0.675,
+  "directional": 0.7,
+  "context": 0.75,
+  "rarity": 0.7333,
+  "total": 0.7075
+ },
+ {
+  "candidate_id": "snapshot_183",
+  "statistical": 0.525,
+  "directional": 1.0,
+  "context": 0.5,
+  "rarity": 0.4667,
+  "total": 0.6775
+ },
+ {
+  "candidate_id": "snapshot_184",
+  "statistical": 0.6,
+  "directional": 0.7,
+  "context": 0.4167,
+  "rarity": 0.6333,
+  "total": 0.6033
+ },
+ {
+  "candidate_id": "snapshot_185",
+  "statistical": 0.2,
+  "directional": 1.0,
+  "context": 0.5833,
+  "rarity": 0.3667,
+  "total": 0.5817
+ },
+ {
+  "candidate_id": "snapshot_186",
+  "statistical": 0.525,
+  "directional": 0.7,
+  "context": 0.3333,
+  "rarity": 0.6333,
+  "total": 0.5642
+ },
+ {
+  "candidate_id": "snapshot_187",
+  "statistical": 0.525,
+  "directional": 0.55,
+  "context": 0.6667,
+  "rarity": 0.6333,
+  "total": 0.5783
+ },
+ {
+  "candidate_id": "snapshot_188",
+  "statistical": 0.45,
+  "directional": 0.1,
+  "context": 0.25,
+  "rarity": 0.4667,
+  "total": 0.29
+ },
+ {
+  "candidate_id": "snapshot_189",
+  "statistical": 0.675,
+  "directional": 0.3,
+  "context": 0.5833,
+  "rarity": 0.3667,
+  "total": 0.4792
+ },
+ {
+  "candidate_id": "snapshot_190",
+  "statistical": 0.5,
+  "directional": 0.55,
+  "context": 0.9167,
+  "rarity": 0.6333,
+  "total": 0.6208
+ },
+ {
+  "candidate_id": "snapshot_191",
+  "statistical": 0.2,
+  "directional": 0.8,
+  "context": 0.5,
+  "rarity": 0.4667,
+  "total": 0.51
+ },
+ {
+  "candidate_id": "snapshot_192",
+  "statistical": 0.05,
+  "directional": 0.4,
+  "context": 0.4167,
+  "rarity": 0.7667,
+  "total": 0.3533
+ },
+ {
+  "candidate_id": "snapshot_193",
+  "statistical": 0.45,
+  "directional": 0.8,
+  "context": 0.5,
+  "rarity": 0.6333,
+  "total": 0.61
+ },
+ {
+  "candidate_id": "snapshot_194",
+  "statistical": 0.6,
+  "directional": 0.3,
+  "context": 0.25,
+  "rarity": 0.3667,
+  "total": 0.39
+ },
+ {
+  "candidate_id": "snapshot_195",
+  "statistical": 0.375,
+  "directional": 0.55,
+  "context": 0.5,
+  "rarity": 0.5,
+  "total": 0.48
+ },
+ {
+  "candidate_id": "snapshot_196",
+  "statistical": 0.775,
+  "directional": 0.4,
+  "context": 0.9167,
+  "rarity": 0.4667,
+  "total": 0.6258
+ },
+ {
+  "candidate_id": "snapshot_197",
+  "statistical": 0.55,
+  "directional": 0.4,
+  "context": 0.5,
+  "rarity": 0.2,
+  "total": 0.435
+ },
+ {
+  "candidate_id": "snapshot_198",
+  "statistical": 0.45,
+  "directional": 0.1,
+  "context": 0.75,
+  "rarity": 0.7333,
+  "total": 0.43
+ },
+ {
+  "candidate_id": "snapshot_199",
+  "statistical": 0.525,
+  "directional": 0.7,
+  "context": 0.5,
+  "rarity": 0.7667,
+  "total": 0.6175
+ }
+]
