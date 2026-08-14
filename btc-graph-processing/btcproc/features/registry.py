@@ -115,6 +115,28 @@ def _smc_source() -> FeatureSource:
     )
 
 
+def _fgi_source() -> FeatureSource:
+    """
+    Fear & Greed Index — общерыночный внешний ряд, не считается из баров
+    монеты. `compute` джойнит `external_daily` на индекс переданных баров;
+    сетевого похода здесь нет — таблицу заполняет отдельная команда CLI
+    (`fetch-external`), см. `btcproc/features/fear_greed.py`.
+    """
+    from btcproc.features import fear_greed
+
+    def compute(base: pd.DataFrame) -> pd.DataFrame:
+        return fear_greed.build_fear_greed_cached(base)
+
+    return FeatureSource(
+        name="fgi",
+        features_enabled=lambda: config.fgi.features_on,
+        atoms_enabled=lambda: config.fgi.enabled,
+        feature_columns=tuple(fear_greed.FEATURE_CANDIDATES),
+        atom_columns=tuple(fear_greed.CONTEXT_CANDIDATES),
+        compute=compute,
+    )
+
+
 def sources() -> tuple[FeatureSource, ...]:
     """
     Все зарегистрированные источники, включённые и нет.
@@ -123,7 +145,7 @@ def sources() -> tuple[FeatureSource, ...]:
     колонок из своих модулей, и вычислять их на импорте `registry` значило бы
     тянуть `smc.py` (а завтра — ончейн-клиент) при любом обращении к реестру.
     """
-    return (_smc_source(),)
+    return (_smc_source(), _fgi_source())
 
 
 def enabled_feature_sources() -> list[FeatureSource]:

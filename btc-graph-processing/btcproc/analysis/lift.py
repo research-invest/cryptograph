@@ -462,6 +462,7 @@ def measure_lift(
     thinned: bool = False,
     ts_column: str = "ts",
     seed: int = 42,
+    min_block_rows: int | None = None,
 ) -> list[AtomLift]:
     """
     Лифт по каждому атому из списка.
@@ -479,6 +480,13 @@ def measure_lift(
     None — остаётся только наивный z-тест, то есть режим до 2026-08-11.
     Отключать стоит разве что ради сравнения со старыми замерами.
 
+    `min_block_rows` — нижняя граница длины блока бутстрапа: реальный блок
+    берётся как `max(блок по горизонту, min_block_rows)`. Нужен предикторам
+    с собственной автокорреляцией длиннее горизонта исхода (Fear & Greed —
+    дневной ряд, `docs/task_fear_greed.md` §1.3): блок по одному горизонту
+    занижает длину зависимости и завышает значимость. `None` — поведение не
+    меняется.
+
     `thinned=True` добавляет медиану z по прореживанию (дорого, sanity check).
 
     Возвращает список, отсортированный по убыванию |z|.
@@ -492,10 +500,14 @@ def measure_lift(
         block_length_rows(train[ts_column], horizon_minutes)
         if horizon_minutes and not train.empty else None
     )
+    if block and min_block_rows:
+        block = max(block, min_block_rows)
     block_test = (
         block_length_rows(test[ts_column], horizon_minutes)
         if horizon_minutes and test is not None and not test.empty else None
     )
+    if block_test and min_block_rows:
+        block_test = max(block_test, min_block_rows)
 
     results: list[AtomLift] = []
     for atom in atoms:

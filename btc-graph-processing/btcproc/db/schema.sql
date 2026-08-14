@@ -337,3 +337,27 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 
 CREATE INDEX IF NOT EXISTS notification_deliveries_recent_idx
     ON notification_deliveries (created_at DESC);
+
+-- ─── Внешние дневные ряды ───────────────────────────────────────────────────
+-- Общая таблица для ЛЮБОГО внешнего дневного ряда (Fear & Greed, фандинг,
+-- открытый интерес…), а не именная под конкретный источник: второй источник
+-- не должен требовать третьей таблицы. `series` различает их внутри одной
+-- таблицы (`'fear_greed'`, позже `'funding'` и т.п.).
+--
+-- Ряд общерыночный: он один на все монеты и джойнится к каждой отдельно
+-- (docs/task_fear_greed.md, раздел 3.1) — своей колонки symbol здесь нет.
+--
+-- `meta` хранит `value_classification` и прочее сырьё ответа поставщика —
+-- пригодится при разборе, не тратя отдельную колонку на каждое поле API.
+--
+-- `fetched_at` — когда мы увидели ЭТО значение (может обновляться при
+-- повторной загрузке, см. docs/task_fear_greed.md, раздел 3.3): поставщик
+-- иногда пересчитывает историю задним числом, и это должно быть видно.
+CREATE TABLE IF NOT EXISTS external_daily (
+    series     TEXT             NOT NULL,   -- 'fear_greed'
+    day        DATE             NOT NULL,   -- сутки UTC, к которым относится значение
+    value      DOUBLE PRECISION NOT NULL,
+    meta       JSONB,
+    fetched_at TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (series, day)
+);

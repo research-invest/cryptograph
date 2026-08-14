@@ -159,6 +159,7 @@ def run_one(symbol: str, args) -> list | None:
         horizon_minutes=horizon_minutes,
         n_boot=args.n_boot,
         thinned=args.thinned,
+        min_block_rows=args.block_rows,
     )
 
     span = f"{frame['ts'].min():%Y-%m-%d} … {frame['ts'].max():%Y-%m-%d}"
@@ -202,6 +203,12 @@ def main() -> int:
                         help="Только атомы, входящие в event_block_id")
     parser.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT,
                         help="Реплик блочного бутстрапа")
+    parser.add_argument("--block-rows", type=int, default=None,
+                        help="Нижняя граница длины блока бутстрапа в строках "
+                             "(max с блоком по горизонту). Нужна предикторам "
+                             "с собственной автокорреляцией длиннее горизонта "
+                             "исхода — напр. FGI, см. fgi_frequencies.py "
+                             "--section autocorr")
     parser.add_argument("--no-bootstrap", action="store_true",
                         help="Только наивный z-тест — режим до 2026-08-11. "
                              "Он анти-консервативен, годится лишь для сверки "

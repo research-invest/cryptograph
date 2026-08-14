@@ -53,6 +53,8 @@ from btcproc.analysis.lift import DEFAULT_N_BOOT, block_length_rows  # noqa: E40
 from btcproc.features import smc  # noqa: E402
 from btcproc.ingest import bars  # noqa: E402
 
+FGI_FEATURES = ["fgi_level", "fgi_residual"]
+
 
 def attach_features(frame: pd.DataFrame, symbol: str,
                     names: list[str]) -> pd.DataFrame:
@@ -80,6 +82,46 @@ def attach_features(frame: pd.DataFrame, symbol: str,
     return joined
 
 
+def attach_fgi_features(frame: pd.DataFrame, symbol: str,
+                        names: list[str]) -> pd.DataFrame:
+    """
+    То же самое для Fear & Greed: fgi_level напрямую из джойна дневного ряда,
+    fgi_residual — остаток OLS на 32 базовых признака (docs/task_fear_greed.md
+    §1.2), коэффициенты обучены на первых 70% истории и применены ко всей —
+    см. btcproc/analysis/fgi_novelty.py.
+
+    Используется, только если гейт N дал R² в [0.5, 0.8): «все замеры
+    дублируются на остатке» (§1.2) — если работает ценовая половина индекса,
+    а не он сам, монотонность у fgi_level будет, а у fgi_residual пропадёт.
+    """
+    from btcproc.analysis.fgi_novelty import compute_fgi_residual
+    from btcproc.features import builder as feat
+    from btcproc.features import fear_greed as fg
+    from btcproc.ingest import external
+
+    base = bars.load_ohlcv(symbol, config.data.base_tf, None, None)
+    if base.empty:
+        raise SystemExit(f"Нет баров по {symbol} — сначала ingest.")
+    daily = external.load_external_daily(external.FEAR_GREED_SERIES)
+    if daily.empty:
+        raise SystemExit("external_daily пуст — сначала `fetch-external`.")
+
+    values = fg.build_fear_greed(base, daily)[["fgi_level"]]
+    if "fgi_residual" in names:
+        context = {tf: bars.load_ohlcv(symbol, tf, None, None) for tf in config.data.context_tfs}
+        features = feat.build_features(base, context)
+        values = values.reindex(features.index)
+        values["fgi_residual"] = compute_fgi_residual(values["fgi_level"], features)
+
+    joined = frame.join(values[names], on="ts")
+    missing = int(joined[names[0]].isna().sum())
+    if missing:
+        joined = joined.dropna(subset=names)
+        print(f"Пропущено {missing} кандидатов без значения FGI "
+              f"(период до начала истории индекса, 2018-02-01, или вне прогрева признаков).")
+    return joined
+
+
 def run_one(symbol: str, args) -> list | None:
     model_run = samples.resolve_model_run(symbol, args.run)
     frame = samples.load(symbol, args.metric, model_run)
@@ -87,12 +129,19 @@ def run_one(symbol: str, args) -> list | None:
         print(f"Нет данных по {symbol}. Нужен прогон train или live.")
         return None
 
-    names = args.feature or list(smc.FEATURE_CANDIDATES)
-    unknown = [n for n in names if n not in smc.FEATURE_CANDIDATES]
-    if unknown:
-        raise SystemExit(f"Неизвестные признаки: {', '.join(unknown)}")
+    if args.source == "fgi":
+        names = args.feature or list(FGI_FEATURES)
+        unknown = [n for n in names if n not in FGI_FEATURES]
+        if unknown:
+            raise SystemExit(f"Неизвестные признаки: {', '.join(unknown)}")
+        frame = attach_fgi_features(frame, symbol, names)
+    else:
+        names = args.feature or list(smc.FEATURE_CANDIDATES)
+        unknown = [n for n in names if n not in smc.FEATURE_CANDIDATES]
+        if unknown:
+            raise SystemExit(f"Неизвестные признаки: {', '.join(unknown)}")
+        frame = attach_features(frame, symbol, names)
 
-    frame = attach_features(frame, symbol, names)
     if frame.empty:
         print(f"После джойна с барами по {symbol} ничего не осталось.")
         return None
@@ -108,6 +157,7 @@ def run_one(symbol: str, args) -> list | None:
         holdout=args.holdout or None,
         horizon_minutes=horizon_minutes,
         n_boot=args.n_boot,
+        min_block_rows=args.block_rows,
     )
 
     span = f"{frame['ts'].min():%Y-%m-%d} … {frame['ts'].max():%Y-%m-%d}"
@@ -117,6 +167,8 @@ def run_one(symbol: str, args) -> list | None:
              else "  (фактические исходы)"))
     if horizon_minutes:
         block = block_length_rows(frame["ts"], horizon_minutes)
+        if args.block_rows:
+            block = max(block, args.block_rows)
         print(f"Горизонт {config.data.horizon}; блок бутстрапа {block} строк, "
               f"реплик {args.n_boot}")
     print(f"Базовая доля: {frame['metric'].mean():.4f}, бинов: {args.bins}\n")
@@ -181,8 +233,15 @@ def main() -> int:
     parser.add_argument("--metric", choices=["long_outcome_share", "realized"],
                         default="realized",
                         help="По умолчанию realized — выводы делаются по ней")
+    parser.add_argument("--source", choices=["smc", "fgi"], default="smc",
+                        help="Чьи признаки мерить: SMC (12 штук) или "
+                             "Fear & Greed (fgi_level, fgi_residual)")
     parser.add_argument("--feature", action="append",
-                        help="Только эти признаки; по умолчанию все двенадцать")
+                        help="Только эти признаки; по умолчанию все признаки источника")
+    parser.add_argument("--block-rows", type=int, default=None,
+                        help="Нижняя граница длины блока бутстрапа (max с блоком "
+                             "по горизонту) — для FGI берётся из fgi_frequencies.py "
+                             "--section autocorr")
     parser.add_argument("--bins", type=int, default=DEFAULT_BINS)
     parser.add_argument("--correction", choices=["bonferroni", "bh", "none"],
                         default="bh",

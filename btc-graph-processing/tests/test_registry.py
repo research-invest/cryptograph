@@ -71,6 +71,12 @@ def test_two_sources_never_share_a_label():
 
 
 def test_feature_version_reflects_the_flags(monkeypatch):
+    # Каждый ЧУЖОЙ источник обязан быть выключен явно, иначе метка соберётся
+    # из состава, зависящего от окружения машины: с 2026-08-14 на боевом VPS
+    # стоит FGI_ENABLED=true, и «v1» превращалось в «v1+fgi» — тест зеленел
+    # локально и падал при выкатке. Заводя третий источник, добавь его сюда.
+    monkeypatch.setattr(config, "fgi",
+                        config.FearGreedConfig(enabled=False, features_enabled=False))
     monkeypatch.setattr(config, "smc",
                         config.SMCConfig(enabled=False, features_enabled=False))
     assert builder.feature_version() == "v1"

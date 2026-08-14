@@ -304,6 +304,7 @@ def measure_gradation(
     horizon_minutes: int | None = None,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = 42,
+    min_block_rows: int | None = None,
 ) -> list[TrendResult]:
     """
     Квантильный лифт с тестом на монотонность по каждому признаку.
@@ -311,6 +312,11 @@ def measure_gradation(
     frame — строка на кандидата: `ts`, метрика в [0, 1] и колонка на каждый
     проверяемый признак. Holdout и поправка на множественные сравнения —
     те же, что в `lift.measure_lift`, и по той же причине.
+
+    `min_block_rows` — нижняя граница длины блока (см. `lift.measure_lift`):
+    реальный блок — `max(блок по горизонту, min_block_rows)`. Нужна
+    признакам с собственной автокорреляцией длиннее горизонта исхода
+    (Fear & Greed Index, `docs/task_fear_greed.md` §1.3).
     """
     if correction not in ("bonferroni", "bh", "none"):
         raise ValueError(f"неизвестная поправка: {correction}")
@@ -324,8 +330,12 @@ def measure_gradation(
 
     block = (block_length_rows(train[ts_column], horizon_minutes)
              if horizon_minutes and not train.empty else None)
+    if block and min_block_rows:
+        block = max(block, min_block_rows)
     block_test = (block_length_rows(test[ts_column], horizon_minutes)
                   if horizon_minutes and test is not None and not test.empty else None)
+    if block_test and min_block_rows:
+        block_test = max(block_test, min_block_rows)
 
     results: list[TrendResult] = []
     for feature in features:

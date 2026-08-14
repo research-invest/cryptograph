@@ -438,6 +438,39 @@ def status(
         )
 
 
+@app.command("fetch-external")
+def fetch_external(
+    series: str = typer.Option("fear_greed", help="Какой внешний ряд качать"),
+) -> None:
+    """
+    Скачать внешний дневной ряд (Fear & Greed Index и т.п.) в external_daily.
+
+    Отдельная команда намеренно: сетевой поход в чужой API не должен идти
+    внутри train/live и рисковать их регулярным расписанием
+    (docs/task_fear_greed.md, раздел 8). Гоняется отдельно, обычно раз в сутки.
+    """
+    from btcproc.ingest import external
+
+    if series != "fear_greed":
+        raise typer.BadParameter(f"Неизвестный ряд {series!r}. Известен: fear_greed.")
+
+    result = external.sync_fear_greed()
+    if result["rows"] == 0:
+        typer.echo("Поставщик не вернул строк.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"{series}: сохранено {result['rows']} суток ({result.get('span', '—')})")
+    if result["revised_days"]:
+        typer.echo(
+            typer.style(
+                f"  ВНИМАНИЕ: {result['revised_days']} суток разошлись со "
+                "старым снимком — поставщик пересчитал историю задним числом. "
+                "Запиши в development_log.md.",
+                fg=typer.colors.YELLOW,
+            )
+        )
+
+
 @app.command("notify-example")
 def notify_example(
     mode: str = typer.Option("full", help="Формат payload: full | compact"),

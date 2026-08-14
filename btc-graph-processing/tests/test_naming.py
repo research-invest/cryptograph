@@ -83,19 +83,41 @@ def test_label_format():
 @pytest.fixture(scope="module")
 def all_features(bars, context, monkeypatch_module):
     """
-    Полный набор признаков — базовый плюс SMC.
+    Полный набор признаков — базовый плюс SMC плюс Fear & Greed.
 
-    Словарь имён обязан покрывать и то, и другое, поэтому сверяться с
-    набором, собранным при выключенном SMC, нельзя: половина проверки
-    просто не состоится. Флаги задаются ЯВНО — дефолты SMCConfig читаются
-    из окружения, и на сервере с SMC_ENABLED=true «умолчание» означает
-    другое (см. смысл фикстуры smc_off в test_smc.py).
+    Словарь имён обязан покрывать все источники, поэтому сверяться с
+    набором, собранным при выключенных источниках, нельзя: часть проверки
+    просто не состоится. Флаги задаются ЯВНО — дефолты SMCConfig/FearGreedConfig
+    читаются из окружения, и на сервере с SMC_ENABLED=true «умолчание»
+    означает другое (см. смысл фикстуры smc_off в test_smc.py).
+
+    FGI джойнит внешний ряд из БД (`ingest.external.load_external_daily`) —
+    тесты в БД не ходят, поэтому загрузчик подменяется синтетическим рядом,
+    покрывающим диапазон дат фикстуры `bars`.
     """
+    import pandas as pd
+
     from btcproc import config
     from btcproc.features.builder import build_features
+    from btcproc.ingest import external
 
     monkeypatch_module.setattr(
         config, "smc", config.SMCConfig(enabled=True, features_enabled=True)
+    )
+    monkeypatch_module.setattr(
+        config, "fgi", config.FearGreedConfig(enabled=True, features_enabled=True)
+    )
+    days = pd.date_range(
+        bars.index[0].normalize() - pd.Timedelta(days=1),
+        bars.index[-1].normalize() + pd.Timedelta(days=1),
+        freq="1D", tz="UTC",
+    )
+    synthetic_daily = pd.DataFrame(
+        {"value": 50.0 + 40.0 * pd.Series(range(len(days))).mod(7).sub(3) / 3.0},
+        index=days,
+    )
+    monkeypatch_module.setattr(
+        external, "load_external_daily", lambda series, start=None, end=None: synthetic_daily
     )
     return build_features(bars, context)
 

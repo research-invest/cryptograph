@@ -451,8 +451,11 @@ def test_smc_atoms_are_all_context(smc_on):
     assert len(events.SMC_ATOMS) == 16
     assert set(events.SMC_ATOMS) <= events.CONTEXT_ATOMS
     assert not (set(events.SMC_ATOMS) & set(events.SIGNATURE_ATOMS))
-    assert len(events.ATOMS) == 45
-    assert len(events.CONTEXT_ATOMS) == 25
+    # 45 базовых+SMC + 4 контекстных атома Fear & Greed (добавлены 2026-08-14,
+    # docs/task_fear_greed.md) — все четыре тоже контекстные, сигнатурные
+    # 20 не меняются.
+    assert len(events.ATOMS) == 49
+    assert len(events.CONTEXT_ATOMS) == 29
     assert len(events.SIGNATURE_ATOMS) == 20
 
     # Отвергнутые замером фазы 2 в реестр не попали.

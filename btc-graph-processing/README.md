@@ -150,12 +150,16 @@ btc-graph-processing/
 │   ├── cli.py                   init-db / ingest / train / live / emit / status / admin
 │   │
 │   ├── ingest/
-│   │   └── binance.py           месячные дампы data.binance.vision, REST-хвост,
-│   │                            агрегация старших ТФ из базового
+│   │   ├── binance.py           месячные дампы data.binance.vision, REST-хвост,
+│   │   │                        агрегация старших ТФ из базового
+│   │   └── external.py          внешние дневные ряды (Fear & Greed) → external_daily;
+│   │                            отдельная команда fetch-external, вне train/live
 │   ├── features/
 │   │   ├── indicators.py        EMA, RSI, ATR, realized vol, ранги — только по прошлому
 │   │   ├── builder.py           32 стационарных признака, старшие ТФ со сдвигом на бар
-│   │   └── events.py            45 атомов в 11 семействах; в event_block_id входят
+│   │   ├── fear_greed.py        Fear & Greed Index: джойн дневного ряда со сдвигом
+│   │   │                        на сутки; 4 контекстных атома, 2 признака (выключены)
+│   │   └── events.py            49 атомов в 12 семействах; в event_block_id входят
 │   │                            только 20 signature, контекст — отдельной колонкой
 │   ├── states/
 │   │   ├── clustering.py        адаптивная гранулярность: дробление + слияние, StateModel

@@ -378,6 +378,39 @@ class SMCConfig:
 
 
 @dataclass(frozen=True)
+class FearGreedConfig:
+    """
+    Fear & Greed Index (alternative.me) — общерыночный внешний ряд.
+
+    `docs/task_fear_greed.md`: заводится не для предсказания направления
+    (это закрыто замерами — раздел 26 и 31 журнала), а как предиктор размаха
+    и описательный контекст. Два флага той же формы, что у SMCConfig, и по
+    той же причине: атомы бесплатны и обратимы, признаки требуют train.
+
+    В отличие от SMC величина не считается из баров, а джойнится из
+    `external_daily` (btcproc/ingest/external.py) — сетевого похода здесь
+    нет, таблицу заполняет отдельная команда `fetch-external`.
+    """
+
+    enabled: bool = _env_bool("FGI_ENABLED", False)             # контекстные атомы
+    features_enabled: bool = _env_bool("FGI_FEATURES_ENABLED", False)  # признаки
+
+    @property
+    def features_on(self) -> bool:
+        return self.enabled and self.features_enabled
+
+    # Пороги атомов (docs/task_fear_greed.md, §4.1). Не в деньгах и не в ATR —
+    # индекс сам по себе безразмерная шкала 0–100, ограниченная по построению,
+    # поэтому масштабная инвариантность здесь тривиальна и пороги общие.
+    fear_extreme_below: float = _env_float("FGI_FEAR_EXTREME_BELOW", 25.0)
+    greed_extreme_above: float = _env_float("FGI_GREED_EXTREME_ABOVE", 75.0)
+    flip_midpoint: float = _env_float("FGI_FLIP_MIDPOINT", 50.0)
+
+    # Окно скорости смены настроения (fgi_change_7d).
+    change_window_days: int = _env_int("FGI_CHANGE_WINDOW_DAYS", 7)
+
+
+@dataclass(frozen=True)
 class SinkConfig:
     mode: str = _env("SINK_MODE", "direct")  # direct | http | none
     # Каталог соседнего проекта btc-graph. Дефолт вычисляется от расположения
@@ -512,6 +545,7 @@ runs = RunsConfig()
 states = StatesConfig()
 candidates = CandidateConfig()
 smc = SMCConfig()
+fgi = FearGreedConfig()
 sink = SinkConfig()
 notify = NotifyConfig()
 admin = AdminConfig()

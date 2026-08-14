@@ -61,6 +61,12 @@ TRAIN_CRON="${TRAIN_CRON:-20 3 * * 0}"
 # рядом с train, оно пропускалось бы каждый раз. 04:40 — между запусками
 # live (:00 и :30), в самый тихий час.
 MAINT_CRON="${MAINT_CRON:-40 4 * * 3}"
+# Внешние дневные ряды (Fear & Greed) в external_daily. Отдельным кроном, а не
+# внутри live, потому что это единственный поход в ЧУЖОЙ API: его недоступность
+# не должна ронять регулярный прогон. Раз в сутки достаточно — ряд дневной.
+# 05:10 UTC: alternative.me обновляет индекс около полуночи UTC, а к этому часу
+# live уже отработал и train по воскресеньям ещё не начался.
+FETCH_CRON="${FETCH_CRON:-10 5 * * *}"
 # Откуда добирается свежий хвост баров. Дефолт здесь не совпадает с дефолтом
 # btcproc намеренно: VPS часто стоит в юрисдикции, откуда api.binance.com
 # отвечает 451, и обнаруживается это только падением прогона на последнем
@@ -418,6 +424,25 @@ DATA_DIR=./data
 # адреса live не работал бы вовсе, а train падал бы на последнем месяце.
 # data-api.binance.vision — тот же публичный /api/v3/klines, без ключей.
 BINANCE_REST_URL=$BINANCE_REST_URL
+
+# ─── Источники сигнала ──────────────────────────────────────────────────────
+# У каждого источника ДВА флага, и это не дублирование. Контекстные атомы
+# бесплатны и обратимы: в event_block_id не входят, переобучения не требуют,
+# live со старой моделью просто пишет их в bar_events.context_atoms. Признаки
+# дороги: метка набора меняется, нужен полный train, group_id
+# перенумеровываются, накопленный граф Neo4j сносится.
+#
+# Оба источника прошли механизм docs/extending_features.md целиком, и оба
+# ОТВЕРГНУТЫ по замерам (SMC — журнал 22.5, Fear & Greed — журнал 34): ни один
+# не предсказывает ни направление, ни размах. Атомы включены не потому, что
+# работают, а потому что размечают историю даром — «зона ликвидности»,
+# «крайний страх» на узле графа и в инспекторе бара. Признаки выключены оба.
+SMC_ENABLED=true
+SMC_FEATURES_ENABLED=false
+# FGI требует наполненной external_daily: без неё атомы молча всегда False.
+# Наполняет крон fetch-external (FETCH_CRON), включённый ниже вместе с флагом.
+FGI_ENABLED=true
+FGI_FEATURES_ENABLED=false
 
 # ─── Пороги кластеризации ───────────────────────────────────────────────────
 STATES_MIN_GROUP_SHARE=0.0025
@@ -844,7 +869,7 @@ step "Ставлю расписание"
 LIVE_ARGS=""
 for symbol in $TRAIN_SYMBOLS; do LIVE_ARGS="$LIVE_ARGS --symbol $symbol"; done
 REMOTE_DIR="$REMOTE_DIR" LIVE_ARGS="$LIVE_ARGS" LIVE_CRON="$LIVE_CRON" \
-    TRAIN_CRON="$TRAIN_CRON" MAINT_CRON="$MAINT_CRON" remote <<EOF
+    TRAIN_CRON="$TRAIN_CRON" MAINT_CRON="$MAINT_CRON" FETCH_CRON="$FETCH_CRON" remote <<EOF
 MARK="# crypto-graph"
 # Вычищаются И строки-маркеры, И сами команды — иначе повторный запуск
 # скрипта плодит дубли расписания. Маркер стоит только в комментариях, а
@@ -868,6 +893,13 @@ $LIVE_CRON $REMOTE_DIR/bin/btcproc live$LIVE_ARGS --skip-if-busy >> $REMOTE_DIR/
 \$MARK   ВНИМАНИЕ: train перенумеровывает group_id. Сравнивать кандидатов
 \$MARK   разных прогонов можно только через runs.model_run_scope().
 $TRAIN_CRON $REMOTE_DIR/bin/btcproc train$LIVE_ARGS --no-emit --skip-if-busy >> $REMOTE_DIR/logs/train.log 2>&1
+\$MARK — внешние дневные ряды (Fear & Greed) в external_daily
+\$MARK   ЕДИНСТВЕННЫЙ поход в чужой API во всём расписании. В live его нет
+\$MARK   намеренно: недоступность alternative.me не должна ронять прогон.
+\$MARK   Обратная сторона — если этот крон молча перестанет отрабатывать,
+\$MARK   FGI-атомы на свежих барах станут False без единой ошибки в логе.
+\$MARK   Проверять по logs/fetch-external.log: он печатает диапазон суток.
+$FETCH_CRON $REMOTE_DIR/bin/btcproc fetch-external >> $REMOTE_DIR/logs/fetch-external.log 2>&1
 \$MARK — ежедневная сводка: покрытие истории, отставание, очередь отправки
 17 6 * * * $REMOTE_DIR/bin/btcproc status >> $REMOTE_DIR/logs/status.log 2>&1
 \$MARK — недельная уборка базы: разметка старых live-прогонов + вакуум.

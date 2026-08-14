@@ -93,7 +93,16 @@
       "Bash(/usr/local/go/bin/go env *)",
       "Bash(/usr/local/go/bin/go vet *)",
       "Bash(/usr/local/go/bin/go build *)",
-      "Bash(/usr/local/go/bin/gofmt -w main.go)"
+      "Bash(/usr/local/go/bin/gofmt -w main.go)",
+      "Bash(rmdir docs/_fgi_gate_d)",
+      "Bash(FGI_ENABLED=true python3 scripts/backfill_context_atoms.py --dry-run --all)",
+      "Bash(FGI_ENABLED=true python3 scripts/backfill_context_atoms.py --dry-run --force --all)",
+      "Bash(FGI_ENABLED=true python3 scripts/backfill_context_atoms.py --force --all)",
+      "Bash(nohup python3 scripts/measure_atom_lift.py --context-only --metric realized --all --block-rows 12000 --n-boot 2000)",
+      "Bash(nohup python3 scripts/measure_feature_gradation.py --source fgi --all --block-rows 12000 --n-boot 2000)",
+      "Bash(nohup python3 scripts/measure_fgi_range.py --all)",
+      "Bash(FGI_ENABLED=true SMC_ENABLED=true python3 -m pytest)",
+      "Bash(FGI_ENABLED=false SMC_ENABLED=false python3 -m pytest)"
     ],
     "deny": [
       "Bash(rm -rf /)",

@@ -118,6 +118,16 @@ ATOM_FAMILY: dict[str, str] = {
     "in_breaker": "zone_events",
     "in_discount": "zone_events",
     "in_premium": "zone_events",
+
+    # ─── Fear & Greed Index, добавлены 2026-08-14 ──────────────────────────
+    # Все четыре — контекстные: индекс общерыночный (один ряд на все монеты,
+    # docs/task_fear_greed.md §1.1), а не происшествие конкретного бара.
+    # Считаются только при FGI_ENABLED=true; иначе колонки есть, но всегда
+    # False — набор имён не должен зависеть от флага.
+    "fear_extreme": "sentiment_events",
+    "greed_extreme": "sentiment_events",
+    "sentiment_flip_up": "sentiment_events",
+    "sentiment_flip_down": "sentiment_events",
 }
 
 ATOMS = list(ATOM_FAMILY)
@@ -153,6 +163,10 @@ CONTEXT_ATOMS = {
     "us_session",
     "weekend",
     *SMC_ATOMS,
+    "fear_extreme",
+    "greed_extreme",
+    "sentiment_flip_up",
+    "sentiment_flip_down",
 }
 
 SIGNATURE_ATOMS = [a for a in ATOMS if a not in CONTEXT_ATOMS]
