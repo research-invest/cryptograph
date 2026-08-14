@@ -102,7 +102,8 @@
       "Bash(nohup python3 scripts/measure_feature_gradation.py --source fgi --all --block-rows 12000 --n-boot 2000)",
       "Bash(nohup python3 scripts/measure_fgi_range.py --all)",
       "Bash(FGI_ENABLED=true SMC_ENABLED=true python3 -m pytest)",
-      "Bash(FGI_ENABLED=false SMC_ENABLED=false python3 -m pytest)"
+      "Bash(FGI_ENABLED=false SMC_ENABLED=false python3 -m pytest)",
+      "Bash(node --check /tmp/chart_extracted.js)"
     ],
     "deny": [
       "Bash(rm -rf /)",

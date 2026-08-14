@@ -51,9 +51,27 @@
       <option value="off" selected>не показывать</option>
     </select>
   </label>
+  {# Четыре признака из базового набора v1 — есть у любой модели любой
+     монеты независимо от флагов SMC/FGI, поэтому жёстко зашиты кнопками,
+     а не собраны из data.indicators. Каждый включается независимо и все
+     ложатся на одну панель — все четыре в диапазоне [0..1]. #}
+  <label>Наложить
+    <div class="osc-group">
+      <button type="button" class="osc-toggle" data-feature="rsi"
+              style="--osc-color: var(--chart-osc-rsi)" title="Импульс: перекуплен / перепродан">RSI</button>
+      <button type="button" class="osc-toggle" data-feature="pos_1d"
+              style="--osc-color: var(--chart-osc-1d)" title="Положение в дневном диапазоне">День</button>
+      <button type="button" class="osc-toggle" data-feature="pos_1w"
+              style="--osc-color: var(--chart-osc-1w)" title="Положение в недельном диапазоне">Неделя</button>
+      <button type="button" class="osc-toggle" data-feature="pos_1m"
+              style="--osc-color: var(--chart-osc-1m)" title="Положение в месячном диапазоне">Месяц</button>
+    </div>
+  </label>
   {# Список признаков приходит с данными: он зависит от набора, которым
-     обучена модель прогона, и жёстко зашитый здесь разъехался бы с ней. #}
-  <label>Признак
+     обучена модель прогона, и жёстко зашитый здесь разъехался бы с ней.
+     В отличие от кнопок выше, выбор здесь ДОБАВЛЯЕТ линию к уже наложенным,
+     а не заменяет их — общий механизм в syncIndicators(). #}
+  <label>Ещё признак
     <select id="indicator"><option value="">нет</option></select>
   </label>
   <div class="spacer"></div>
@@ -196,9 +214,20 @@ function subChartOptions() {
   });
 }
 const subChart = LightweightCharts.createChart(el('indicator-pane'), subChartOptions());
-const indicatorSeries = subChart.addLineSeries({
-  color: cssVar('--chart-indicator'), lineWidth: 2, priceLineVisible: false,
-});
+
+// Наложенные линии панели признака: несколько сразу, по образцу
+// tradingview.github.io/lightweight-charts/tutorials/demos/compare-multiple-series.
+// Ключ — имя признака, значение общее что для кнопок-пресетов (RSI, положение
+// на трёх горизонтах), что для произвольного признака из выпадающего списка:
+// один признак — одна линия независимо от того, что её попросило показать.
+const OSC_PRESETS = {
+  rsi:    { label: 'RSI',    colorVar: '--chart-osc-rsi' },
+  pos_1d: { label: 'День',   colorVar: '--chart-osc-1d' },
+  pos_1w: { label: 'Неделя', colorVar: '--chart-osc-1w' },
+  pos_1m: { label: 'Месяц',  colorVar: '--chart-osc-1m' },
+};
+let activeIndicators = new Map();   // name -> { series, colorVar, values: Map(time->value), meta }
+const presetOn = new Set();         // включённые кнопками пресеты
 
 // Шкала цены: запас сверху и снизу под маркеры. Стрелки кандидатов стоят
 // под баром и над баром, и без полей нижние срезались бы краем окна.
@@ -259,8 +288,6 @@ let bars = [];
 // Русские подписи атомов приходят одним словарём на ответ: в каждом баре
 // лежат идентификаторы.
 let atomLabels = {};
-// Значения выбранного признака по времени бара — для подсказки и инспектора.
-let indicatorValues = new Map();
 
 // Сколько баров подряд должно держаться состояние, чтобы получить подпись.
 // Порог адаптивный: на 1500 барах смен состояния под две сотни при медианном
@@ -354,7 +381,7 @@ async function load() {
     series.setData([]);
     series.setMarkers([]);
     volumeSeries.setData([]);
-    indicatorSeries.setData([]);
+    for (const e of activeIndicators.values()) e.series.setData([]);
     return;
   }
   series.setData(data.bars);
@@ -399,9 +426,9 @@ async function load() {
   // масштабе прошлой выборки и мог оказаться целиком за краем окна.
   fitPrice();
 
-  // Признак грузится отдельным запросом уже по готовым барам: его диапазон
+  // Признаки грузятся отдельными запросами уже по готовым барам: их диапазон
   // задаётся ими, а не формой — окно могло быть обрезано лимитом.
-  await loadIndicator();
+  await syncIndicators();
 }
 
 // ─── Объём ──────────────────────────────────────────────────────────────────
@@ -450,20 +477,51 @@ function fillIndicatorSelect(items) {
   select.value = items.some(item => item.name === chosen) ? chosen : '';
 }
 
-async function loadIndicator() {
-  const name = el('indicator').value;
-  const pane = el('indicator-pane');
-  indicatorValues = new Map();
+// Что показать на панели: пресеты кнопками + не более одного признака из
+// выпадающего списка. Один и тот же признак из двух источников — одна линия,
+// Set сам схлопывает дубликат.
+function wantedIndicators() {
+  const wanted = new Set(presetOn);
+  const dropdown = el('indicator').value;
+  if (dropdown) wanted.add(dropdown);
+  return wanted;
+}
 
-  if (!name || !bars.length) {
+// Догоняет набор линий на панели до `wantedIndicators()`: лишние снимает,
+// недостающие заводит и грузит. Дергается и кнопками/селектом, и после
+// каждой перезагрузки баров — окно могло сдвинуться.
+async function syncIndicators() {
+  const wanted = wantedIndicators();
+  const pane = el('indicator-pane');
+
+  for (const name of [...activeIndicators.keys()]) {
+    if (wanted.has(name)) continue;
+    subChart.removeSeries(activeIndicators.get(name).series);
+    activeIndicators.delete(name);
+  }
+
+  if (wanted.size === 0 || !bars.length) {
     pane.classList.remove('on');
     // Панель занимает место под графиком — вернуть его нужно ровно тогда,
     // когда панель скрыта, иначе свечи останутся сплюснутыми.
     document.documentElement.style.setProperty('--chart-extra', '0px');
-    indicatorSeries.setData([]);
+    renderIndicatorLegend();
     return;
   }
 
+  await Promise.all([...wanted].map(loadOneIndicator));
+
+  pane.classList.add('on');
+  document.documentElement.style.setProperty('--chart-extra', '190px');
+  const range = chart.timeScale().getVisibleLogicalRange();
+  if (range) subChart.timeScale().setVisibleLogicalRange(range);
+  renderIndicatorLegend();
+}
+
+// Грузит один признак и заводит (или переиспользует) под него линию.
+// Пресеты красятся фиксированным цветом кнопки, произвольный признак из
+// списка — тем же синим, что и раньше был единственным.
+async function loadOneIndicator(name) {
   const params = new URLSearchParams({
     run: el('run').value, symbol: SYMBOL, name,
     start: new Date(bars[0].time * 1000).toISOString(),
@@ -472,24 +530,45 @@ async function loadIndicator() {
   const response = await fetch('/api/chart/indicator?' + params);
   const data = await response.json();
 
-  indicatorValues = new Map((data.points || []).map(p => [p.time, p.value]));
+  let entry = activeIndicators.get(name);
+  if (!entry) {
+    const colorVar = (OSC_PRESETS[name] || {}).colorVar || '--chart-indicator';
+    entry = {
+      series: subChart.addLineSeries({
+        color: cssVar(colorVar), lineWidth: 2, priceLineVisible: false,
+      }),
+      colorVar,
+      values: new Map(),
+      meta: {},
+    };
+    activeIndicators.set(name, entry);
+  }
+
+  entry.values = new Map((data.points || []).map(p => [p.time, p.value]));
+  entry.meta = {
+    label: (OSC_PRESETS[name] || {}).label || data.name,
+    high: data.high, low: data.low, note: data.note, version: data.version,
+  };
   // Точка на КАЖДЫЙ бар: там, где значения нет, уходит whitespace `{time}`.
   // Иначе логические индексы серий разойдутся и панель поедет относительно
   // свечей — см. linkTimeScales выше.
-  indicatorSeries.setData(bars.map(b => (
-    indicatorValues.has(b.time) ? { time: b.time, value: indicatorValues.get(b.time) }
-                                : { time: b.time }
+  entry.series.setData(bars.map(b => (
+    entry.values.has(b.time) ? { time: b.time, value: entry.values.get(b.time) }
+                             : { time: b.time }
   )));
+}
 
-  pane.classList.add('on');
-  document.documentElement.style.setProperty('--chart-extra', '190px');
-  const range = chart.timeScale().getVisibleLogicalRange();
-  if (range) subChart.timeScale().setVisibleLogicalRange(range);
-
-  const scale = data.high ? ` — вверх: ${data.high}, вниз: ${data.low}` : '';
-  const note = data.note ? ` <span class="chip warn">${data.note}</span>` : '';
-  el('subTitle').innerHTML =
-    `<b>${data.name}</b>${scale} · набор ${data.version || '—'}${note}`;
+// Заголовок панели: чип на каждую наложенную линию, цвет чипа = цвет линии.
+// Пресетным кнопкам подсказка про масштаб не нужна — они все в [0..1] и это
+// видно из названия; произвольному признаку из списка показываем шкалу и
+// набор, как раньше показывал единственный подзаголовок.
+function renderIndicatorLegend() {
+  el('subTitle').innerHTML = [...activeIndicators.entries()].map(([name, e]) => {
+    const scale = e.meta.high ? ` — ${e.meta.high} / ${e.meta.low}` : '';
+    const note = e.meta.note ? ` <span class="chip warn">${e.meta.note}</span>` : '';
+    return `<span class="chip"><i style="background:var(${e.colorVar})"></i>` +
+           `<b>${e.meta.label || name}</b>${scale}</span>${note}`;
+  }).join(' ');
 }
 
 // ─── Инспектор бара ─────────────────────────────────────────────────────────
@@ -542,10 +621,9 @@ function showBar(bar) {
   }
   if (bar.transition_id) parts.push(`переход ${bar.transition_id}`);
 
-  const indicator = el('indicator').value;
-  if (indicator) {
-    const value = indicatorValues.get(bar.time);
-    parts.push(`${indicator} = ` +
+  for (const [iname, e] of activeIndicators) {
+    const value = e.values.get(bar.time);
+    parts.push(`${e.meta.label || iname} = ` +
       (value === undefined ? '—' : value.toLocaleString('ru-RU', { maximumFractionDigits: 3 })));
   }
 
@@ -596,11 +674,15 @@ chart.subscribeCrosshairMove((param) => {
   // и события у него есть всегда.
   showBar(bar);
   // Крестик ведём и по панели признака — иначе на ней приходится угадывать,
-  // какая точка соответствует бару под курсором.
-  const value = indicatorValues.get(param.time);
+  // какая точка соответствует бару под курсором. При нескольких наложенных
+  // линиях позиционная метка одна на всю панель (API lightweight-charts не
+  // рисует её на каждой линии отдельно) — берём первую активную, вертикаль
+  // крестика при этом общая для всех линий и от выбора не зависит.
+  const first = activeIndicators.values().next().value;
+  const value = first && first.values.get(param.time);
   crosshairSyncing = true;
-  if (value !== undefined) {
-    subChart.setCrosshairPosition(value, param.time, indicatorSeries);
+  if (first && value !== undefined) {
+    subChart.setCrosshairPosition(value, param.time, first.series);
   } else {
     subChart.clearCrosshairPosition();
   }
@@ -662,9 +744,20 @@ el('fit').addEventListener('click', () => {
 });
 ['run', 'limit', 'rating', 'stateLabels'].forEach(
   id => el(id).addEventListener('change', load));
-// Признак меняется без перезагрузки баров: иначе график сбрасывал бы позицию
-// и масштаб на каждое переключение панели.
-el('indicator').addEventListener('change', loadIndicator);
+// Признаки меняются без перезагрузки баров: иначе график сбрасывал бы
+// позицию и масштаб на каждое переключение панели.
+el('indicator').addEventListener('change', syncIndicators);
+// Кнопки наложения — независимые тумблеры: клик переключает и признак в
+// presetOn, и класс .on самой кнопки, дальше syncIndicators доводит панель
+// до этого набора.
+document.querySelectorAll('.osc-toggle').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const name = btn.dataset.feature;
+    if (presetOn.has(name)) presetOn.delete(name); else presetOn.add(name);
+    btn.classList.toggle('on');
+    syncIndicators();
+  });
+});
 // Объём — тем более: данные для него уже в барах.
 el('volume').addEventListener('change', () => {
   volumeSeries.setData(volumeData(bars));
@@ -677,7 +770,7 @@ el('volume').addEventListener('change', () => {
 window.addEventListener('btcproc:theme', () => {
   chart.applyOptions(chartTheme());
   subChart.applyOptions(subChartOptions());
-  indicatorSeries.applyOptions({ color: cssVar('--chart-indicator') });
+  for (const e of activeIndicators.values()) e.series.applyOptions({ color: cssVar(e.colorVar) });
   volumeSeries.setData(volumeData(bars));
 });
 
