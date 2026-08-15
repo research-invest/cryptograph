@@ -180,3 +180,91 @@ def test_transition_rarity_covers_all_buckets(features):
     assert len(groups) == states["group_id"].nunique()
     payload = graph.to_cytoscape(groups, transitions)
     assert payload["nodes"] and payload["edges"]
+
+
+def test_fit_labels_equal_predict(features):
+    """
+    Регрессия на B7 (аудит 2026-08-15): train и live обязаны размечать
+    историю ОДНИМ правилом.
+
+    До правки train сохранял в bar_states членство в группах рекурсивного
+    дробления, а live размечал ту же историю ближайшим центроидом; на боевых
+    моделях правила расходились на 21–28% баров, и market_groups описывали
+    разбиение, которое боевой предиктор не воспроизводит.
+    """
+    scale = builder.robust_scale_params(features)
+    matrix = builder.apply_scale(features, scale)
+    cfg = config.StatesConfig(seed_clusters=4, min_group_size=400, max_depth=2)
+    model, labels = clustering.fit_states(matrix, list(features.columns), scale, cfg)
+
+    assert np.array_equal(labels, model.predict(matrix))
+    # Нумерация по убыванию наполнения: «1.0» — самое частое состояние.
+    sizes = pd.Series(labels).value_counts()
+    assert list(sizes.index) == sorted(sizes.index, key=lambda gid: -sizes[gid])
+    assert sizes.index.min() == 1.0
+    # Пустых состояний быть не может — центроид без баров отбрасывается.
+    assert set(labels) == set(model.group_ids)
+
+
+def test_predict_matches_naive_distance():
+    """
+    O1 (аудит 2026-08-15): predict считается через разложение квадрата
+    нормы. Метки обязаны совпадать с честной нормой разностей — иначе
+    экономия памяти куплена сменой разбиения.
+    """
+    rng = np.random.default_rng(17)
+    x = rng.normal(0, 2, size=(4000, 12))
+    centroids = rng.normal(0, 2, size=(23, 12))
+    model = clustering.StateModel(
+        feature_names=[f"f{i}" for i in range(12)],
+        scale={"median": np.zeros(12), "iqr": np.ones(12)},
+        centroids=centroids,
+        group_ids=np.arange(1, 24, dtype=float),
+    )
+    naive = np.linalg.norm(x[:, None, :] - centroids[None, :, :], axis=2).argmin(axis=1)
+    assert np.array_equal(model.predict(x), model.group_ids[naive])
+
+
+def test_merge_close_matches_the_brute_force_rule():
+    """
+    O4 (аудит 2026-08-15): слияние переписано на инкрементальный пересчёт
+    (кэш центроидов + только пары с новой группой). Правило выбора не
+    менялось, значит результат обязан совпасть с прямолинейной реализацией —
+    «на каждой итерации пересчитать все пары заново».
+    """
+    rng = np.random.default_rng(29)
+    # Часть облаков намеренно перекрывается — иначе сливать нечего и тест
+    # проверял бы пустой цикл.
+    x = np.vstack([
+        rng.normal(centre, 0.9, size=(400, 5))
+        for centre in ([0, 0, 0, 0, 0], [0.4, 0.2, 0, 0, 0], [0.1, 0.5, 0, 0, 0],
+                       [6, 6, 0, 0, 0], [6.3, 5.7, 0, 0, 0], [-7, 4, 0, 0, 0])
+    ])
+    groups = [np.arange(i * 400, (i + 1) * 400) for i in range(6)]
+    cfg = config.StatesConfig(merge_separation=1.2)
+
+    def brute_force(groups):
+        groups, changed = list(groups), True
+        while changed and len(groups) > 1:
+            changed = False
+            best_pair, best_sep = None, np.inf
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    sep = clustering._separation(x, groups[i], groups[j])
+                    if sep < cfg.merge_separation and sep < best_sep:
+                        best_pair, best_sep = (i, j), sep
+            if best_pair is not None:
+                i, j = best_pair
+                merged = np.concatenate([groups[i], groups[j]])
+                groups = [g for k, g in enumerate(groups) if k not in (i, j)] + [merged]
+                changed = True
+        return groups
+
+    fast = clustering._merge_close(x, list(groups), cfg, [])
+    slow = brute_force(groups)
+
+    assert len(fast) == len(slow)
+    for a, b in zip(fast, slow):
+        assert np.array_equal(np.sort(a), np.sort(b))
+    # Слияния действительно были — иначе тест ничего не проверил.
+    assert len(fast) < len(groups)

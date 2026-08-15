@@ -55,7 +55,8 @@
      монеты независимо от флагов SMC/FGI, поэтому жёстко зашиты кнопками,
      а не собраны из data.indicators. Каждый включается независимо и все
      ложатся на одну панель — все четыре в диапазоне [0..1]. #}
-  <label>Наложить
+  <div class="field" role="group" aria-label="Наложить осцилляторы">
+    <span>Наложить</span>
     <div class="osc-group">
       <button type="button" class="osc-toggle" data-feature="rsi"
               style="--osc-color: var(--chart-osc-rsi)" title="Импульс: перекуплен / перепродан">RSI</button>
@@ -66,7 +67,7 @@
       <button type="button" class="osc-toggle" data-feature="pos_1m"
               style="--osc-color: var(--chart-osc-1m)" title="Положение в месячном диапазоне">Месяц</button>
     </div>
-  </label>
+  </div>
   {# Список признаков приходит с данными: он зависит от набора, которым
      обучена модель прогона, и жёстко зашитый здесь разъехался бы с ней.
      В отличие от кнопок выше, выбор здесь ДОБАВЛЯЕТ линию к уже наложенным,
@@ -779,7 +780,7 @@ window.addEventListener('btcproc:theme', () => {
 // отметки настенных часов (…:30, …:00) — так время следующего
 // обновления видно на любых часах, не только по факту открытия вкладки.
 // setTimeout, а не setInterval: каждый раз заново считаем миллисекунды до
-// СЛЕДУЮЩЕЙ пятиминутки, поэтому дрейф от времени выполнения самого запроса
+// следующей получасовки, поэтому дрейф от времени выполнения самого запроса
 // не накапливается.
 let autoReloadTimer = null;
 let autoReloadInFlight = false;
@@ -804,17 +805,31 @@ async function autoReload() {
     await load();
   } finally {
     autoReloadInFlight = false;
-  }
-  if (savedRange) {
-    chart.timeScale().setVisibleLogicalRange(savedRange);
-    fitPrice();
+    // Восстановление вида — в finally: при сбое загрузки пользователь и так
+    // остаётся со старыми данными, и выдёргивать из-под него ещё и масштаб
+    // незачем.
+    if (savedRange) {
+      chart.timeScale().setVisibleLogicalRange(savedRange);
+      fitPrice();
+    }
   }
 }
 
 function scheduleAutoReload() {
   autoReloadTimer = setTimeout(async () => {
-    await autoReload();
-    scheduleAutoReload();
+    // Ошибка загрузки НЕ должна убивать цикл. Раньше исключение из load()
+    // пролетало наружу через await, следующий setTimeout не заводился, и
+    // одного транзиентного сбоя — перезапуск админки, обрыв сети, 502 от
+    // nginx — хватало, чтобы вкладка молча перестала обновляться до ручного
+    // рефреша (аудит 2026-08-15, B3). Для страницы «смотрим рынок раз в
+    // полчаса» это и есть основной сценарий.
+    try {
+      await autoReload();
+    } catch (err) {
+      console.error('автообновление: загрузка не удалась, цикл продолжается', err);
+    } finally {
+      scheduleAutoReload();
+    }
   }, msUntilNextTick());
 }
 

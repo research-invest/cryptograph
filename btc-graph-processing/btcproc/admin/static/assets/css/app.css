@@ -330,7 +330,8 @@ nav.pager .muted { opacity: .45; }
   background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
   padding: 8px 10px; margin: 8px 0;
 }
-.toolbar label { min-width: 0; }
+.toolbar label, .toolbar .field { min-width: 0; }
+.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
 .toolbar .grow { flex: 1; }
 .toolbar .spacer { flex: 1; }
 .osc-group { display: flex; gap: 4px; }

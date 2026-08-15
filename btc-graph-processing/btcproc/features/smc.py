@@ -48,6 +48,7 @@ import numpy as np
 import pandas as pd
 
 from btcproc import config
+from btcproc.features import _cache
 from btcproc.features import indicators as ind
 
 logger = logging.getLogger(__name__)
@@ -395,7 +396,9 @@ def build_smc(base: pd.DataFrame, cfg: config.SMCConfig | None = None) -> pd.Dat
     return frame[ALL_COLUMNS]
 
 
-_CACHE: dict = {}
+# Пара «ключ+значение» пишется одним присваиванием — иначе параллельные
+# прогоны админки подмешивают монете чужие данные, см. _cache.py.
+_CACHE = _cache.SingleEntryCache()
 
 
 def _fingerprint(base: pd.DataFrame, cfg: config.SMCConfig) -> tuple:
@@ -429,12 +432,12 @@ def build_smc_cached(base: pd.DataFrame, cfg: config.SMCConfig | None = None) ->
         return build_smc(base, cfg)
 
     key = _fingerprint(base, cfg)
-    cached = _CACHE.get("key")
-    if cached == key:
-        return _CACHE["value"]
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
 
     value = build_smc(base, cfg)
-    _CACHE["key"], _CACHE["value"] = key, value
+    _CACHE.put(key, value)
     return value
 
 

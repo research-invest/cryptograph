@@ -920,6 +920,10 @@ $FETCH_CRON $REMOTE_DIR/bin/btcproc fetch-external >> $REMOTE_DIR/logs/fetch-ext
 \$MARK   появляется только на следующие сутки, поэтому отдельно от live/train.
 \$MARK   DERIV_ENABLED остаётся false, пока фаза 2 (гейты) не даст решения —
 \$MARK   крон наполняет таблицу заранее, это не включает атомы само по себе.
+\$MARK   Без --start команда ИНКРЕМЕНТАЛЬНА: продолжает от последнего
+\$MARK   заполненного бара с откатом на пару суток. Раньше она ежедневно
+\$MARK   перемалывала весь архив с начала листинга (~2170 файлов BTC) ради
+\$MARK   одного нового дня. Полный бэкфилл — только явной датой, руками.
 $DERIV_CRON $REMOTE_DIR/bin/btcproc ingest-metrics --all >> $REMOTE_DIR/logs/ingest-metrics.log 2>&1
 \$MARK — ежедневная сводка: покрытие истории, отставание, очередь отправки
 17 6 * * * $REMOTE_DIR/bin/btcproc status >> $REMOTE_DIR/logs/status.log 2>&1

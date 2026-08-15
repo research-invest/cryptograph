@@ -37,7 +37,7 @@ import httpx
 import pandas as pd
 
 from btcproc import config
-from btcproc.db.session import bulk_upsert, fetch_all
+from btcproc.db.session import bulk_upsert, fetch_all, fetch_one
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +235,35 @@ def _store(df: pd.DataFrame) -> int:
     )
 
 
+# Сколько последних суток перезагружать при инкрементальном продолжении.
+# Архив Binance дозаполняется задним числом на границах листинга и после
+# сбоев, а upsert идемпотентен: три дня — дешёвая страховка от тихой дыры.
+REFETCH_DAYS = 3
+
+
+def _as_utc(value) -> pd.Timestamp:
+    """
+    Метка в UTC независимо от того, наивная она пришла или уже с зоной.
+
+    `pd.Timestamp(x, tz="UTC")` на tz-aware входе не приводит зону, а падает
+    («Cannot pass a datetime or Timestamp with tzinfo with the tz parameter»).
+    Границы сюда приходят и строкой от оператора (`--start 2025-05-01`,
+    наивная), и `Timestamp` из БД (tz-aware) — на втором случае команда
+    ложилась.
+    """
+    ts = pd.Timestamp(value)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
+def last_metrics_ts(symbol: str, tf: str | None = None) -> datetime | None:
+    """Последний заполненный бар метрик монеты — точка продолжения ingest."""
+    row = fetch_one(
+        "SELECT max(ts) AS ts FROM deriv_metrics WHERE symbol = %s AND tf = %s",
+        (symbol, tf or config.data.base_tf),
+    )
+    return row["ts"] if row and row["ts"] else None
+
+
 def sync_metrics(
     symbol: str | None = None,
     tf: str | None = None,
@@ -247,11 +276,23 @@ def sync_metrics(
     `deriv_metrics`. Уже скачанные архивы берутся с диска, уже загруженные
     бары перезаписываются upsert'ом.
 
-    Точка старта — не раньше `metrics_start_date()` монеты (A5: заполнять
-    период до неё нельзя, и ходить туда в сеть незачем — там гарантированный
-    404). Точка конца — не позже вчерашних суток: файл сегодняшнего дня
-    появляется только после его закрытия (§0.7), а запрос за сегодня — не
-    ошибка и не логируется как пропуск.
+    Точка старта БЕЗ `--start` — продолжение с того места, где таблица уже
+    заполнена: `max(ts)` монеты минус `REFETCH_DAYS` суток. До правки крон
+    ежесуточно перемалывал весь архив с начала листинга — ~2170 zip-архивов
+    BTC читались с диска, парсились, агрегировались и upsert-ились (около
+    208 тыс. строк на монету) ради одного нового дня (аудит 2026-08-15, O3).
+    Симметрично `bars.sync_recent`, который продолжает от `last_ts`.
+
+    Страховочный откат назад обязателен: архив дозаполняется задним числом на
+    границах листинга и после сбоев поставщика, а upsert идемпотентен —
+    перезагрузить несколько последних суток дешевле, чем не заметить дыру.
+    Полный бэкфилл остаётся доступен явным `--start`.
+
+    Точка старта в любом случае не раньше `metrics_start_date()` монеты (A5:
+    заполнять период до неё нельзя, и ходить туда в сеть незачем — там
+    гарантированный 404). Точка конца — не позже вчерашних суток: файл
+    сегодняшнего дня появляется только после его закрытия (§0.7), а запрос за
+    сегодня — не ошибка и не логируется как пропуск.
     """
     from btcproc import symbols
 
@@ -260,11 +301,18 @@ def sync_metrics(
     tf = tf or config.data.base_tf
 
     archive_start = pd.Timestamp(spec.metrics_start_date(), tz="UTC")
-    start_dt = pd.Timestamp(start, tz="UTC") if start else archive_start
+    if start:
+        start_dt = _as_utc(start)
+    else:
+        filled_to = last_metrics_ts(symbol, tf)
+        start_dt = (
+            _as_utc(filled_to) - pd.Timedelta(days=REFETCH_DAYS)
+            if filled_to else archive_start
+        )
     start_dt = max(start_dt, archive_start)
 
     yesterday = pd.Timestamp(datetime.now(timezone.utc)).normalize() - pd.Timedelta(days=1)
-    end_dt = pd.Timestamp(end, tz="UTC") if end else yesterday
+    end_dt = _as_utc(end) if end else yesterday
     end_dt = min(end_dt, yesterday)
 
     if start_dt > end_dt:

@@ -60,6 +60,39 @@ def bar_states_window(states: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFram
     return states[states.index >= start]
 
 
+def features_tail(features: pd.DataFrame, last_stored, cutoff: pd.Timestamp) -> pd.DataFrame:
+    """
+    Какой кусок признаков live-прогон дописывает в `features`.
+
+    Историю целиком пишет `train`, и до 2026-08-15 больше не писал никто:
+    `live` считал признаки на всей истории (они нужны модели), но НЕ сохранял
+    их. Из-за этого нижняя панель графика — она читает готовые числа из
+    `features`, а не пересчитывает индикатор в браузере (иначе разошлась бы с
+    моделью) — обрывалась на дате последнего `train`, тогда как свечи шли до
+    текущего часа. Выглядело как поломка панели, а было устройством контура:
+    та же механика, что у `bar_events`, только там отставание задокументировано,
+    а здесь его видно глазами на каждом графике.
+
+    Пишется именно ХВОСТ, а не вся история: PK здесь `(symbol, ts, version)`,
+    то есть повтор был бы честным upsert'ом тех же чисел, но триста тысяч строк
+    двенадцать раз в сутки на монету — бессмысленная нагрузка.
+
+    Точка продолжения — `max(ts)` уже записанного набора. Если набора в таблице
+    нет вовсе (модель есть, а признаки её версии не сохранены — например,
+    таблицу чистили), откатываемся к окну cutoff: писать по такому поводу всю
+    историю живого прогона незачем, а хвост восстановит панель на видимом куске.
+
+    Look-ahead здесь не возникает: признаки не заглядывают вперёд (инвариант 4),
+    поэтому значение бара не зависит от того, докуда досчитана история, и
+    строка, записанная сегодня, совпадает с той, что запишет ближайший `train`.
+    """
+    if last_stored is not None:
+        start = pd.Timestamp(last_stored)
+        start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
+        return features[features.index > start]
+    return features[features.index >= cutoff]
+
+
 def resolve_cutoff(
     last_bar: pd.Timestamp,
     last_candidate: pd.Timestamp | None,
@@ -205,6 +238,21 @@ def run_live(
             lookback_minutes, max_lookback_days,
         )
         stats["cutoff"] = cutoff.isoformat()
+
+        # Хвост признаков — под ВЕРСИЕЙ НАБОРА МОДЕЛИ, а не текущей меткой
+        # конфигурации: колонки уже приведены к `model.feature_names` выше,
+        # то есть записываемый массив позиционно совпадает с
+        # `feature_sets.names` этой версии. Взяли бы текущую метку — при
+        # разошедшихся флагах строки легли бы под версию, чьи имена им не
+        # соответствуют, и панель графика читала бы числа не под теми именами.
+        feature_version = repo.model_feature_version(model_run_id)
+        if feature_version:
+            tail = features_tail(
+                features, repo.last_feature_ts(symbol, feature_version), cutoff,
+            )
+            if not tail.empty:
+                repo.save_features(tail, feature_version, symbol)
+            stats["features"] = {"rows": len(tail), "version": feature_version}
 
         runs.log(run_id, "Разметка и граф", stage="states", progress=0.5)
         written = bar_states_window(states, cutoff)

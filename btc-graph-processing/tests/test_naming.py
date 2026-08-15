@@ -116,22 +116,32 @@ def all_features(bars, context, monkeypatch_module):
         bars.index[-1].normalize() + pd.Timedelta(days=1),
         freq="1D", tz="UTC",
     )
+    # Значения строятся через numpy, а НЕ через pd.Series(range(...)): у
+    # такой Series свой RangeIndex, конструктор DataFrame выравнивает её по
+    # `days` и кладёт сплошной NaN. Ряд был мёртвым, а тесты этого не видели —
+    # признаки после dropna оказывались пустым DataFrame, у которого колонки
+    # на месте, и проверки словаря шли по колонкам (аудит 2026-08-15, B4:
+    # предохранитель на dropna вскрыл это первым же прогоном).
     synthetic_daily = pd.DataFrame(
-        {"value": 50.0 + 40.0 * pd.Series(range(len(days))).mod(7).sub(3) / 3.0},
+        {"value": 50.0 + 40.0 * (np.arange(len(days)) % 7 - 3) / 3.0},
         index=days,
     )
     monkeypatch_module.setattr(
         external, "load_external_daily", lambda series, start=None, end=None: synthetic_daily
     )
     n = len(bars)
+    # Колонки ШЕВЕЛЯТСЯ, а не стоят константой: z-score константного ряда —
+    # деление на нулевой разброс, то есть NaN на всей длине, и признаки
+    # ls_retail_z/taker_z снова оказались бы пустыми при живом на вид входе.
+    wave = np.sin(np.arange(n) / 97.0)
     synthetic_deriv = pd.DataFrame(
         {
-            "oi": 70_000.0 + np.linspace(0, 5_000, n),
+            "oi": 70_000.0 + np.linspace(0, 5_000, n) + 200.0 * wave,
             "oi_value": 3.0e9 + np.linspace(0, 1e8, n),
-            "ls_top_acc": np.full(n, 2.4),
-            "ls_top_pos": np.full(n, 1.4),
-            "ls_global": np.full(n, 2.6),
-            "taker_ratio": np.full(n, 1.05),
+            "ls_top_acc": 2.4 + 0.2 * wave,
+            "ls_top_pos": 1.4 + 0.1 * wave,
+            "ls_global": 2.6 + 0.15 * wave,
+            "taker_ratio": 1.05 + 0.05 * wave,
             "src_rows": np.full(n, 3),
         },
         index=bars.index,

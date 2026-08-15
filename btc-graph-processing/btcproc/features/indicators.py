@@ -20,8 +20,14 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     out = 100 - 100 / (1 + rs)
-    # avg_loss == 0 означает движение только вверх → RSI = 100.
-    return out.fillna(100.0).where(avg_gain.notna(), np.nan)
+    # avg_loss == 0 означает движение только вверх → RSI = 100. Но ровно то же
+    # деление на ноль даёт ПЛОСКОЕ окно (avg_gain == avg_loss == 0), где
+    # движения нет вовсе, и объявлять его «только рост» неверно: у BTC такие
+    # бары есть (аудит 2026-08-15, B8), и они кормили и признак rsi, и атом
+    # rsi_overbought. Плоское окно — это ровно середина шкалы.
+    flat = (avg_gain == 0.0) & (avg_loss == 0.0)
+    out = out.fillna(100.0).mask(flat, 50.0)
+    return out.where(avg_gain.notna(), np.nan)
 
 
 def true_range(df: pd.DataFrame) -> pd.Series:

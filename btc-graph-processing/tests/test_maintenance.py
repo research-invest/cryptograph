@@ -53,6 +53,12 @@ def _quiet(monkeypatch, maintenance, **over):
         maintenance, "prune_deliveries",
         lambda dry: calls.__setitem__("deliveries", dry) or 0,
     )
+    # Чистка кэша дампов трогает ДИСК: без подмены тест на не-сухом прогоне
+    # удалял бы реальные архивы разработчика.
+    monkeypatch.setattr(
+        maintenance, "prune_daily_cache",
+        lambda dry: calls.__setitem__("daily_cache", dry) or 0,
+    )
     monkeypatch.setattr(
         maintenance.runs_repo, "active_runs", lambda: over.get("active", [])
     )
@@ -193,3 +199,66 @@ def test_prune_covers_disabled_symbols(monkeypatch, maintenance):
     maintenance.prune_live_states(4, dry_run=True)
 
     assert seen == ["BTCUSDT", "OLDUSDT"], "выключенная монета пропущена"
+
+
+# ── Кэш дневных дампов баров (O6) ────────────────────────────────────────
+def _make_cache(root, names):
+    directory = root / "binance" / "BTCUSDT" / "15m"
+    directory.mkdir(parents=True)
+    for name in names:
+        (directory / name).write_bytes(b"x" * 1024)
+    return directory
+
+
+def test_daily_cache_prune_keeps_monthly_and_fresh(tmp_path, monkeypatch, maintenance):
+    """
+    O6 (аудит 2026-08-15): дневные архивы закрытого месяца — дубликат
+    месячного дампа, и до правки они копились вечно.
+
+    Удаляются только они: месячный дамп (`YYYY-MM.zip`) перекачивать дорого,
+    а места он занимает столько же, и свежие дневные ещё нужны — месячный
+    за текущий месяц не вышел.
+    """
+    import dataclasses
+    from datetime import date, timedelta
+
+    old_day = (date.today() - timedelta(days=maintenance.DAILY_CACHE_KEEP_DAYS + 5)).isoformat()
+    fresh_day = (date.today() - timedelta(days=2)).isoformat()
+    directory = _make_cache(tmp_path, [f"{old_day}.zip", f"{fresh_day}.zip",
+                                       "2021-03.zip", "мусор.zip"])
+    monkeypatch.setattr(
+        maintenance.config, "data",
+        dataclasses.replace(maintenance.config.data, data_dir=tmp_path),
+    )
+
+    removed = maintenance.prune_daily_cache(dry_run=False)
+
+    assert removed == 1
+    survivors = sorted(p.name for p in directory.iterdir())
+    assert survivors == sorted([f"{fresh_day}.zip", "2021-03.zip", "мусор.zip"])
+
+
+def test_daily_cache_dry_run_deletes_nothing(tmp_path, monkeypatch, maintenance):
+    import dataclasses
+    from datetime import date, timedelta
+
+    old_day = (date.today() - timedelta(days=maintenance.DAILY_CACHE_KEEP_DAYS + 5)).isoformat()
+    directory = _make_cache(tmp_path, [f"{old_day}.zip"])
+    monkeypatch.setattr(
+        maintenance.config, "data",
+        dataclasses.replace(maintenance.config.data, data_dir=tmp_path),
+    )
+
+    assert maintenance.prune_daily_cache(dry_run=True) == 1
+    assert (directory / f"{old_day}.zip").exists()
+
+
+def test_daily_cache_without_a_cache_directory(tmp_path, monkeypatch, maintenance):
+    """Отсутствие кэша — не ошибка: на свежей установке его просто нет."""
+    import dataclasses
+
+    monkeypatch.setattr(
+        maintenance.config, "data",
+        dataclasses.replace(maintenance.config.data, data_dir=tmp_path),
+    )
+    assert maintenance.prune_daily_cache(dry_run=False) == 0

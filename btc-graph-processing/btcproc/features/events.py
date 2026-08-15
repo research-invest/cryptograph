@@ -321,6 +321,14 @@ def detect_atoms(base: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
 
     hour = base.index.hour
     dow = base.index.dayofweek
+    # ВНИМАНИЕ: сессии покрывают 00:00–22:00 UTC, и два часа в сутки
+    # (22:00–24:00) не активна ни одна. Это НЕ «межсессионное окно» по
+    # замыслу — граница просто досталась от первой версии и с тех пор не
+    # пересматривалась; азиатскую сессию обычно берут с 23:00 UTC.
+    # Трогать это молча нельзя: атомы уже посчитаны на всей истории, и
+    # сдвиг границы требует `scripts/backfill_context_atoms.py --force --all`,
+    # иначе одна и та же величина будет означать разное до и после правки
+    # (аудит 2026-08-15, B6 — решение за владельцем).
     a["asia_session"] = pd.Series((hour >= 0) & (hour < 8), index=base.index)
     a["europe_session"] = pd.Series((hour >= 8) & (hour < 14), index=base.index)
     a["us_session"] = pd.Series((hour >= 14) & (hour < 22), index=base.index)
@@ -460,7 +468,11 @@ def build_event_blocks(
         out[field] = out["mask"].map(lambda m, f=field: meta[int(m)][f])
     out["intensity"] = out["atom_count"].map(intensity_bucket)
 
-    # Контекстных комбинаций максимум 2^9 — расшифровываем так же, по маскам.
+    # Контекстных атомов теперь 33 (9 базовых + 16 SMC + 4 FGI + 4 deriv), то
+    # есть комбинаций 2^33 в теории. Расшифровка идёт по ФАКТИЧЕСКИ
+    # встреченным маскам, поэтому размер словаря ограничен числом уникальных
+    # комбинаций в данных, а не разрядностью, — но прежняя оценка «максимум
+    # 2^9» устарела ещё на первом источнике и дезориентировала.
     context_meta = {
         int(m): _mask_to_context_atoms(int(m)) for m in pd.unique(context_masks)
     }

@@ -20,6 +20,7 @@ import pytest
 
 from btcproc import config
 from btcproc.features import deriv
+from tests.conftest import disable_all_sources
 
 
 def make_bars(start: str, periods: int, freq: str = "15min", trend: float = 0.0) -> pd.DataFrame:
@@ -159,6 +160,35 @@ def test_zero_oi_does_not_produce_infinity(recwarn):
     assert not any("divide by zero" in str(w.message) for w in recwarn.list)
 
 
+def test_glitch_zero_does_not_reach_rank_and_zscore():
+    """
+    Регрессия на B5 (аудит 2026-08-15): решение «0.0 — глитч фида» обязано
+    действовать на ВСЕ производные, а не только на логарифмы.
+
+    Раньше oi_rank считался по сырому ряду: глитч-ноль получал ранг ~0.0
+    («экстремально низкий открытый интерес») и смещал ранги соседей по всему
+    месячному окну; ls_retail_z — то же самое через среднее и разброс.
+    Признаки выключены, поэтому влияло это на замеры гейтов, а не на бой.
+    """
+    periods = 4 * 24 * 40
+    bars = make_bars("2024-01-01", periods=periods)
+    clean = make_metrics(bars.index, oi=70_000.0 + np.arange(periods, dtype=float))
+    glitched = clean.copy()
+    glitched.loc[glitched.index[1000], ["oi", "ls_global"]] = 0.0
+
+    clean_frame = deriv.build_deriv(bars, clean)
+    glitched_frame = deriv.build_deriv(bars, glitched)
+
+    for name in ("oi_rank", "ls_retail_z"):
+        # На самом глитч-баре — NaN («не доверяем»), а не подставное значение.
+        assert np.isnan(glitched_frame[name].iat[1000]), name
+        # Соседи по окну не заражены: ряд без глитча и ряд с ним совпадают
+        # везде, кроме самого бара.
+        clean_rest = clean_frame[name].drop(clean_frame.index[1000])
+        glitched_rest = glitched_frame[name].drop(glitched_frame.index[1000])
+        pd.testing.assert_series_equal(clean_rest, glitched_rest, check_names=False)
+
+
 def test_oi_rank_is_bounded():
     """rolling_rank — перцентиль, обязан лежать в [0, 1]."""
     bars = make_bars("2024-01-01", periods=4 * 24 * 40)
@@ -209,15 +239,15 @@ def test_registered_in_atom_family_and_context():
 def test_feature_version_includes_deriv(monkeypatch):
     from btcproc.features import builder
 
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(config, "deriv", config.DerivConfig(enabled=True, features_enabled=True))
-    assert "deriv" in builder.feature_version()
+    assert builder.feature_version() == "v1+deriv"
 
 
 def test_event_version_includes_deriv_when_atoms_only(monkeypatch):
     from btcproc.features import events
 
-    monkeypatch.setattr(config, "smc", config.SMCConfig(enabled=False))
-    monkeypatch.setattr(config, "fgi", config.FearGreedConfig(enabled=False))
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(config, "deriv", config.DerivConfig(enabled=True, features_enabled=False))
     assert events.event_version() == "v1+deriv"
 

@@ -77,9 +77,30 @@ def context(bars) -> dict:
 
 @pytest.fixture(scope="session")
 def features(bars, context) -> pd.DataFrame:
+    """
+    Базовый набор признаков — БЕЗ внешних источников.
+
+    Источники гасятся явно, а не «по умолчанию»: их флаги читаются из
+    окружения, и на боевом VPS умолчание означает «включён». Признаки FGI и
+    деривативов при этом джойнятся из БД, куда тесты не ходят, — набор
+    вышел бы пустым. Раньше это ничем не проявлялось (пустой DataFrame
+    сохраняет колонки), а с предохранителем на dropna (аудит 2026-08-15, B4)
+    стало честной ошибкой.
+
+    Тестам, которым нужен источник, фикстура не подходит по построению: они
+    заводят свою и сами кладут синтетические внешние данные — образцы в
+    `test_naming.py::all_features` и `test_smc.py`.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
     from btcproc.features.builder import build_features
 
-    return build_features(bars, context)
+    patch = MonkeyPatch()
+    try:
+        disable_all_sources(patch)
+        return build_features(bars, context)
+    finally:
+        patch.undo()
 
 
 # На синтетике 125 дней переходов набирается немного, поэтому порог выборки
@@ -92,12 +113,16 @@ def test_candidate_config():
 
 
 @pytest.fixture(scope="session")
-def pipeline_data(bars, context) -> dict:
+def pipeline_data(bars, context, features) -> dict:
     """
     Прогон всей цепочки на синтетике — база для проверок кандидатов.
 
     Живёт в conftest, а не в одном файле тестов: цепочка нужна и проверкам
     сборки кандидата, и проверкам мультимонетности, а считается она секунды.
+
+    Признаки берутся ГОТОВОЙ фикстурой, а не пересобираются здесь: набор
+    должен быть тем же самым, и гасить источники надо в одном месте, а не в
+    двух (см. докстринг фикстуры `features`).
     """
     from btcproc import config
     from btcproc.candidates import builder as cand
@@ -106,7 +131,6 @@ def pipeline_data(bars, context) -> dict:
     from btcproc.features import events as ev
     from btcproc.states import assign, clustering, graph
 
-    features = feat.build_features(bars, context)
     scale = feat.robust_scale_params(features)
     matrix = feat.apply_scale(features, scale)
     # min_group_share=0 — на синтетике порог задаём абсолютным числом, чтобы
@@ -156,3 +180,42 @@ def monkeypatch_module():
     patcher = MonkeyPatch()
     yield patcher
     patcher.undo()
+
+
+def disable_all_sources(monkeypatch) -> None:
+    """
+    Гасит ВСЕ внешние источники сигнала — и атомы, и признаки.
+
+    Тесты, проверяющие метку набора (`feature_version` / `event_version`),
+    обязаны фиксировать состав источников целиком: метка собирается из
+    состава, а флаги читаются из окружения, поэтому «выключим чужие руками»
+    зеленело локально и краснело на VPS каждый раз, когда там включали
+    очередной источник (FGI — дважды, deriv — ждал того же, аудит
+    2026-08-15, B1).
+
+    Список берётся из реестра, а не перечисляется здесь: четвёртый источник
+    попадёт под нейтрализацию сам, без правки тестов. Раздел конфига ищется
+    по имени источника — если новый источник назовёт их по-разному, тест
+    упадёт с диагнозом, а не пропустит его молча.
+    """
+    import dataclasses
+
+    from btcproc import config
+    from btcproc.features import registry
+
+    for source in registry.sources():
+        section = getattr(config, source.name, None)
+        assert section is not None, (
+            f"у источника {source.name!r} нет одноимённого раздела в config — "
+            "нейтрализовать его в тестах нечем"
+        )
+        monkeypatch.setattr(
+            config, source.name,
+            dataclasses.replace(section, enabled=False, features_enabled=False),
+        )
+
+
+@pytest.fixture
+def sources_off(monkeypatch):
+    """Фикстурная форма `disable_all_sources` — для тестов без monkeypatch в теле."""
+    disable_all_sources(monkeypatch)

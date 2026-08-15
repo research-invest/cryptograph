@@ -51,9 +51,30 @@ class StateModel:
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         """Ближайший центроид для каждой строки. Возвращает float group_id."""
-        # (n, 1, d) - (1, k, d) → расстояния до всех центроидов за один проход.
-        distances = np.linalg.norm(x[:, None, :] - self.centroids[None, :, :], axis=2)
-        return self.group_ids[distances.argmin(axis=1)]
+        return self.group_ids[self.nearest(x)]
+
+    def nearest(self, x: np.ndarray) -> np.ndarray:
+        """
+        Индекс ближайшего центроида (не group_id) для каждой строки.
+
+        Считается через разложение ‖x−c‖² = ‖x‖² − 2·x·cᵀ + ‖c‖², а не
+        честной нормой разностей: наивная форма материализует массив
+        (n, k, d) — на боевой размерности BTC (300 тыс. баров × 32 признака,
+        45 центроидов) это 7 ГБ пика и 5 с против 0.2 ГБ и 0.24 с здесь.
+        Метки совпадают тождественно: argmin инвариантен к монотонным
+        преобразованиям, поэтому квадрат расстояния годится не хуже
+        расстояния, а ‖x‖² — общий сдвиг по строке — на argmin не влияет
+        вовсе (оставлен ради читаемости формулы).
+
+        `predict` зовётся на ПОЛНОЙ истории в каждом live (раз в полчаса на
+        монету), в train, replay и holdout, поэтому пик памяти здесь — не
+        только про скорость: семь гигабайт рядом с PostgreSQL и Neo4j на VPS
+        это риск свопа.
+        """
+        x = np.ascontiguousarray(x, dtype=float)
+        c = self.centroids
+        d2 = (x * x).sum(axis=1)[:, None] - 2.0 * (x @ c.T) + (c * c).sum(axis=1)[None, :]
+        return d2.argmin(axis=1)
 
     def to_dict(self) -> dict:
         return {
@@ -214,7 +235,13 @@ def _recursive_split(
     _recursive_split(x, right, depth + 1, rng, cfg, out, trace)
 
 
-def _separation(x: np.ndarray, left: np.ndarray, right: np.ndarray) -> float:
+def _separation(
+    x: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+    c_left: np.ndarray | None = None,
+    c_right: np.ndarray | None = None,
+) -> float:
     """
     Насколько две группы различимы — расстояние центроидов, выраженное
     в их собственных разбросах **вдоль оси между центроидами**.
@@ -224,13 +251,21 @@ def _separation(x: np.ndarray, left: np.ndarray, right: np.ndarray) -> float:
     слияние схлопывает весь граф в пару узлов. Проекция на ось сравнения от
     размерности не зависит: результат — привычное d-prime, где < 1 означает
     сильно перекрывающиеся облака.
+
+    Центроиды принимаются готовыми: усреднять сотни тысяч точек заново на
+    каждой из O(k²) пар — самая дорогая часть слияния (см. `_merge_close`).
+    Разброс всё равно считается по точкам: он зависит от ОСИ пары, то есть
+    переиспользовать его между парами нельзя.
     """
-    c_left, c_right = x[left].mean(axis=0), x[right].mean(axis=0)
+    if c_left is None:
+        c_left = x[left].mean(axis=0)
+    if c_right is None:
+        c_right = x[right].mean(axis=0)
     axis = c_right - c_left
     distance = float(np.linalg.norm(axis))
     if distance < 1e-12:
         return 0.0
-    axis /= distance
+    axis = axis / distance
     std_left = float(np.std(x[left] @ axis))
     std_right = float(np.std(x[right] @ axis))
     total = std_left + std_right
@@ -250,25 +285,53 @@ def _merge_close(
     separation ниже порога — так схлопываются и цепочки почти одинаковых
     состояний.
     """
-    changed = True
-    while changed and len(groups) > 1:
-        changed = False
-        best_pair, best_sep = None, np.inf
-        for i in range(len(groups)):
-            for j in range(i + 1, len(groups)):
-                sep = _separation(x, groups[i], groups[j])
-                if sep < cfg.merge_separation and sep < best_sep:
-                    best_pair, best_sep = (i, j), sep
+    groups = list(groups)
+    centroids = [x[g].mean(axis=0) for g in groups]
 
-        if best_pair is not None:
-            i, j = best_pair
-            trace.append({
-                "action": "merge", "separation": round(best_sep, 4),
-                "sizes": [len(groups[i]), len(groups[j])],
-            })
-            merged = np.concatenate([groups[i], groups[j]])
-            groups = [g for k, g in enumerate(groups) if k not in (i, j)] + [merged]
-            changed = True
+    # Матрица separation считается ОДИН раз, а после слияния пересчитываются
+    # только пары с участием новой группы: O(k) вместо O(k²) на итерацию.
+    # Раньше каждая итерация while заново обходила все пары, а `_separation`
+    # каждый раз заново усредняла сотни тысяч точек — на 50 группах один
+    # полный проход стоил ~3 с, и таких проходов было столько же, сколько
+    # слияний (аудит 2026-08-15, O4). Результат тождественный: правило выбора
+    # («самая неразличимая пара ниже порога») не изменилось.
+    sep = {}
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            sep[(i, j)] = _separation(x, groups[i], groups[j], centroids[i], centroids[j])
+
+    while len(groups) > 1:
+        best_pair, best_sep = None, np.inf
+        for pair, value in sep.items():
+            if value < cfg.merge_separation and value < best_sep:
+                best_pair, best_sep = pair, value
+        if best_pair is None:
+            break
+
+        i, j = best_pair
+        trace.append({
+            "action": "merge", "separation": round(best_sep, 4),
+            "sizes": [len(groups[i]), len(groups[j])],
+        })
+        merged = np.concatenate([groups[i], groups[j]])
+        keep = [k for k in range(len(groups)) if k not in (i, j)]
+        # Порядок групп сохраняется прежним: слитая уходит в конец списка,
+        # как и раньше, — от него зависит нумерация в trace.
+        groups = [groups[k] for k in keep] + [merged]
+        centroids = [centroids[k] for k in keep] + [x[merged].mean(axis=0)]
+
+        # Переиндексация уцелевших пар + пересчёт только против новой группы.
+        renumber = {old_k: new_k for new_k, old_k in enumerate(keep)}
+        sep = {
+            (renumber[a], renumber[b]): value
+            for (a, b), value in sep.items()
+            if a in renumber and b in renumber
+        }
+        last = len(groups) - 1
+        for k in range(last):
+            sep[(k, last)] = _separation(
+                x, groups[k], merged, centroids[k], centroids[last]
+            )
 
     return groups
 
@@ -321,15 +384,50 @@ def fit_states(
     if progress:
         progress(f"после слияния: {len(groups)} групп", 0.8)
 
-    # Крупные группы получают меньшие номера — «1.0» становится самым частым
-    # состоянием рынка, что удобно читать в графе.
-    groups.sort(key=len, reverse=True)
     centroids = np.array([x[g].mean(axis=0) for g in groups])
-    group_ids = np.arange(1, len(groups) + 1, dtype=float)
 
-    labels = np.empty(len(x), dtype=float)
-    for gid, indices in zip(group_ids, groups):
-        labels[indices] = gid
+    # Разметка — ПРЕДИКТОМ, а не членством в группах дробления.
+    #
+    # Дробление режет пространство последовательными локальными границами,
+    # поэтому итоговая ячейка группы не совпадает с ячейкой её центроида
+    # (слияния усугубляют, но не создают эффект). Модель хранит только
+    # центроиды, то есть воспроизвести членство она в принципе не способна:
+    # замер на боевых моделях всех четырёх монет дал расхождение 21–28%
+    # баров (аудит 2026-08-15, B7). Пока train писал в bar_states членство,
+    # а live — предикт, история в БД была лоскутом из двух разных правил, и
+    # market_groups описывали разбиение, которое боевой предиктор не
+    # воспроизводит на четверти баров.
+    #
+    # Единственное определение состояния теперь «ближайший центроид» — то,
+    # что модель умеет повторить в любой момент, — и оба канала совпадают
+    # тождественно (регрессия: fit_states(...)[1] == model.predict(x)).
+    provisional = StateModel(
+        feature_names=feature_names,
+        scale=scale,
+        centroids=centroids,
+        group_ids=np.arange(len(groups), dtype=float),
+    )
+    assignment = provisional.nearest(x)
+    counts = np.bincount(assignment, minlength=len(groups))
+
+    # Центроид без единого бара недостижим: его ячейка пуста, поэтому его
+    # удаление ничью разметку не меняет, а строку в market_groups без баров
+    # оно бы породило.
+    if not counts.all():
+        empty = int((counts == 0).sum())
+        logger.info("Пустых ячеек после разметки предиктом: %d — центроиды отброшены", empty)
+
+    # Крупные группы получают меньшие номера — «1.0» становится самым частым
+    # состоянием рынка, что удобно читать в графе. Наполнение считается по
+    # предикту: именно оно теперь и есть группа.
+    order = np.argsort(-counts, kind="stable")
+    order = order[counts[order] > 0]
+    centroids = centroids[order]
+    group_ids = np.arange(1, len(order) + 1, dtype=float)
+
+    rank = np.full(len(groups), -1, dtype=int)
+    rank[order] = np.arange(len(order))
+    labels = group_ids[rank[assignment]]
 
     model = StateModel(
         feature_names=feature_names,

@@ -15,6 +15,7 @@ import pytest
 
 from btcproc import config
 from btcproc.features import fear_greed as fg
+from tests.conftest import disable_all_sources
 
 
 def make_bars(start: str, periods: int, freq: str = "15min") -> pd.DataFrame:
@@ -272,19 +273,23 @@ def test_registered_in_atom_family_and_context():
 def test_feature_version_includes_fgi(monkeypatch):
     from btcproc.features import builder
 
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(config, "fgi", config.FearGreedConfig(enabled=True, features_enabled=True))
     assert builder.feature_version() == "v1+fgi"
 
 
 def test_event_version_includes_fgi_when_atoms_only(monkeypatch):
     """
-    smc отключается ЯВНО: его дефолт читается из окружения, и на машине,
-    где SMC_ENABLED=true (боевой .env), «умолчание» означает «включён» —
-    тест, полагающийся на дефолт, зеленел бы у одних и падал бы у других.
+    Чужие источники гасятся ЦЕЛИКОМ: их дефолты читаются из окружения, и на
+    машине, где SMC_ENABLED=true (боевой .env), «умолчание» означает
+    «включён» — тест, полагающийся на дефолт, зеленел бы у одних и падал бы
+    у других. Перечислять их поимённо тоже нельзя: третий источник (deriv)
+    в перечисление не попал и уронил бы тест ровно при выкатке
+    (аудит 2026-08-15, B1).
     """
     from btcproc.features import events
 
-    monkeypatch.setattr(config, "smc", config.SMCConfig(enabled=False))
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(config, "fgi", config.FearGreedConfig(enabled=True, features_enabled=False))
     assert events.event_version() == "v1+fgi"
 

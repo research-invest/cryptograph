@@ -475,7 +475,12 @@ def fetch_external(
 def ingest_metrics(
     symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно указать несколько раз"),
     all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
-    start: str = typer.Option(None, help="Дата начала, YYYY-MM-DD (не раньше metrics_start монеты)"),
+    start: str = typer.Option(
+        None,
+        help="Дата начала, YYYY-MM-DD (не раньше metrics_start монеты). "
+             "Без флага — продолжение с последнего заполненного бара, полный "
+             "бэкфилл делается только явной датой",
+    ),
 ) -> None:
     """
     Скачать деривативные метрики Binance USD-M (ОИ, long/short ratio, давление
@@ -484,6 +489,10 @@ def ingest_metrics(
     Отдельная команда намеренно, как fetch-external: файл суток появляется
     только на следующие сутки (§0.7), поэтому сетевой поход сюда не должен
     идти внутри train/live и рисковать их регулярным расписанием.
+
+    Без `--start` команда ИНКРЕМЕНТАЛЬНА: продолжает от `max(ts)` монеты с
+    небольшим откатом назад, а не перемалывает весь архив с начала листинга
+    каждый раз — как `ingest` баров.
     """
     from btcproc.ingest import metrics
 

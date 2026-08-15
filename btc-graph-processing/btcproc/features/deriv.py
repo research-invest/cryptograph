@@ -51,6 +51,7 @@ import numpy as np
 import pandas as pd
 
 from btcproc import config
+from btcproc.features import _cache
 from btcproc.features import indicators as ind
 
 logger = logging.getLogger(__name__)
@@ -160,8 +161,16 @@ def build_deriv(
     # ── B2: непрерывные величины ─────────────────────────────────────────
     out["oi_chg_1h"] = np.log(oi_safe / oi_safe.shift(w["1h"]))
     out["oi_chg_1d"] = np.log(oi_safe / oi_safe.shift(w["1d"]))
-    out["oi_rank"] = ind.rolling_rank(oi, w["1m"])
-    out["ls_retail_z"] = ind.zscore(ls_global, w["1d"])
+    # Ранг и z-score считаются по ОЧИЩЕННЫМ рядам, а не по сырым: иначе
+    # решение выше («0.0 — глитч фида, а не значение») действовало бы только
+    # на логарифмы. Глитч-ноль в сыром ряду получает ранг ~0.0 —
+    # «экстремально низкий открытый интерес» — и тащит за собой ранги соседей
+    # по всему месячному окну; в z-score он точно так же смещает и среднее, и
+    # разброс на сутки вперёд и назад (аудит 2026-08-15, B5). NaN здесь
+    # безопасен: rolling.rank/mean/std его пропускают, а на самом баре
+    # остаётся NaN — то самое «не доверяем».
+    out["oi_rank"] = ind.rolling_rank(oi_safe, w["1m"])
+    out["ls_retail_z"] = ind.zscore(ls_global_safe, w["1d"])
     out["top_vs_retail"] = np.log(ls_top_pos / ls_global_safe)
     out["taker_z"] = ind.zscore(taker_ratio, w["1d"])
     for name in FEATURE_CANDIDATES:
@@ -186,7 +195,9 @@ def build_deriv(
     return out[ALL_COLUMNS]
 
 
-_CACHE: dict = {}
+# Пара «ключ+значение» пишется одним присваиванием — иначе параллельные
+# прогоны админки подмешивают монете чужие данные, см. _cache.py.
+_CACHE = _cache.SingleEntryCache()
 
 
 def _fingerprint(base: pd.DataFrame, metrics_frame: pd.DataFrame | None,
@@ -225,10 +236,10 @@ def build_deriv_cached(
         return build_deriv(base, metrics_frame, symbol, cfg)
 
     key = _fingerprint(base, metrics_frame, symbol, cfg)
-    cached = _CACHE.get("key")
-    if cached == key:
-        return _CACHE["value"]
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
 
     value = build_deriv(base, metrics_frame, symbol, cfg)
-    _CACHE["key"], _CACHE["value"] = key, value
+    _CACHE.put(key, value)
     return value

@@ -175,3 +175,54 @@ def test_convention_map_covers_full_range():
 def test_convention_map_raises_outside_range():
     with pytest.raises(ValueError):
         metrics.create_time_convention("2019-01-01")
+
+
+# ── Инкрементальность: без --start качаем хвост, а не весь архив ─────────
+def test_sync_continues_from_the_last_filled_bar(monkeypatch):
+    """
+    O3 (аудит 2026-08-15): крон звал `ingest-metrics` без `--start`, и
+    команда стартовала от даты листинга — каждый день заново читались,
+    парсились и upsert-ились ~2170 архивов BTC ради одного нового дня.
+
+    Точка продолжения берётся из данных, как у баров (`bars.sync_recent`),
+    с небольшим откатом назад: архив дозаполняется задним числом, а upsert
+    идемпотентен.
+    """
+    requested: list[str] = []
+
+    filled_to = pd.Timestamp("2025-06-10 23:45", tz="UTC")
+    monkeypatch.setattr(metrics, "last_metrics_ts", lambda symbol, tf=None: filled_to)
+    monkeypatch.setattr(metrics, "_fetch_zip", lambda url, path, client: requested.append(url) or None)
+
+    result = metrics.sync_metrics("BTCUSDT", end=pd.Timestamp("2025-06-12", tz="UTC"))
+
+    assert result["days"] == len(requested)
+    # Ровно окно [max(ts) − REFETCH_DAYS … end], а не весь архив с 2020-09.
+    assert "2025-06-07" in requested[0], requested[0]
+    assert "2025-06-12" in requested[-1], requested[-1]
+    assert len(requested) == 6, requested
+
+
+def test_explicit_start_still_backfills(monkeypatch):
+    """`--start` остаётся полным бэкфиллом — инкрементальность его не трогает."""
+    requested: list[str] = []
+    monkeypatch.setattr(metrics, "last_metrics_ts",
+                        lambda symbol, tf=None: pd.Timestamp("2025-06-10", tz="UTC"))
+    monkeypatch.setattr(metrics, "_fetch_zip", lambda url, path, client: requested.append(url) or None)
+
+    metrics.sync_metrics("BTCUSDT", start="2025-05-01", end=pd.Timestamp("2025-05-05", tz="UTC"))
+    assert len(requested) == 5
+    assert "2025-05-01" in requested[0]
+
+
+def test_empty_table_falls_back_to_listing_date(monkeypatch):
+    """Пустая таблица — по-прежнему полный проход от metrics_start монеты."""
+    requested: list[str] = []
+    monkeypatch.setattr(metrics, "last_metrics_ts", lambda symbol, tf=None: None)
+    monkeypatch.setattr(metrics, "_fetch_zip", lambda url, path, client: requested.append(url) or None)
+
+    from btcproc import symbols
+
+    spec = symbols.get("BTCUSDT")
+    metrics.sync_metrics("BTCUSDT", end=pd.Timestamp(spec.metrics_start_date(), tz="UTC") + pd.Timedelta(days=2))
+    assert str(spec.metrics_start_date()) in requested[0]

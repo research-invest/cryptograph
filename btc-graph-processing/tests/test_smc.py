@@ -15,6 +15,7 @@ import pytest
 
 from btcproc import config
 from btcproc.features import smc
+from tests.conftest import disable_all_sources
 
 
 def make_frame(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
@@ -406,7 +407,12 @@ def smc_on(monkeypatch):
     Флага два, и по умолчанию признаки выключены даже при включённых атомах:
     у половин разная цена (см. SMCConfig). Тестам, проверяющим вектор,
     нужны оба.
+
+    ЧУЖИЕ источники гасятся целиком: их дефолты тоже читаются из окружения,
+    а FGI и деривативы вдобавок джойнят внешние ряды из БД, куда тесты не
+    ходят — набор признаков с ними вышел бы пустым (аудит 2026-08-15, B4).
     """
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(
         config, "smc", config.SMCConfig(enabled=True, features_enabled=True)
     )
@@ -415,7 +421,8 @@ def smc_on(monkeypatch):
 
 @pytest.fixture
 def smc_atoms_only(monkeypatch):
-    """Только атомы — ровно то, что включается в бою."""
+    """Только атомы — ровно то, что включается в бою (чужие источники — прочь)."""
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(
         config, "smc", config.SMCConfig(enabled=True, features_enabled=False)
     )
@@ -430,8 +437,10 @@ def smc_off(monkeypatch):
     Именно явно, а не «по умолчанию»: дефолты SMCConfig читаются из окружения,
     и на сервере, где SMC_ENABLED=true, «умолчание» означает включено. Тест,
     полагающийся на дефолт, зеленеет на машине разработчика и падает там, где
-    флаг поднят, — что и произошло при выкатке.
+    флаг поднят, — что и произошло при выкатке. Чужие источники — по той же
+    причине и тем же способом.
     """
+    disable_all_sources(monkeypatch)
     monkeypatch.setattr(
         config, "smc", config.SMCConfig(enabled=False, features_enabled=False)
     )

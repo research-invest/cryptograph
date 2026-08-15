@@ -135,3 +135,71 @@ def test_written_window_covers_technological_margin():
         config.states.smoothing_bars + config.states.trajectory_window
     ) * config.data.base_minutes + max(SNAPSHOT_OFFSETS_MIN)
     assert cutoff - written.index[0] >= pd.Timedelta(minutes=need)
+
+
+# ── Хвост признаков: панель графика не должна обрываться на дате train ──────
+def _features(n: int, end: str = "2026-08-10 12:00") -> pd.DataFrame:
+    from btcproc import config
+
+    index = pd.date_range(
+        end=ts(end), periods=n, freq=f"{config.data.base_minutes}min", tz="UTC"
+    )
+    return pd.DataFrame({"rsi": 0.5, "pos_1d": 0.4}, index=index)
+
+
+def test_features_tail_continues_from_the_last_stored_bar():
+    """
+    `live` считает признаки на всей истории, но дописывает только то, чего в
+    таблице ещё нет: PK здесь `(symbol, ts, version)`, повтор был бы upsert'ом
+    тех же чисел на триста тысяч строк двенадцать раз в сутки.
+    """
+    from btcproc.pipeline.live import features_tail
+
+    features = _features(2_000)
+    last_stored = features.index[-5]
+
+    tail = features_tail(features, last_stored, cutoff=ts("2026-08-01 00:00"))
+
+    assert len(tail) == 4, "дописываются только бары строго после сохранённого"
+    assert tail.index[0] > last_stored
+    assert tail.index[-1] == features.index[-1]
+
+
+def test_features_tail_falls_back_to_the_cutoff_window():
+    """
+    Набора нет в таблице вовсе (чистили базу) — пишем окно cutoff, а не всю
+    историю: восстановить панель на видимом куске достаточно.
+    """
+    from btcproc.pipeline.live import features_tail
+
+    features = _features(2_000)
+    cutoff = features.index[-50]
+
+    tail = features_tail(features, None, cutoff)
+
+    assert len(tail) == 50
+    assert tail.index[0] == cutoff
+
+
+def test_features_tail_accepts_naive_timestamp_from_the_db():
+    """
+    `max(ts)` приезжает из БД, и на драйвере без tz строка была бы наивной:
+    сравнение с tz-aware индексом упало бы прямо в боевом прогоне.
+    """
+    from btcproc.pipeline.live import features_tail
+
+    features = _features(100)
+    naive = features.index[-3].tz_localize(None)
+
+    tail = features_tail(features, naive, cutoff=ts("2026-01-01 00:00"))
+
+    assert len(tail) == 2
+
+
+def test_features_tail_is_empty_when_nothing_is_new():
+    """Прогон без новых баров ничего не пишет — и это не ошибка."""
+    from btcproc.pipeline.live import features_tail
+
+    features = _features(100)
+
+    assert features_tail(features, features.index[-1], ts("2026-01-01")).empty

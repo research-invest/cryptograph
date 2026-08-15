@@ -125,9 +125,21 @@ def build_features(
     f["rv_ratio"] = np.log(rv_d / rv_w)
     f["rv_rank"] = ind.rolling_rank(rv_d, w["1m"])
     f["atr_rank"] = ind.rolling_rank(atr14 / close, w["1m"])
-    f["range_exp"] = np.log(
-        ((high - low) / (high - low).rolling(w["1d"], min_periods=w["1h"]).mean()).replace(0, np.nan)
-    )
+    # Нулевой диапазон бара (high == low) — это МАКСИМАЛЬНОЕ сжатие, а не
+    # «нет данных»: по боевой базе таких баров BTC — 147, ETH — 329, SOL — 14.
+    # До правки отношение обнулялось, `replace(0, np.nan)` превращало его в
+    # NaN, и общий `dropna()` ниже выбрасывал ВСЮ строку признаков — бар
+    # исчезал из разметки состояний, хотя в ohlcv и outcomes он есть, и сдвигал
+    # позиционные офсеты снимков (аудит 2026-08-15, B8).
+    #
+    # Отсечка снизу, а не заполнение: log отношения при нуле уходит в −inf по
+    # природе, поэтому нужна нижняя граница, и она обязана быть КОНСТАНТОЙ.
+    # Минимум по ряду был бы заглядыванием вперёд — величина зависела бы от
+    # ещё не наступивших баров. 1e-3 = «диапазон меньше тысячной доли
+    # суточного среднего», то есть заведомо ниже всего, что встречается на
+    # непустом баре: это граница шкалы, а не измерение.
+    range_ratio = (high - low) / (high - low).rolling(w["1d"], min_periods=w["1h"]).mean()
+    f["range_exp"] = np.log(range_ratio.clip(lower=1e-3))
 
     # ── Положение в диапазоне ───────────────────────────────────────────────
     f["pos_1d"] = ind.position_in_range(base, w["1d"])
@@ -175,12 +187,72 @@ def build_features(
     # Порядок обхода реестра значения не имеет: колонки приходят с
     # собственными именами, а метка набора собирается по отсортированным
     # именам источников.
+    source_columns: dict[str, list[str]] = {}
     for source in registry.enabled_feature_sources():
-        f = f.join(source.compute(base, symbol)[list(source.feature_columns)])
+        columns = list(source.feature_columns)
+        f = f.join(source.compute(base, symbol)[columns])
+        source_columns[source.name] = columns
 
-    f = f.replace([np.inf, -np.inf], np.nan).dropna()
+    f = f.replace([np.inf, -np.inf], np.nan)
+    _guard_source_row_loss(f, source_columns)
+    f = f.dropna()
     logger.info("Признаков: %d, строк после прогрева: %d", f.shape[1], len(f))
     return f
+
+
+def _guard_source_row_loss(f: pd.DataFrame, source_columns: dict[str, list[str]]) -> None:
+    """
+    Не даёт признакам источника молча съесть историю.
+
+    Финальный `dropna()` режет строку целиком, а признаки внешнего источника
+    существуют не на всей истории монеты: у деривативов метрики BTC
+    начинаются в 2020-09 при барах с 2017-08 — включение
+    `DERIV_FEATURES_ENABLED` отрезало бы **три года** истории, и ни одной
+    ошибки в логе (аудит 2026-08-15, B4). Дыры по отдельным колонкам у
+    поставщика выедают бары ещё и из середины: у BTC 2022-01 живой ОИ при
+    пустых ratio-колонках, и там выпадают точечные дыры, которые дальше
+    ломают `valid`-логику соседних окон.
+
+    Меряется потеря СВЕРХ базовой: сколько строк переживает базовую тридцатку
+    признаков и сколько — она же вместе с источниками. Прогрев собственных
+    окон источника (месячные ранги, суточные z-score) в эту разницу входит и
+    двухпроцентный порог не пробивает; потеря куска истории пробивает сразу.
+    """
+    if not source_columns:
+        return
+
+    all_source_columns = [c for columns in source_columns.values() for c in columns]
+    base_rows = int(f.drop(columns=all_source_columns).notna().all(axis=1).sum())
+    if base_rows == 0:
+        return
+
+    kept = int(f.notna().all(axis=1).sum())
+    lost = (base_rows - kept) / base_rows
+    if lost <= config.features.max_source_row_loss:
+        logger.info(
+            "Признаки источников (%s) стоили %.2f%% строк — в пределах порога",
+            ", ".join(sorted(source_columns)), lost * 100,
+        )
+        return
+
+    # Диагноз с виновником: какой источник и какая его колонка режет больше
+    # всех. Без этого сообщение «потеряно 34% строк» не подсказывает, что
+    # делать.
+    culprits = []
+    for name, columns in sorted(source_columns.items()):
+        worst = max(columns, key=lambda c: int(f[c].isna().sum()))
+        culprits.append(f"{name}: хуже всех {worst} ({int(f[worst].isna().sum())} NaN)")
+
+    raise ValueError(
+        f"Признаки источников срезали {lost:.1%} строк истории "
+        f"({base_rows} → {kept}) при пороге "
+        f"{config.features.max_source_row_loss:.1%}. "
+        + "; ".join(culprits)
+        + ". Так модель молча обучится на обрезке истории. Решите, что делать "
+        "с барами без данных источника (нейтральное значение или явная "
+        "граница обучения), либо поднимите FEATURES_MAX_SOURCE_ROW_LOSS "
+        "осознанно."
+    )
 
 
 def feature_names(df: pd.DataFrame) -> list[str]:

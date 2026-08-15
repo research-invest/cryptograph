@@ -47,6 +47,26 @@ def save_features(features: pd.DataFrame, version: str, symbol: str | None = Non
     )
 
 
+def last_feature_ts(symbol: str, version: str):
+    """
+    Последний бар, для которого посчитаны признаки НАБОРА `version`.
+
+    Точка продолжения для `live`: он дописывает хвост признаков, а не всю
+    историю (её пишет `train`). None — набора в таблице нет вовсе.
+    """
+    row = fetch_one(
+        "SELECT max(ts) AS ts FROM features WHERE symbol = %s AND version = %s",
+        (symbol, version),
+    )
+    return row["ts"] if row and row["ts"] else None
+
+
+def model_feature_version(run_id: int) -> str | None:
+    """Метка набора признаков, которым обучена модель прогона."""
+    row = fetch_one("SELECT feature_ver FROM state_models WHERE run_id = %s", (run_id,))
+    return row["feature_ver"] if row else None
+
+
 def load_features(version: str, symbol: str | None = None) -> pd.DataFrame:
     meta = fetch_one("SELECT names FROM feature_sets WHERE version = %s", (version,))
     if not meta:
@@ -77,13 +97,17 @@ def save_events(events: pd.DataFrame, symbol: str | None = None,
 
     symbol = symbol or config.data.symbol
     version = version or ev.event_version()
+    # itertuples, а не iterrows: последний собирает Series на КАЖДУЮ строку,
+    # и на трёхстах тысячах баров train это секунды чистого CPU на одну
+    # таблицу — при том, что дальше всё равно доминирует вставка
+    # (аудит 2026-08-15, O5).
     rows = [
         (
-            symbol, ts.to_pydatetime(), r.event_block_id, list(r.atoms), list(r.families),
+            symbol, r.Index.to_pydatetime(), r.event_block_id, list(r.atoms), list(r.families),
             int(r.atom_count), int(r.family_count), r.intensity, r.primary_family,
             list(r.context_atoms), version,
         )
-        for ts, r in events.iterrows()
+        for r in events.itertuples()
     ]
     return bulk_upsert(
         "bar_events",
@@ -160,12 +184,12 @@ def save_bar_states(run_id: int, states: pd.DataFrame, symbol: str | None = None
     symbol = symbol or config.data.symbol
     rows = [
         (
-            symbol, ts.to_pydatetime(), run_id, float(r.group_id),
+            symbol, r.Index.to_pydatetime(), run_id, float(r.group_id),
             None if pd.isna(r.prev_group_id) else float(r.prev_group_id),
             int(r.state_seq), int(r.age_minutes), r.age_bucket, r.entropy,
             bool(r.is_transition), r.transition_id,
         )
-        for ts, r in states.iterrows()
+        for r in states.itertuples()
     ]
     return bulk_upsert(
         "bar_states",
@@ -222,12 +246,12 @@ def save_outcomes(outcomes: pd.DataFrame, symbol: str | None = None,
     horizon = horizon or config.data.horizon
     rows = [
         (
-            symbol, ts.to_pydatetime(), horizon,
+            symbol, r.Index.to_pydatetime(), horizon,
             _nan_to_none(r.ret_pct), _nan_to_none(r.mfe_pct), _nan_to_none(r.mae_pct),
             None if r.is_up is None or pd.isna(r.ret_pct) else bool(r.is_up),
             bool(r.valid),
         )
-        for ts, r in outcomes.iterrows()
+        for r in outcomes.itertuples()
     ]
     return bulk_upsert(
         "outcomes",

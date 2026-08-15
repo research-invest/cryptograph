@@ -18,6 +18,7 @@ import pytest
 
 from btcproc import config
 from btcproc.features import builder, events, registry
+from tests.conftest import disable_all_sources
 from btcproc.states import naming
 
 
@@ -74,11 +75,11 @@ def test_feature_version_reflects_the_flags(monkeypatch):
     # Каждый ЧУЖОЙ источник обязан быть выключен явно, иначе метка соберётся
     # из состава, зависящего от окружения машины: с 2026-08-14 на боевом VPS
     # стоит FGI_ENABLED=true, и «v1» превращалось в «v1+fgi» — тест зеленел
-    # локально и падал при выкатке. Заводя третий источник, добавь его сюда.
-    monkeypatch.setattr(config, "fgi",
-                        config.FearGreedConfig(enabled=False, features_enabled=False))
-    monkeypatch.setattr(config, "smc",
-                        config.SMCConfig(enabled=False, features_enabled=False))
+    # локально и падал при выкатке. Ровно это повторилось с deriv (аудит
+    # 2026-08-15, B1), поэтому источники больше не перечисляются здесь
+    # руками: `disable_all_sources` гасит весь реестр целиком, и четвёртый
+    # источник попадёт под нейтрализацию сам.
+    disable_all_sources(monkeypatch)
     assert builder.feature_version() == "v1"
     assert events.event_version() == "v1"
 

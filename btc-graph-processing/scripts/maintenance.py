@@ -19,7 +19,11 @@
    `VACUUM FULL` — только если раздутость перешла порог: он переписывает
    таблицу целиком под ACCESS EXCLUSIVE, и еженедельно платить этим за
    несколько мегабайт незачем.
-4. **Печатает размеры и свободное место.** Это не украшательство: разметка
+4. **Убирает устаревший кэш дневных дампов баров.** Текущий месяц
+   докачивается дневными архивами, а после его закрытия те же бары приезжают
+   одним месячным дампом — дневные файлы становятся дубликатом, который никто
+   не читает и никто не удаляет (аудит 2026-08-15, O6).
+5. **Печатает размеры и свободное место.** Это не украшательство: разметка
    еженедельного `train` (312 тыс. строк на монету) не удаляется никем и
    остаётся главным источником роста. Решение, что с ней делать, отложено до
    того момента, когда место станет проблемой, — и увидеть приближение этого
@@ -187,6 +191,54 @@ def prune_deliveries(dry_run: bool) -> int:
     return removed
 
 
+# Сколько суток дневные архивы баров живут после закрытия своего месяца.
+# `binance._sync_daily_tail` закрывает ими ТЕКУЩИЙ месяц; как только выходит
+# месячный дамп, дневные файлы того месяца — дубликат. Месяц запаса — на
+# случай, если месячный дамп задержался у поставщика.
+DAILY_CACHE_KEEP_DAYS = 40
+
+
+def prune_daily_cache(dry_run: bool) -> int:
+    """
+    Удаляет закэшированные дневные zip баров старше `DAILY_CACHE_KEEP_DAYS`.
+
+    Только дневные (`YYYY-MM-DD.zip`) и только у баров: месячные дампы
+    (`YYYY-MM.zip`) остаются — их перекачка стоит трафика, а места они занимают
+    столько же. Метрики (`data/binance-metrics/...`, если появятся) не
+    трогаются: там дневной архив — единственная форма поставки.
+    """
+    from datetime import date, timedelta
+
+    root = config.data.data_dir / "binance"
+    if not root.exists():
+        print("  кэша дампов нет — нечего чистить")
+        return 0
+
+    cutoff = date.today() - timedelta(days=DAILY_CACHE_KEEP_DAYS)
+    removed, freed = 0, 0
+    for path in root.glob("*/*/*.zip"):
+        stem = path.stem
+        # Дневной архив — ровно YYYY-MM-DD; месячный (YYYY-MM) под шаблон
+        # не подходит и остаётся на месте.
+        if len(stem) != 10 or stem.count("-") != 2:
+            continue
+        try:
+            day = date.fromisoformat(stem)
+        except ValueError:
+            continue
+        if day >= cutoff:
+            continue
+        freed += path.stat().st_size
+        removed += 1
+        if not dry_run:
+            path.unlink()
+
+    verb = "нашлось" if dry_run else "удалено"
+    print(f"  {verb} {removed} дневных архивов старше {DAILY_CACHE_KEEP_DAYS} дн. "
+          f"({freed // 2**20} МБ)")
+    return removed
+
+
 def report() -> None:
     print("\nРазмеры:")
     for table in WATCHED:
@@ -247,6 +299,9 @@ def main() -> int:
 
     print("\nЖурнал доставок уведомлений:")
     prune_deliveries(args.dry_run)
+
+    print("\nКэш дневных дампов баров:")
+    prune_daily_cache(args.dry_run)
 
     if args.dry_run:
         report()

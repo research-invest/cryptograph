@@ -27,13 +27,55 @@ def test_features_have_no_nan_and_are_finite(features):
     assert np.isfinite(features.to_numpy()).all()
 
 
-def test_features_do_not_look_ahead(bars, context):
+def test_flat_window_gives_neutral_rsi():
+    """
+    B8 (аудит 2026-08-15): на ПЛОСКОМ окне avg_gain == avg_loss == 0, и
+    деление на ноль объявляло его «движением только вверх» — RSI 100.
+    Плоское окно — середина шкалы, а не перекупленность: у BTC такие бары
+    есть (147 с нулевым диапазоном), и они кормили и признак, и атом
+    rsi_overbought.
+    """
+    flat = pd.Series([100.0] * 60, index=pd.date_range("2024-01-01", periods=60, freq="15min", tz="UTC"))
+    assert (indicators.rsi(flat, 14).dropna() == 50.0).all()
+
+    # Настоящий «только вверх» по-прежнему даёт 100.
+    rising = pd.Series(np.arange(60, dtype=float) + 100.0, index=flat.index)
+    assert (indicators.rsi(rising, 14).dropna() == 100.0).all()
+
+
+def test_zero_range_bar_does_not_vanish_from_features(monkeypatch):
+    """
+    B8 (аудит 2026-08-15): бар с high == low — это максимальное сжатие, а не
+    «нет данных». До правки отношение обнулялось, log давал NaN, и общий
+    dropna выбрасывал ВСЮ строку признаков: бар исчезал из разметки
+    состояний, хотя в ohlcv и outcomes он есть, и сдвигал позиционные офсеты
+    снимков.
+    """
+    from tests.conftest import disable_all_sources, make_bars
+
+    disable_all_sources(monkeypatch)
+    bars = make_bars(n=4000)
+    flat_ts = bars.index[3000]
+    price = float(bars.loc[flat_ts, "close"])
+    bars.loc[flat_ts, ["open", "high", "low", "close"]] = price
+
+    features = builder.build_features(bars)
+    assert flat_ts in features.index, "бар с нулевым диапазоном выпал из признаков"
+    assert np.isfinite(features.loc[flat_ts].to_numpy()).all()
+    # Сжатие обязано читаться как сжатие: range_exp у такого бара — минимум ряда.
+    assert features.loc[flat_ts, "range_exp"] == features["range_exp"].min()
+
+
+def test_features_do_not_look_ahead(bars, context, monkeypatch):
     """
     Признак на баре t не должен меняться от того, что происходит после t.
 
     Считаем признаки на полной истории и на её префиксе — общие строки
     обязаны совпасть.
     """
+    from tests.conftest import disable_all_sources
+
+    disable_all_sources(monkeypatch)
     cut = len(bars) - 500
     full = builder.build_features(bars, context)
     prefix_context = {tf: df[df.index <= bars.index[cut - 1]] for tf, df in context.items()}
@@ -220,3 +262,52 @@ def test_round_level_touch_survives_bad_prices():
     got = events.round_level_touch(close)
     assert got.iloc[1] is np.False_ or got.iloc[1] == False  # noqa: E712
     assert not got.isna().any()
+
+
+def test_source_features_may_not_silently_eat_history(monkeypatch):
+    """
+    B4 (аудит 2026-08-15): признаки источника существуют не на всей истории
+    монеты, а финальный dropna режет строку целиком.
+
+    У BTC метрики деривативов начинаются в 2020-09 при барах с 2017-08 —
+    включение DERIV_FEATURES_ENABLED отрезало бы три года истории, и молча:
+    модель просто обучилась бы на трети. Предохранитель обязан сказать это
+    вслух и назвать виновника.
+    """
+    import pytest
+
+    from btcproc import config
+    from btcproc.ingest import metrics as metrics_ingest
+    from tests.conftest import make_bars
+
+    bars = make_bars(n=4000)
+    # Метрики есть только на последней трети баров — ровно ситуация BTC.
+    tail = bars.index[len(bars) * 2 // 3:]
+    metrics_frame = pd.DataFrame(
+        {
+            "oi": 70_000.0 + np.arange(len(tail), dtype=float),
+            "oi_value": 3.0e9 + np.arange(len(tail), dtype=float),
+            "ls_top_acc": 2.4 + np.sin(np.arange(len(tail)) / 50.0),
+            "ls_top_pos": 1.4 + np.sin(np.arange(len(tail)) / 50.0) * 0.1,
+            "ls_global": 2.6 + np.sin(np.arange(len(tail)) / 50.0) * 0.1,
+            "taker_ratio": 1.05 + np.sin(np.arange(len(tail)) / 50.0) * 0.05,
+            "src_rows": np.full(len(tail), 3),
+        },
+        index=tail,
+    )
+    monkeypatch.setattr(
+        metrics_ingest, "load_deriv_metrics",
+        lambda symbol, tf=None, start=None, end=None: metrics_frame,
+    )
+    monkeypatch.setattr(config, "deriv",
+                        config.DerivConfig(enabled=True, features_enabled=True))
+
+    with pytest.raises(ValueError, match="срезали"):
+        builder.build_features(bars)
+
+    # Порог поднимается осознанно — тогда расчёт идёт, но обрезанным.
+    monkeypatch.setattr(config, "features",
+                        config.FeaturesConfig(max_source_row_loss=1.0))
+    features = builder.build_features(bars)
+    assert not features.empty
+    assert len(features) < len(bars) * 0.5
