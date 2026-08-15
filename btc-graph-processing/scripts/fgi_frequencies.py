@@ -157,7 +157,7 @@ def section_novelty(values: pd.DataFrame, features: pd.DataFrame, symbol: str) -
     на первых 70% истории по времени, проверка на последних 30% — тот же
     сплит, что и в measure_lift/measure_gradation, ради сопоставимости.
     """
-    from btcproc.analysis.fgi_novelty import novelty_r2
+    from btcproc.analysis.novelty import novelty_r2
 
     print("\n── Гейт N: новизна (out-of-sample R² на 32 базовых признака) ──────")
     # Базовые признаки — всё, что не пришло из зарегистрированных источников

@@ -74,6 +74,13 @@ class FeatureSource:
     `compute` возвращает DataFrame с индексом входных баров и всеми
     колонками источника — и признаками, и атомами сразу. Разделять расчёт
     незачем: он один проход, а кому какие колонки нужны, решают вызывающие.
+
+    Второй аргумент `compute` — монета текущего расчёта (`str | None`).
+    SMC и FGI её не используют (SMC считается из base, FGI — один
+    общерыночный ряд на все монеты), но источникам с ПОМОНЕТНЫМИ внешними
+    данными (деривативные метрики, `features/deriv.py`) она обязательна:
+    без неё batch-прогон (`train --all`) джойнил бы всем монетам одну и ту
+    же — по умолчанию первую из `.env`.
     """
 
     name: str
@@ -81,7 +88,7 @@ class FeatureSource:
     atoms_enabled: Callable[[], bool]
     feature_columns: tuple[str, ...]
     atom_columns: tuple[str, ...]
-    compute: Callable[[pd.DataFrame], pd.DataFrame]
+    compute: Callable[[pd.DataFrame, str | None], pd.DataFrame]
 
     @property
     def columns(self) -> tuple[str, ...]:
@@ -97,7 +104,7 @@ def _smc_source() -> FeatureSource:
     """
     from btcproc.features import events, smc
 
-    def compute(base: pd.DataFrame) -> pd.DataFrame:
+    def compute(base: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
         return smc.build_smc_cached(base)
 
     return FeatureSource(
@@ -124,7 +131,7 @@ def _fgi_source() -> FeatureSource:
     """
     from btcproc.features import fear_greed
 
-    def compute(base: pd.DataFrame) -> pd.DataFrame:
+    def compute(base: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
         return fear_greed.build_fear_greed_cached(base)
 
     return FeatureSource(
@@ -137,6 +144,28 @@ def _fgi_source() -> FeatureSource:
     )
 
 
+def _deriv_source() -> FeatureSource:
+    """
+    Деривативные метрики Binance USD-M — как FGI, джойн, а не расчёт из
+    баров; в отличие от FGI — уже помонетная величина на сетке базового ТФ,
+    сетевого похода в `compute` нет: таблицу `deriv_metrics` заполняет
+    отдельная команда CLI (`ingest-metrics`), см. `btcproc/features/deriv.py`.
+    """
+    from btcproc.features import deriv
+
+    def compute(base: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
+        return deriv.build_deriv_cached(base, symbol=symbol)
+
+    return FeatureSource(
+        name="deriv",
+        features_enabled=lambda: config.deriv.features_on,
+        atoms_enabled=lambda: config.deriv.enabled,
+        feature_columns=tuple(deriv.FEATURE_CANDIDATES),
+        atom_columns=tuple(deriv.CONTEXT_CANDIDATES),
+        compute=compute,
+    )
+
+
 def sources() -> tuple[FeatureSource, ...]:
     """
     Все зарегистрированные источники, включённые и нет.
@@ -145,7 +174,7 @@ def sources() -> tuple[FeatureSource, ...]:
     колонок из своих модулей, и вычислять их на импорте `registry` значило бы
     тянуть `smc.py` (а завтра — ончейн-клиент) при любом обращении к реестру.
     """
-    return (_smc_source(), _fgi_source())
+    return (_smc_source(), _fgi_source(), _deriv_source())
 
 
 def enabled_feature_sources() -> list[FeatureSource]:

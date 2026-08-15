@@ -471,6 +471,51 @@ def fetch_external(
         )
 
 
+@app.command("ingest-metrics")
+def ingest_metrics(
+    symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно указать несколько раз"),
+    all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
+    start: str = typer.Option(None, help="Дата начала, YYYY-MM-DD (не раньше metrics_start монеты)"),
+) -> None:
+    """
+    Скачать деривативные метрики Binance USD-M (ОИ, long/short ratio, давление
+    тейкеров) в deriv_metrics — docs/tz_deriv_ingest_14-08-26.md.
+
+    Отдельная команда намеренно, как fetch-external: файл суток появляется
+    только на следующие сутки (§0.7), поэтому сетевой поход сюда не должен
+    идти внутри train/live и рисковать их регулярным расписанием.
+    """
+    from btcproc.ingest import metrics
+
+    specs = _resolve(symbol, all_symbols)
+
+    failed: dict[str, str] = {}
+    for spec in specs:
+        typer.echo(f"\n=== {spec.ticker} (метрики с {spec.metrics_start_date()}) ===")
+        try:
+            result = metrics.sync_metrics(
+                spec.ticker, start=start,
+                progress=lambda i, n, msg: typer.echo(f"  [{i}/{n}] {msg}")
+                if n <= 40 or i % 20 == 0 or i == n else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — прогон отчитывается по каждой монете, а не падает целиком
+            failed[spec.ticker] = str(exc)
+            typer.echo(typer.style(f"ОШИБКА {spec.ticker}: {exc}", fg=typer.colors.RED))
+            continue
+
+        typer.echo(
+            f"{spec.ticker}: {result['days']} суток, строк {result['rows']}, "
+            f"полных баров {result['share_full']:.1%}"
+        )
+        if result["missing_days"]:
+            head = ", ".join(result["missing_days"][:5])
+            more = f" и ещё {len(result['missing_days']) - 5}" if len(result["missing_days"]) > 5 else ""
+            typer.echo(f"  нет файла за: {head}{more}")
+
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @app.command("notify-example")
 def notify_example(
     mode: str = typer.Option("full", help="Формат payload: full | compact"),

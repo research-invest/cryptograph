@@ -411,6 +411,28 @@ class FearGreedConfig:
 
 
 @dataclass(frozen=True)
+class DerivConfig:
+    """
+    Деривативные метрики Binance USD-M — открытый интерес, long/short ratio,
+    давление тейкеров (docs/tz_deriv_ingest_14-08-26.md). Третий внешний
+    источник, тот же принцип флагов, что у SMC и FGI, и по той же причине:
+    атомы бесплатны и обратимы, признаки требуют train.
+
+    В отличие от FGI величина не общерыночная, а помонетная и уже на сетке
+    базового ТФ (`btcproc/ingest/metrics.py`) — джойн в `features/deriv.py`
+    идёт без сдвига, сетевого похода здесь нет: таблицу `deriv_metrics`
+    заполняет отдельная команда `ingest-metrics`.
+    """
+
+    enabled: bool = _env_bool("DERIV_ENABLED", False)             # контекстные атомы
+    features_enabled: bool = _env_bool("DERIV_FEATURES_ENABLED", False)  # признаки
+
+    @property
+    def features_on(self) -> bool:
+        return self.enabled and self.features_enabled
+
+
+@dataclass(frozen=True)
 class SinkConfig:
     mode: str = _env("SINK_MODE", "direct")  # direct | http | none
     # Каталог соседнего проекта btc-graph. Дефолт вычисляется от расположения
@@ -546,6 +568,7 @@ states = StatesConfig()
 candidates = CandidateConfig()
 smc = SMCConfig()
 fgi = FearGreedConfig()
+deriv = DerivConfig()
 sink = SinkConfig()
 notify = NotifyConfig()
 admin = AdminConfig()

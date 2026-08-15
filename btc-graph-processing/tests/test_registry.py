@@ -29,7 +29,7 @@ def _fake(name: str, features: bool = True, atoms: bool = True):
         atoms_enabled=lambda: atoms,
         feature_columns=(f"{name}_f",),
         atom_columns=(f"{name}_a",),
-        compute=lambda base: base,
+        compute=lambda base, symbol=None: base,
     )
 
 

@@ -1,4 +1,4 @@
-.PHONY: help setup install init-db ingest ingest-all train train-all train-fast \
+.PHONY: help setup install init-db ingest ingest-all ingest-metrics train train-all train-fast \
         live live-all status admin maintenance validate-holdout test docker-up \
         docker-down docker-logs
 
@@ -21,6 +21,7 @@ help:
 	@echo "validate-holdout — проверка системы на отложенной части истории (часы)"
 	@echo "test       — тесты"
 	@echo "docker-up  — поднять админку в docker (нужен запущенный btc-graph)"
+	@echo "ingest-metrics — деривативные метрики Binance USD-M в deriv_metrics"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -72,6 +73,12 @@ maintenance:
 # В кроне — раз в сутки, отдельной записью.
 fetch-external:
 	$(PY) -m btcproc.cli fetch-external
+
+# Деривативные метрики Binance USD-M (ОИ, long/short ratio, тейкеры) в
+# deriv_metrics — тот же принцип, что fetch-external: отдельно от train/live,
+# файл суток появляется только на следующие сутки (docs/tz_deriv_ingest_14-08-26.md, §0.7).
+ingest-metrics:
+	$(PY) -m btcproc.cli ingest-metrics --all
 
 # Обучает модель на первых 70% истории и меряет на остальных 30%. Часы
 # машинного времени на три монеты, поэтому в кроне ему делать нечего:

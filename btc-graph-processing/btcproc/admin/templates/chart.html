@@ -774,6 +774,52 @@ window.addEventListener('btcproc:theme', () => {
   volumeSeries.setData(volumeData(bars));
 });
 
+// ─── Автообновление ─────────────────────────────────────────────────────────
+// Раз в 30 минут, но не «через 30 минут от открытия страницы», а в круглые
+// отметки настенных часов (…:30, …:00) — так время следующего
+// обновления видно на любых часах, не только по факту открытия вкладки.
+// setTimeout, а не setInterval: каждый раз заново считаем миллисекунды до
+// СЛЕДУЮЩЕЙ пятиминутки, поэтому дрейф от времени выполнения самого запроса
+// не накапливается.
+let autoReloadTimer = null;
+let autoReloadInFlight = false;
+
+function msUntilNextTick() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setMinutes(now.getMinutes() + (30 - now.getMinutes() % 30), 0, 0);
+  const delay = next - now;
+  return delay > 0 ? delay : 30 * 60 * 1000;
+}
+
+// load() всегда прыгает на правый край и сбрасывает масштаб цены — это
+// ожидаемо для ручного «Показать», но фоновое обновление не должно каждые
+// 30 минут выдёргивать из-под пользователя вид, если он ушёл смотреть историю.
+// Поэтому сохраняем видимый логический диапазон и восстанавливаем его после.
+async function autoReload() {
+  if (autoReloadInFlight) return;
+  autoReloadInFlight = true;
+  const savedRange = chart.timeScale().getVisibleLogicalRange();
+  try {
+    await load();
+  } finally {
+    autoReloadInFlight = false;
+  }
+  if (savedRange) {
+    chart.timeScale().setVisibleLogicalRange(savedRange);
+    fitPrice();
+  }
+}
+
+function scheduleAutoReload() {
+  autoReloadTimer = setTimeout(async () => {
+    await autoReload();
+    scheduleAutoReload();
+  }, msUntilNextTick());
+}
+
+scheduleAutoReload();
+
 load();
 </script>
 {% endblock %}

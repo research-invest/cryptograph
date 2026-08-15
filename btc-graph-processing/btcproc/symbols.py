@@ -28,6 +28,14 @@ from btcproc import config
 #: не существует вовсе, и это не настройка, которую захочется поменять.
 VENUES: tuple[str, ...] = ("binance_spot", "bybit_spot")
 
+#: Общая граница архива деривативных метрик Binance USD-M
+#: (`docs/tz_deriv_ingest_14-08-26.md`, §0.3): у пяти проверенных монет
+#: (ETH, SOL, BNB, XRP, ADA) метрики начинаются в один день — это граница
+#: САМОГО АРХИВА, а не рынка (перпы этих монет листились в разное время).
+#: Раньше — переопределяется полем `metrics_start` спеки (BTC — архив
+#: глубже; монеты, чей перп появился позже границы, — HYPE).
+METRICS_ARCHIVE_START = "2021-12-01"
+
 
 @dataclass(frozen=True)
 class SymbolSpec:
@@ -54,6 +62,15 @@ class SymbolSpec:
     states_overrides: dict[str, Any] = field(default_factory=dict)
 
     note: str = ""
+
+    # Первый день, за который на data.binance.vision есть деривативные метрики
+    # USD-M фьючерса этой монеты (docs/tz_deriv_ingest_14-08-26.md, §0.3).
+    # "" → METRICS_ARCHIVE_START. Симметрия с history_start/start_date()
+    # намеренная — заводящий монету человек уже знает эту форму.
+    metrics_start: str = ""
+
+    def metrics_start_date(self) -> str:
+        return self.metrics_start or METRICS_ARCHIVE_START
 
     def states_config(self, base: config.StatesConfig | None = None) -> config.StatesConfig:
         """StatesConfig монеты: базовый конфиг с её переопределениями."""
@@ -82,10 +99,15 @@ SYMBOLS: tuple[SymbolSpec, ...] = (
     SymbolSpec(
         "BTCUSDT", "2017-08-01",
         note="Эталон: на нём откалиброваны пороги кластеризации и профиль оценки в btc-graph",
+        # Архив метрик глубже общей границы примерно на 15 месяцев —
+        # проверено бисекцией от 2020-08-01 (docs/tz_deriv_ingest_14-08-26.md, §0.3).
+        metrics_start="2020-09-01",
     ),
     SymbolSpec(
         "ETHUSDT", "2017-08-01",
         note="История сопоставима с BTC, ликвидность ниже",
+        # metrics_start="" → METRICS_ARCHIVE_START (2021-12-01): это граница
+        # архива, а не рынка (перп ETH торгуется с 2019-11).
     ),
     SymbolSpec(
         "SOLUSDT", "2020-08-01",
@@ -94,6 +116,8 @@ SYMBOLS: tuple[SymbolSpec, ...] = (
             "меньше, чем у BTC и ETH — это первая монета, на которой работает "
             "относительный порог дробления min_group_share"
         ),
+        # metrics_start="" → METRICS_ARCHIVE_START (2021-12-01), проверено
+        # напрямую (2021-11-30 → 404, 2021-12-01 → 200).
     ),
     SymbolSpec(
         "HYPEUSDT", "2025-07-01",
@@ -107,8 +131,15 @@ SYMBOLS: tuple[SymbolSpec, ...] = (
             "приходится 4.5 тыс. пар (переход × блок событий), и до "
             "min_sample_size=30 аналогов не добирается ни одна. Это следствие "
             "короткой истории, а не поломки — понижать порог ради появления "
-            "scope=transition+event_block нельзя, выборка и так на пределе"
+            "scope=transition+event_block нельзя, выборка и так на пределе. "
+            "ДВОЙНОЕ смешение площадок в деривативных признаках: бары — Bybit "
+            "спот, метрики ОИ — Binance USD-M фьючерс (docs/tz_deriv_ingest_14-08-26.md, "
+            "§1.2) — в замерах держать отдельной строкой, не смешивать с тремя остальными"
         ),
+        # Метрики этой монеты на Binance USD-M начинаются раньше баров (Bybit
+        # спот, 2025-07-11): первый файл неполный (162 строк), листинг перпа —
+        # первый день сам по себе, а не граница архива.
+        metrics_start="2025-05-30",
     ),
 )
 
@@ -136,6 +167,7 @@ def get(ticker: str) -> SymbolSpec:
         )
     _validate_overrides(spec)
     _validate_venue(spec)
+    _validate_metrics_start(spec)
     return spec
 
 
@@ -166,6 +198,24 @@ def _validate_venue(spec: SymbolSpec) -> None:
         raise UnknownSymbolError(
             f"{spec.ticker}: неизвестная площадка {spec.venue!r}. "
             f"Известные: {', '.join(VENUES)}."
+        )
+
+
+def _validate_metrics_start(spec: SymbolSpec) -> None:
+    """
+    `metrics_start` раньше самой ранней проверенной даты архива (BTC,
+    2020-09-01) означает опечатку, а не глубокий архив — падать здесь,
+    а не после первого HTTP 404 на середине бэкфилла.
+    """
+    if not spec.metrics_start:
+        return
+    earliest = "2020-09-01"
+    if spec.metrics_start < earliest:
+        raise UnknownSymbolError(
+            f"{spec.ticker}: metrics_start={spec.metrics_start!r} раньше "
+            f"{earliest} — самой ранней проверенной даты архива деривативных "
+            "метрик Binance USD-M (docs/tz_deriv_ingest_14-08-26.md, §0.3). "
+            "Похоже на опечатку."
         )
 
 

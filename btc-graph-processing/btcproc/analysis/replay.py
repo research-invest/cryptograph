@@ -109,7 +109,7 @@ def label_history(
     }
 
     log(f"[{symbol}] модель прогона #{model_run}, баров {len(base)}; признаки…")
-    features = feat.build_features(base, context)
+    features = feat.build_features(base, context, symbol=symbol)
     missing = set(model.feature_names) - set(features.columns)
     if missing:
         raise ReplayError(
@@ -120,7 +120,7 @@ def label_history(
 
     labels = model.predict(feat.apply_scale(features, model.scale))
     states = assign.assign_states(features.index, labels)
-    events = ev.build_event_blocks(base).reindex(features.index).dropna(
+    events = ev.build_event_blocks(base, symbol=symbol).reindex(features.index).dropna(
         subset=["event_block_id"]
     )
     outcomes = compute_outcomes(base).reindex(features.index)

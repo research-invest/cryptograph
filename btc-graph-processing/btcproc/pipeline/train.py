@@ -166,7 +166,7 @@ def run_train(
             tf: bars.load_ohlcv(symbol, tf, start, end)
             for tf in config.data.context_tfs
         }
-        features = feat.build_features(base, context)
+        features = feat.build_features(base, context, symbol=symbol)
         if features.empty:
             raise RuntimeError("Признаки не посчитались — слишком короткая история.")
         repo.save_feature_set(
@@ -179,7 +179,7 @@ def run_train(
 
         # ── 3. События ──────────────────────────────────────────────────────
         progress.start("events", "детекторы событий")
-        events = ev.build_event_blocks(base).reindex(features.index).dropna(
+        events = ev.build_event_blocks(base, symbol=symbol).reindex(features.index).dropna(
             subset=["event_block_id"]
         )
         blocks = ev.block_statistics(events)

@@ -95,17 +95,21 @@ def all_features(bars, context, monkeypatch_module):
     тесты в БД не ходят, поэтому загрузчик подменяется синтетическим рядом,
     покрывающим диапазон дат фикстуры `bars`.
     """
+    import numpy as np
     import pandas as pd
 
     from btcproc import config
     from btcproc.features.builder import build_features
-    from btcproc.ingest import external
+    from btcproc.ingest import external, metrics as metrics_ingest
 
     monkeypatch_module.setattr(
         config, "smc", config.SMCConfig(enabled=True, features_enabled=True)
     )
     monkeypatch_module.setattr(
         config, "fgi", config.FearGreedConfig(enabled=True, features_enabled=True)
+    )
+    monkeypatch_module.setattr(
+        config, "deriv", config.DerivConfig(enabled=True, features_enabled=True)
     )
     days = pd.date_range(
         bars.index[0].normalize() - pd.Timedelta(days=1),
@@ -118,6 +122,23 @@ def all_features(bars, context, monkeypatch_module):
     )
     monkeypatch_module.setattr(
         external, "load_external_daily", lambda series, start=None, end=None: synthetic_daily
+    )
+    n = len(bars)
+    synthetic_deriv = pd.DataFrame(
+        {
+            "oi": 70_000.0 + np.linspace(0, 5_000, n),
+            "oi_value": 3.0e9 + np.linspace(0, 1e8, n),
+            "ls_top_acc": np.full(n, 2.4),
+            "ls_top_pos": np.full(n, 1.4),
+            "ls_global": np.full(n, 2.6),
+            "taker_ratio": np.full(n, 1.05),
+            "src_rows": np.full(n, 3),
+        },
+        index=bars.index,
+    )
+    monkeypatch_module.setattr(
+        metrics_ingest, "load_deriv_metrics",
+        lambda symbol, tf=None, start=None, end=None: synthetic_deriv,
     )
     return build_features(bars, context)
 

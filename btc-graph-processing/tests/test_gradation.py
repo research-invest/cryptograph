@@ -169,3 +169,78 @@ def test_table_marks_inversions_and_missing_bootstrap():
 def test_unknown_correction_is_rejected():
     with pytest.raises(ValueError):
         gradation.measure_gradation(_frame(), ["x"], correction="wat")
+
+
+# ── Непрерывная цель (docs/tz_deriv_ingest_14-08-26.md, §2.2) ─────────────
+#
+# Гейт G заявлен для range_ratio — непрерывной величины на выборке ВСЕХ
+# баров, а не только бинарного metric=is_up на выборке кандидатов (та самая
+# дыра FGI, 34.8 журнала: гейт G был измерен не на том, что требовала
+# табличка гейтов). cochran_armitage обобщён: для бинарной метрики σ² =
+# μ(1−μ) в ТОЧНОСТИ совпадает со старой формулой (тесты выше это подтвердили
+# без единой правки), для непрерывной — фактическая дисперсия метрики.
+
+def _continuous_frame(n: int = 6000, effect: float = 1.5, seed: int = 7) -> pd.DataFrame:
+    """Синтетика с ИЗВЕСТНОЙ монотонной связью x → непрерывная metric (не в [0,1])."""
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(0, 1, n)
+    metric = 3.0 + effect * x + rng.normal(0, 0.5, n)  # шкала непрерывной величины вроде range_ratio
+    return pd.DataFrame({
+        "ts": pd.date_range("2020-01-01", periods=n, freq="15min", tz="UTC"),
+        "x": x,
+        "metric": metric,
+    })
+
+
+def test_cochran_armitage_finds_a_monotone_trend_on_continuous_metric():
+    labels = np.repeat([0, 1, 2, 3, 4], 400)
+    rng = np.random.default_rng(11)
+    metric = np.concatenate([
+        rng.normal(loc, 1.0, 400) for loc in (1.0, 2.0, 3.0, 4.0, 5.0)
+    ])
+    z, p = gradation.cochran_armitage(labels, metric)
+    assert z > 3.0 and p < 0.001
+
+
+def test_cochran_armitage_ignores_noise_on_continuous_metric():
+    """Позитивный контроль измерителя (раздел 6 ТЗ): на чистом шуме тренда быть не должно."""
+    rng = np.random.default_rng(13)
+    labels = rng.integers(0, 5, 2000).astype(float)
+    metric = rng.normal(10.0, 2.0, 2000)  # никакой связи с labels
+    z, p = gradation.cochran_armitage(labels, metric)
+    assert abs(z) < 2.5 and p > 0.01
+
+
+def test_measure_gradation_confirms_a_known_continuous_trend():
+    results = gradation.measure_gradation(
+        _continuous_frame(n=6000, effect=2.0), features=["x"], horizon_minutes=1440,
+        n_boot=200, correction="none",
+    )
+    result = results[0]
+    assert result.monotone
+    assert result.spread > 0.5  # разница средних между крайними бинами
+    assert result.p_boot is not None and result.p_boot < 0.05
+    assert result.confirmed
+
+
+def test_measure_gradation_rejects_continuous_noise():
+    """Позитивный контроль: без связи гейт G не обязан находить тренд там, где его нет."""
+    rng = np.random.default_rng(17)
+    n = 4000
+    frame = pd.DataFrame({
+        "ts": pd.date_range("2020-01-01", periods=n, freq="15min", tz="UTC"),
+        "x": rng.uniform(0, 1, n),
+        "metric": rng.normal(5.0, 1.0, n),
+    })
+    results = gradation.measure_gradation(
+        frame, features=["x"], horizon_minutes=1440, n_boot=200, correction="none",
+    )
+    assert not results[0].confirmed
+
+
+def test_continuous_metric_with_nan_is_filtered_not_crashed():
+    frame = _continuous_frame(n=2000)
+    frame.loc[frame.index[:100], "metric"] = np.nan
+    results = gradation.measure_gradation(frame, features=["x"], horizon_minutes=None,
+                                          n_boot=20, holdout=None)
+    assert results[0].bins  # посчиталось, не упало

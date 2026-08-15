@@ -16,6 +16,7 @@ from btcproc.analysis.range_lift import (
     autocorr_block_rows,
     forward_range_ratio,
     paired_diff_p,
+    partial_r2_gain,
     spearman_block_p,
 )
 
@@ -117,3 +118,76 @@ def test_autocorr_block_rows_falls_back_to_ceiling_on_persistent_series():
     lag_days, block_rows = autocorr_block_rows(series, bars_per_day=96, floor=0.2, max_lag_days=30)
     assert lag_days == 30
     assert block_rows == 30 * 96
+
+
+# ── partial_r2_gain: бенчмарк-решение §2.1 задачи по деривативам ─────────
+#
+# "Добавляет к rv", а не "сильнее rv" — источник может дойти до значимого
+# СОБСТВЕННОГО rho и не должен штрафоваться за то, что rv конструктивно
+# ближе к цели (тот же ATR в знаменателе).
+
+def _correlated_series(n: int, seed: int):
+    """
+    benchmark и target коррелированы (как rv и range_ratio по построению);
+    у target есть ДОПОЛНИТЕЛЬНАЯ компонента shared_signal, которой в
+    benchmark нет вовсе — ровно то, что должен ловить partial_r2_gain.
+    """
+    rng = np.random.default_rng(seed)
+    benchmark = rng.normal(size=n)
+    shared_signal = rng.normal(size=n)
+    target = benchmark + 0.8 * shared_signal + rng.normal(scale=0.3, size=n)
+    return benchmark, shared_signal, target, rng
+
+
+def test_partial_r2_gain_finds_informative_predictor():
+    """
+    Позитивный контроль (раздел 6 ТЗ): predictor несёт ту же информацию,
+    что shared_signal (которой у benchmark нет) — приращение R² обязано
+    быть большим и значимым.
+    """
+    benchmark, shared_signal, target, rng = _correlated_series(3000, seed=10)
+    predictor = shared_signal + rng.normal(scale=0.2, size=len(target))
+
+    r2_base, r2_full, r_partial, p = partial_r2_gain(
+        predictor, benchmark, target, block_length=5, n_boot=500,
+        rng=np.random.default_rng(11),
+    )
+    assert r2_full > r2_base + 0.1
+    assert r_partial > 0.5
+    assert p < 0.01
+
+
+def test_partial_r2_gain_rejects_uninformative_predictor():
+    """Шум, не связанный ни с target, ни с benchmark, — приращения быть не должно."""
+    benchmark, _shared, target, rng = _correlated_series(3000, seed=20)
+    predictor = rng.normal(size=len(target))  # чистый шум
+
+    r2_base, r2_full, r_partial, p = partial_r2_gain(
+        predictor, benchmark, target, block_length=5, n_boot=500,
+        rng=np.random.default_rng(21),
+    )
+    assert r2_full == pytest.approx(r2_base, abs=0.02)
+    assert abs(r_partial) < 0.1
+    assert p > 0.05
+
+
+def test_partial_r2_gain_does_not_penalize_predictor_stronger_than_benchmark():
+    """
+    §2.1: источник со значимым СОБСТВЕННЫМ rho, сильнее самого benchmark,
+    не должен получать отказ только из-за конструктивного преимущества rv —
+    здесь predictor вообще не зависит от benchmark, и это не мешает найти
+    приращение (в отличие от paired_diff_p, где источник мог бы проиграть
+    сопернику, сильному по конструкции цели).
+    """
+    rng = np.random.default_rng(30)
+    n = 3000
+    benchmark = rng.normal(size=n)  # слабая связь с target
+    predictor = rng.normal(size=n)  # СИЛЬНАЯ, независимая от benchmark
+    target = 0.2 * benchmark + 1.0 * predictor + rng.normal(scale=0.3, size=n)
+
+    r2_base, r2_full, r_partial, p = partial_r2_gain(
+        predictor, benchmark, target, block_length=5, n_boot=500,
+        rng=np.random.default_rng(31),
+    )
+    assert r2_full > r2_base + 0.3
+    assert p < 0.01

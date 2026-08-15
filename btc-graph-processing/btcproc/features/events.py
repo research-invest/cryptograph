@@ -128,6 +128,17 @@ ATOM_FAMILY: dict[str, str] = {
     "greed_extreme": "sentiment_events",
     "sentiment_flip_up": "sentiment_events",
     "sentiment_flip_down": "sentiment_events",
+
+    # ─── Деривативные метрики Binance USD-M, добавлены 2026-08-15 ──────────
+    # Все четыре — контекстные квадранты oi_vs_price (docs/tz_deriv_ingest_14-08-26.md,
+    # §B3): величина с тремя значениями (sign(ret_1h) * sign(oi_chg_1h)),
+    # в вектор признаков не годится (IQR вырождается на трёхзначном входе).
+    # Считаются только при DERIV_ENABLED=true; иначе колонки есть, но всегда
+    # False — набор имён не должен зависеть от флага.
+    "oi_up_price_up": "derivative_events",
+    "oi_up_price_down": "derivative_events",
+    "oi_down_price_up": "derivative_events",
+    "oi_down_price_down": "derivative_events",
 }
 
 ATOMS = list(ATOM_FAMILY)
@@ -167,6 +178,10 @@ CONTEXT_ATOMS = {
     "greed_extreme",
     "sentiment_flip_up",
     "sentiment_flip_down",
+    "oi_up_price_up",
+    "oi_up_price_down",
+    "oi_down_price_up",
+    "oi_down_price_down",
 }
 
 SIGNATURE_ATOMS = [a for a in ATOMS if a not in CONTEXT_ATOMS]
@@ -233,8 +248,14 @@ def round_level_touch(close: pd.Series) -> pd.Series:
     return near.fillna(False)
 
 
-def detect_atoms(base: pd.DataFrame) -> pd.DataFrame:
-    """Булев DataFrame: колонка на атом, строка на бар."""
+def detect_atoms(base: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
+    """
+    Булев DataFrame: колонка на атом, строка на бар.
+
+    symbol — монета текущего расчёта, нужна источникам с помонетными
+    внешними данными (см. `features/builder.build_features`, тот же параметр
+    и та же причина).
+    """
     w = {
         "1h": config.data.bars_per("1h"),
         "1d": config.data.bars_per("1d"),
@@ -305,12 +326,12 @@ def detect_atoms(base: pd.DataFrame) -> pd.DataFrame:
     a["us_session"] = pd.Series((hour >= 14) & (hour < 22), index=base.index)
     a["weekend"] = pd.Series(dow >= 5, index=base.index)
 
-    _attach_sources(a, base)
+    _attach_sources(a, base, symbol)
 
     return a[ATOMS].fillna(False).astype(bool)
 
 
-def _attach_sources(a: pd.DataFrame, base: pd.DataFrame) -> None:
+def _attach_sources(a: pd.DataFrame, base: pd.DataFrame, symbol: str | None = None) -> None:
     """
     Атомы источников — или пустые колонки, если источник выключен.
 
@@ -335,7 +356,7 @@ def _attach_sources(a: pd.DataFrame, base: pd.DataFrame) -> None:
             for name in columns:
                 a[name] = False
             continue
-        values = source.compute(base)
+        values = source.compute(base, symbol)
         for name in columns:
             a[name] = values[name]
 
@@ -375,9 +396,13 @@ def rarity_bucket(share: float) -> str:
     return "common"
 
 
-def build_event_blocks(base: pd.DataFrame, window_bars: int | None = None) -> pd.DataFrame:
+def build_event_blocks(
+    base: pd.DataFrame, window_bars: int | None = None, symbol: str | None = None
+) -> pd.DataFrame:
     """
     Блок событий на каждый бар.
+
+    symbol — см. `detect_atoms`.
 
     window_bars — окно, в котором атомы считаются «сопровождавшими состояние»
     (по умолчанию час). Внутри окна атомы объединяются по ИЛИ: событие часовой
@@ -395,7 +420,7 @@ def build_event_blocks(base: pd.DataFrame, window_bars: int | None = None) -> pd
         return pd.DataFrame()
 
     window_bars = window_bars or config.data.bars_per("1h")
-    detected = detect_atoms(base)
+    detected = detect_atoms(base, symbol)
     # Скользящее ИЛИ по окну. Считается сразу по всем атомам: max по окну
     # берётся поколоночно, поэтому срез до или после роллинга даёт одно и то же.
     rolled = detected.rolling(window_bars, min_periods=1).max().astype(bool)

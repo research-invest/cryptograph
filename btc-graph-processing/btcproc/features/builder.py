@@ -88,10 +88,18 @@ def _context_features(base_index: pd.DatetimeIndex, ctx: pd.DataFrame, tf: str) 
 def build_features(
     base: pd.DataFrame,
     context: dict[str, pd.DataFrame] | None = None,
+    symbol: str | None = None,
 ) -> pd.DataFrame:
     """
     base    — бары базового ТФ (DatetimeIndex UTC).
     context — бары старших ТФ по ключу таймфрейма.
+    symbol  — монета текущего расчёта. Нужна источникам с ПОМОНЕТНЫМИ
+              внешними данными (деривативные метрики, `features/deriv.py`) —
+              в отличие от SMC (считается из base) и FGI (один общерыночный
+              ряд на все монеты), им нужно знать, какую монету джойнить.
+              None — источник берёт монету по умолчанию из конфига; в
+              batch-прогонах (`train --all`, `live --all`) ЭТО ОШИБКА для
+              деривативов, поэтому пайплайны обязаны передавать symbol явно.
 
     Возвращает DataFrame признаков без NaN: первые ~4 недели истории уходят
     на прогрев окон.
@@ -168,7 +176,7 @@ def build_features(
     # собственными именами, а метка набора собирается по отсортированным
     # именам источников.
     for source in registry.enabled_feature_sources():
-        f = f.join(source.compute(base)[list(source.feature_columns)])
+        f = f.join(source.compute(base, symbol)[list(source.feature_columns)])
 
     f = f.replace([np.inf, -np.inf], np.nan).dropna()
     logger.info("Признаков: %d, строк после прогрева: %d", f.shape[1], len(f))

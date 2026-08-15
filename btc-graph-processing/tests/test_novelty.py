@@ -1,5 +1,5 @@
 """
-Тесты гейта N и fgi_residual (btcproc/analysis/fgi_novelty.py).
+Тесты гейта N и fgi_residual (btcproc/analysis/novelty.py).
 
 Синтетика с ИЗВЕСТНОЙ связью: fgi_level = 0.6·f1 - 0.3·f2 + шум. OOS R² на
 train/test обязан поймать эту связь, а остаток — растерять её (по построению
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from btcproc.analysis.fgi_novelty import (
+from btcproc.analysis.novelty import (
     base_feature_columns,
     compute_fgi_residual,
     novelty_r2,

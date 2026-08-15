@@ -361,3 +361,34 @@ CREATE TABLE IF NOT EXISTS external_daily (
     fetched_at TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
     PRIMARY KEY (series, day)
 );
+
+-- ─── Деривативные метрики Binance USD-M ────────────────────────────────────
+-- docs/tz_deriv_ingest_14-08-26.md, §1.3. Сетка баров базового ТФ, помонетная
+-- (в отличие от external_daily — это не общерыночный ряд).
+--
+-- NULL в колонке = данных нет (не ноль и не ffill): в архиве встречаются дни
+-- с живым ОИ и полностью пустыми ratio-колонками (§0.9, 2022-01-01/15). Дырка
+-- по КОЛОНКАМ, а не по дням целиком — заполнять чем бы то ни было запрещено:
+-- позавчерашний ОИ, выданный за сегодняшний, не виден ни по одной метрике.
+--
+-- tf в ключе — по образцу ohlcv, чтобы смена BASE_TIMEFRAME не перезаписала
+-- чужие строки молча.
+CREATE TABLE IF NOT EXISTS deriv_metrics (
+    symbol      TEXT             NOT NULL,
+    tf          TEXT             NOT NULL,
+    ts          TIMESTAMPTZ      NOT NULL,
+    oi          DOUBLE PRECISION,   -- sum_open_interest, last (уровень, не поток)
+    oi_value    DOUBLE PRECISION,   -- sum_open_interest_value, last (содержит цену внутри)
+    ls_top_acc  DOUBLE PRECISION,   -- count_toptrader_long_short_ratio, last
+    ls_top_pos  DOUBLE PRECISION,   -- sum_toptrader_long_short_ratio, last
+    ls_global   DOUBLE PRECISION,   -- count_long_short_ratio, last
+    taker_ratio DOUBLE PRECISION,   -- sum_taker_long_short_vol_ratio, mean (поток за интервал)
+    -- Сколько УНИКАЛЬНЫХ 5m-строк (после дедупа по create_time) легло в окно
+    -- [T, T+15m). 3 = полный бар, 1–2 = частичный, строки нет вовсе = метрик
+    -- за этот бар нет — тот самый `valid`-механизм по образцу outcomes.py,
+    -- только по колонкам, а не по барам целиком.
+    src_rows    SMALLINT NOT NULL,
+    PRIMARY KEY (symbol, tf, ts)
+);
+
+CREATE INDEX IF NOT EXISTS deriv_metrics_tf_ts_idx ON deriv_metrics (tf, ts DESC);

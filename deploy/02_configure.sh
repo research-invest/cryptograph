@@ -67,6 +67,12 @@ MAINT_CRON="${MAINT_CRON:-40 4 * * 3}"
 # 05:10 UTC: alternative.me обновляет индекс около полуночи UTC, а к этому часу
 # live уже отработал и train по воскресеньям ещё не начался.
 FETCH_CRON="${FETCH_CRON:-10 5 * * *}"
+# Деривативные метрики Binance USD-M (ОИ, long/short ratio, тейкеры) в
+# deriv_metrics — тот же принцип, что FETCH_CRON: файл суток появляется
+# только на следующие сутки (docs/tz_deriv_ingest_14-08-26.md, §0.7), поэтому
+# сетевой поход отдельно от train/live. 05:25 — после FETCH_CRON, тем же
+# спокойным часом.
+DERIV_CRON="${DERIV_CRON:-25 5 * * *}"
 # Откуда добирается свежий хвост баров. Дефолт здесь не совпадает с дефолтом
 # btcproc намеренно: VPS часто стоит в юрисдикции, откуда api.binance.com
 # отвечает 451, и обнаруживается это только падением прогона на последнем
@@ -443,6 +449,14 @@ SMC_FEATURES_ENABLED=false
 # Наполняет крон fetch-external (FETCH_CRON), включённый ниже вместе с флагом.
 FGI_ENABLED=true
 FGI_FEATURES_ENABLED=false
+# Деривативные метрики Binance USD-M — третий источник (docs/tz_deriv_ingest_14-08-26.md),
+# фаза 0–2 (загрузчик, атомы, замеры). Требует наполненной deriv_metrics —
+# наполняет крон ingest-metrics (DERIV_CRON) ниже. Порядок выкатки как у FGI:
+# сначала код, потом наполнение таблицы, и только потом флаг — иначе пустая
+# таблица даёт сплошной False молча (урок 34.10). Выключен здесь до тех пор,
+# пока фаза 2 (гейты) не даст решения по каждой монете.
+DERIV_ENABLED=false
+DERIV_FEATURES_ENABLED=false
 
 # ─── Пороги кластеризации ───────────────────────────────────────────────────
 STATES_MIN_GROUP_SHARE=0.0025
@@ -869,7 +883,8 @@ step "Ставлю расписание"
 LIVE_ARGS=""
 for symbol in $TRAIN_SYMBOLS; do LIVE_ARGS="$LIVE_ARGS --symbol $symbol"; done
 REMOTE_DIR="$REMOTE_DIR" LIVE_ARGS="$LIVE_ARGS" LIVE_CRON="$LIVE_CRON" \
-    TRAIN_CRON="$TRAIN_CRON" MAINT_CRON="$MAINT_CRON" FETCH_CRON="$FETCH_CRON" remote <<EOF
+    TRAIN_CRON="$TRAIN_CRON" MAINT_CRON="$MAINT_CRON" FETCH_CRON="$FETCH_CRON" \
+    DERIV_CRON="$DERIV_CRON" remote <<EOF
 MARK="# crypto-graph"
 # Вычищаются И строки-маркеры, И сами команды — иначе повторный запуск
 # скрипта плодит дубли расписания. Маркер стоит только в комментариях, а
@@ -900,6 +915,12 @@ $TRAIN_CRON $REMOTE_DIR/bin/btcproc train$LIVE_ARGS --no-emit --skip-if-busy >> 
 \$MARK   FGI-атомы на свежих барах станут False без единой ошибки в логе.
 \$MARK   Проверять по logs/fetch-external.log: он печатает диапазон суток.
 $FETCH_CRON $REMOTE_DIR/bin/btcproc fetch-external >> $REMOTE_DIR/logs/fetch-external.log 2>&1
+\$MARK — деривативные метрики Binance USD-M (ОИ, long/short ratio, тейкеры)
+\$MARK   в deriv_metrics. Тот же принцип, что FETCH_CRON: файл суток
+\$MARK   появляется только на следующие сутки, поэтому отдельно от live/train.
+\$MARK   DERIV_ENABLED остаётся false, пока фаза 2 (гейты) не даст решения —
+\$MARK   крон наполняет таблицу заранее, это не включает атомы само по себе.
+$DERIV_CRON $REMOTE_DIR/bin/btcproc ingest-metrics --all >> $REMOTE_DIR/logs/ingest-metrics.log 2>&1
 \$MARK — ежедневная сводка: покрытие истории, отставание, очередь отправки
 17 6 * * * $REMOTE_DIR/bin/btcproc status >> $REMOTE_DIR/logs/status.log 2>&1
 \$MARK — недельная уборка базы: разметка старых live-прогонов + вакуум.

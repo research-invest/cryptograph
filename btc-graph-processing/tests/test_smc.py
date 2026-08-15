@@ -452,10 +452,11 @@ def test_smc_atoms_are_all_context(smc_on):
     assert set(events.SMC_ATOMS) <= events.CONTEXT_ATOMS
     assert not (set(events.SMC_ATOMS) & set(events.SIGNATURE_ATOMS))
     # 45 базовых+SMC + 4 контекстных атома Fear & Greed (добавлены 2026-08-14,
-    # docs/task_fear_greed.md) — все четыре тоже контекстные, сигнатурные
-    # 20 не меняются.
-    assert len(events.ATOMS) == 49
-    assert len(events.CONTEXT_ATOMS) == 29
+    # docs/task_fear_greed.md) + 4 контекстных квадранта деривативов
+    # (добавлены 2026-08-15, docs/tz_deriv_ingest_14-08-26.md) — все восемь
+    # тоже контекстные, сигнатурные 20 не меняются.
+    assert len(events.ATOMS) == 53
+    assert len(events.CONTEXT_ATOMS) == 33
     assert len(events.SIGNATURE_ATOMS) == 20
 
     # Отвергнутые замером фазы 2 в реестр не попали.

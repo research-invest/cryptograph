@@ -88,13 +88,13 @@ def attach_fgi_features(frame: pd.DataFrame, symbol: str,
     То же самое для Fear & Greed: fgi_level напрямую из джойна дневного ряда,
     fgi_residual — остаток OLS на 32 базовых признака (docs/task_fear_greed.md
     §1.2), коэффициенты обучены на первых 70% истории и применены ко всей —
-    см. btcproc/analysis/fgi_novelty.py.
+    см. btcproc/analysis/novelty.py.
 
     Используется, только если гейт N дал R² в [0.5, 0.8): «все замеры
     дублируются на остатке» (§1.2) — если работает ценовая половина индекса,
     а не он сам, монотонность у fgi_level будет, а у fgi_residual пропадёт.
     """
-    from btcproc.analysis.fgi_novelty import compute_fgi_residual
+    from btcproc.analysis.novelty import compute_fgi_residual
     from btcproc.features import builder as feat
     from btcproc.features import fear_greed as fg
     from btcproc.ingest import external

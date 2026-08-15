@@ -165,26 +165,37 @@ def quantile_bins(values: np.ndarray, bins: int = DEFAULT_BINS) -> tuple[np.ndar
 
 def cochran_armitage(labels: np.ndarray, metric: np.ndarray) -> tuple[float, float]:
     """
-    Тест на линейный тренд долей по упорядоченным группам.
+    Тест на линейный тренд ПО УПОРЯДОЧЕННЫМ ГРУППАМ — не только для долей.
 
-        T   = Σ tᵢ (rᵢ − nᵢ·p̄)
-        Var = p̄(1−p̄) · [ Σ nᵢtᵢ² − (Σ nᵢtᵢ)² / N ]
+        T   = Σ tᵢ (rᵢ − nᵢ·μ)
+        Var = σ² · [ Σ nᵢtᵢ² − (Σ nᵢtᵢ)² / N ]
         z   = T / √Var
 
-    где tᵢ — оценка группы (берём номер бина: бины равнонаполненные, и
-    любая монотонная шкала даёт тот же знак), nᵢ — объём, rᵢ — число
-    «успехов», p̄ — общая доля.
+    где tᵢ — оценка группы (номер бина: бины равнонаполненные, любая
+    монотонная шкала даёт тот же знак), nᵢ — объём, rᵢ — СУММА метрики в
+    группе, μ — общее среднее, σ² — общая ДИСПЕРСИЯ метрики (population,
+    ddof=0).
+
+    Классический Cochran–Armitage сформулирован для БИНАРНОЙ метрики и берёт
+    σ² = μ(1−μ) — дисперсию Бернулли. Здесь это частный случай общей формулы:
+    для {0,1}-метрики E[(x−μ)²] = μ(1−μ) ТОЧНО, то есть замена не меняет
+    поведение на бинарной метрике ни на бит (docs/tz_deriv_ingest_14-08-26.md,
+    §2.2 — гейт G обязан уметь непрерывную цель, `range_ratio`, а не только
+    `metric = CASE WHEN o.is_up`, на которой был измерен FGI — 34.8 журнала).
+    Для непрерывной метрики σ² берётся её фактической дисперсией, и тест
+    остаётся тем же самым линейным трендовым контрастом (эквивалент ANOVA
+    linear contrast / взвешенной корреляции ранга бина с метрикой).
 
     Отличие от двухвыборочного z-теста принципиальное: тот спрашивает
-    «разошлись ли две группы», этот — «идут ли доли по возрастанию оценки».
-    Немонотонный профиль с разошедшимися краями первый тест находит, второй
-    штрафует.
+    «разошлись ли две группы», этот — «идёт ли метрика по возрастанию
+    оценки». Немонотонный профиль с разошедшимися краями первый тест
+    находит, второй штрафует.
 
     Возвращает (z, p_value); при вырожденных входах — (0.0, 1.0).
     """
     labels = np.asarray(labels, dtype=float)
     metric = np.asarray(metric, dtype=float)
-    ok = ~np.isnan(labels)
+    ok = ~np.isnan(labels) & ~np.isnan(metric)
     labels, metric = labels[ok].astype(int), metric[ok]
     if labels.size == 0:
         return 0.0, 1.0
@@ -195,15 +206,16 @@ def cochran_armitage(labels: np.ndarray, metric: np.ndarray) -> tuple[float, flo
 
     n = np.array([int((labels == g).sum()) for g in groups], dtype=float)
     r = np.array([float(metric[labels == g].sum()) for g in groups])
-    total, successes = n.sum(), r.sum()
-    p_bar = successes / total
-    if p_bar <= 0.0 or p_bar >= 1.0:
+    total, total_sum = n.sum(), r.sum()
+    mean_ = total_sum / total
+    variance_scale = float(np.mean((metric - mean_) ** 2))  # σ², ddof=0
+    if variance_scale <= 0.0:
         return 0.0, 1.0
 
     t = groups.astype(float)
-    statistic = float(np.sum(t * (r - n * p_bar)))
-    variance = p_bar * (1 - p_bar) * (float(np.sum(n * t * t))
-                                      - float(np.sum(n * t)) ** 2 / total)
+    statistic = float(np.sum(t * (r - n * mean_)))
+    variance = variance_scale * (float(np.sum(n * t * t))
+                                 - float(np.sum(n * t)) ** 2 / total)
     if variance <= 0.0:
         return 0.0, 1.0
     z = statistic / math.sqrt(variance)
@@ -228,11 +240,17 @@ def trend_bootstrap_p(
     считается по группам, а групп на реплику пять. Цикл по репликам с
     группировкой через `np.bincount` — на 2000 реплик это единицы секунд,
     и городить трёхмерные массивы ради этого незачем.
+
+    Дисперсия метрики (`variance_scale`) — общая, не по бинам, и не меняется
+    под перестановкой меток (сама метрика не трогается, блоками пересобираются
+    только номера бинов) — тот же generalизованный Cochran–Armitage, что в
+    `cochran_armitage` (docs/tz_deriv_ingest_14-08-26.md, §2.2): для бинарной
+    метрики σ² = μ(1−μ), для непрерывной — фактическая дисперсия.
     """
     rng = rng or np.random.default_rng(42)
     labels = np.asarray(labels, dtype=float)
     metric = np.asarray(metric, dtype=float)
-    ok = ~np.isnan(labels)
+    ok = ~np.isnan(labels) & ~np.isnan(metric)
     labels, metric = labels[ok].astype(np.int64), metric[ok]
 
     n = labels.size
@@ -242,8 +260,9 @@ def trend_bootstrap_p(
 
     observed = abs(cochran_armitage(labels, metric)[0])
     total = float(metric.sum())
-    p_bar = total / n
-    if p_bar <= 0.0 or p_bar >= 1.0:
+    mean_ = total / n
+    variance_scale = float(np.mean((metric - mean_) ** 2))
+    if variance_scale <= 0.0:
         return 1.0
 
     t = np.arange(n_groups, dtype=float)
@@ -256,8 +275,8 @@ def trend_bootstrap_p(
             shuffled = labels[row]
             counts = np.bincount(shuffled, minlength=n_groups).astype(float)
             sums = np.bincount(shuffled, weights=metric, minlength=n_groups)
-            statistic = float(np.sum(t * (sums - counts * p_bar)))
-            variance = p_bar * (1 - p_bar) * (
+            statistic = float(np.sum(t * (sums - counts * mean_)))
+            variance = variance_scale * (
                 float(np.sum(counts * t * t)) - float(np.sum(counts * t)) ** 2 / n
             )
             if variance <= 0.0:

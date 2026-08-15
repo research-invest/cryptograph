@@ -178,7 +178,7 @@ def run_live(
         context = {tf: bars.load_ohlcv(symbol, tf) for tf in config.data.context_tfs}
 
         runs.log(run_id, "Признаки и события", stage="features", progress=0.3)
-        features = feat.build_features(base, context)
+        features = feat.build_features(base, context, symbol=symbol)
         missing = set(model.feature_names) - set(features.columns)
         if missing:
             raise RuntimeError(
@@ -192,7 +192,7 @@ def run_live(
         labels = model.predict(matrix)
         states = assign.assign_states(features.index, labels)
 
-        events = ev.build_event_blocks(base).reindex(features.index).dropna(
+        events = ev.build_event_blocks(base, symbol=symbol).reindex(features.index).dropna(
             subset=["event_block_id"]
         )
         blocks = ev.block_statistics(events)
