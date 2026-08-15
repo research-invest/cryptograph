@@ -1,6 +1,6 @@
 .PHONY: help setup install init-db ingest ingest-all ingest-metrics train train-all train-fast \
-        live live-all status admin maintenance validate-holdout test docker-up \
-        docker-down docker-logs
+        live live-all status admin hostmon hostmon-once hostmon-test-telegram \
+        maintenance validate-holdout test docker-up docker-down docker-logs
 
 PY ?= python3
 
@@ -17,6 +17,9 @@ help:
 	@echo "live-all   — инкрементальный прогон по всем активным монетам"
 	@echo "status     — таблица по монетам: покрытие, отставание, очередь"
 	@echo "admin      — запустить админку"
+	@echo "hostmon    — монитор нагрузки хоста (страница «Сервер» в админке)"
+	@echo "hostmon-once — один замер и выход, для проверки"
+	@echo "hostmon-test-telegram — проверить канал уведомлений о нагрузке"
 	@echo "maintenance— недельная уборка: разметка старых live + вакуум"
 	@echo "validate-holdout — проверка системы на отложенной части истории (часы)"
 	@echo "test       — тесты"
@@ -36,6 +39,17 @@ init-db:
 
 admin:
 	$(PY) -m btcproc.cli admin --reload
+
+# Монитор ресурсов. На боевом контуре это systemd-сервис btcproc-hostmon;
+# здесь цель нужна для локальной разработки страницы «Сервер».
+hostmon:
+	$(PY) -m btcproc.cli hostmon
+
+hostmon-once:
+	$(PY) -m btcproc.cli hostmon --once
+
+hostmon-test-telegram:
+	$(PY) -m btcproc.cli hostmon --test-telegram
 
 ingest:
 	$(PY) -m btcproc.cli ingest

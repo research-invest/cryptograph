@@ -8,6 +8,7 @@
 #   3. миграции PostgreSQL и Neo4j, схема processing для btcproc;
 #   4. firewall: наружу только ssh и http(s);
 #   5. админка btcproc как systemd-сервис;
+#   5b. монитор ресурсов хоста (btcproc-hostmon) — тоже systemd, на хосте;
 #   6. nginx перед админкой + сертификат Let's Encrypt;
 #   7. ПЕРВЫЙ ПРОГОН — train по BTCUSDT, под systemd, переживает обрыв ssh;
 #   8. и только после успешного прогона — кроны.
@@ -18,6 +19,10 @@
 #
 # Скрипт идемпотентен. Существующий .env не перезаписывается — для этого
 # нужен --force-env (пароли админки при этом сменятся).
+#
+# Точечные режимы: --nginx-only (только прокси), --hostmon-only (только монитор
+# ресурсов: его настройки в .env и systemd-сервис). Оба ничего больше не трогают
+# и нужны на уже развёрнутой машине.
 #
 set -euo pipefail
 
@@ -109,6 +114,7 @@ SKIP_TRAIN=0
 RESET_DB=0
 RETRAIN=0
 NGINX_ONLY=0
+HOSTMON_ONLY=0
 DROP_SYMBOLS=0
 for arg in "$@"; do
     case "$arg" in
@@ -117,10 +123,14 @@ for arg in "$@"; do
         --reset-db)     RESET_DB=1 ;;
         --retrain)      RETRAIN=1 ;;
         --nginx-only)   NGINX_ONLY=1 ;;
+        # Только монитор ресурсов: досыпать его настройки в .env и поставить
+        # сервис. Нужен на уже развёрнутой машине — гонять весь скрипт ради
+        # одного юнита значило бы трогать стек, миграции и расписание.
+        --hostmon-only) HOSTMON_ONLY=1 ;;
         # Подтверждение, что обученная монета выводится из расписания
         # осознанно. Без него шаг 4а не даст ей молча выпасть из крона.
         --drop-symbols) DROP_SYMBOLS=1 ;;
-        *) echo "Неизвестный аргумент: $arg (есть --force-env, --skip-train, --reset-db, --retrain, --nginx-only, --drop-symbols)" >&2; exit 1 ;;
+        *) echo "Неизвестный аргумент: $arg (есть --force-env, --skip-train, --reset-db, --retrain, --nginx-only, --hostmon-only, --drop-symbols)" >&2; exit 1 ;;
     esac
 done
 
@@ -330,6 +340,108 @@ echo "  админка слушает только 127.0.0.1, снаружи —
 EOF
 }
 
+# ─── Монитор ресурсов: настройки и сервис ────────────────────────────────────
+# Отдельными функциями, потому что их вызывает и обычный прогон, и
+# --hostmon-only на уже развёрнутой машине.
+hostmon_env() {
+    step "Досыпаю настройки монитора в .env"
+    REMOTE_DIR="$REMOTE_DIR" remote <<EOF
+cd "$REMOTE_DIR"
+# Существующий .env не перезаписываем (там пароли и правки оператора), поэтому
+# настройки добавляются по одной. Проверка по имени переменной, а не по секции:
+# так следующая новая настройка не потребует ничего трогать.
+add_env() {
+    local name="\$1" value="\$2"
+    grep -qE "^\${name}=" btc-graph-processing/.env || {
+        printf '%s=%s\n' "\$name" "\$value" >> btc-graph-processing/.env
+        echo "  .env: добавлен \$name"
+    }
+}
+add_env HOSTMON_DB "$REMOTE_DIR/logs/hostmon.sqlite"
+add_env HOSTMON_INTERVAL_SECONDS 60
+add_env HOSTMON_KEEP_DAYS 30
+add_env HOSTMON_MOUNTS /
+add_env HOSTMON_DOCKER true
+add_env HOSTMON_ALERTS_ENABLED true
+add_env TELEGRAM_BOT_TOKEN ""
+add_env TELEGRAM_CHAT_ID ""
+add_env HOSTMON_ALERT_COOLDOWN_MINUTES 5
+add_env HOSTMON_ALERT_HYSTERESIS 5
+add_env HOSTMON_ALERT_SUSTAIN_TICKS 5
+add_env HOSTMON_ALERT_DISK_PCT 90
+add_env HOSTMON_ALERT_DISK_CRITICAL_PCT 96
+add_env HOSTMON_ALERT_MEM_PCT 90
+add_env HOSTMON_ALERT_SWAP_PCT 60
+add_env HOSTMON_ALERT_CPU_PCT 90
+add_env HOSTMON_ALERT_LOAD_PER_CORE 2
+echo "  настройки монитора на месте"
+EOF
+}
+
+hostmon_service() {
+    step "Ставлю монитор ресурсов как systemd-сервис"
+    # Отдельный сервис, а не крон и не поток админки. Крон дёргал бы импорт
+    # btcproc (pandas, sklearn — секунды и сотня мегабайт) шестьдесят раз в час;
+    # поток админки встаёт в одну очередь с прогонами и пропускал бы такты ровно
+    # под нагрузкой, то есть когда монитор и нужен. На хосте, а не в docker:
+    # внутри контейнера psutil видит контейнер, а следить надо за машиной.
+    REMOTE_DIR="$REMOTE_DIR" VPS_USER="$VPS_USER" remote <<EOF
+sudo tee /etc/systemd/system/btcproc-hostmon.service >/dev/null <<UNIT
+[Unit]
+Description=btcproc host monitor (crypto-graph)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$VPS_USER
+Group=$VPS_USER
+WorkingDirectory=$REMOTE_DIR/btc-graph-processing
+ExecStart=$REMOTE_DIR/venv/bin/python -m btcproc.cli hostmon
+Restart=always
+RestartSec=15
+# Монитор обязан быть дешевле того, что мерит, и не имеет права участвовать в
+# том самом OOM, о котором предупреждает: лимит делает это гарантией, а не
+# надеждой.
+MemoryMax=192M
+Nice=5
+StandardOutput=append:$REMOTE_DIR/logs/hostmon.log
+StandardError=append:$REMOTE_DIR/logs/hostmon.log
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now btcproc-hostmon >/dev/null
+sudo systemctl restart btcproc-hostmon
+sleep 4
+if systemctl is-active --quiet btcproc-hostmon; then
+    echo "  монитор запущен, замеры в $REMOTE_DIR/logs/hostmon.sqlite"
+else
+    # Не роняем настройку контура из-за монитора: без него работает всё
+    # остальное, просто страница «Сервер» останется пустой.
+    echo "  монитор не стартовал — смотри logs/hostmon.log" >&2
+    sudo journalctl -u btcproc-hostmon -n 20 --no-pager >&2
+fi
+if grep -qE '^TELEGRAM_BOT_TOKEN=.+' "$REMOTE_DIR/btc-graph-processing/.env"; then
+    echo "  канал уведомлений настроен (проверка: bin/btcproc hostmon --test-telegram)"
+else
+    echo "  ВНИМАНИЕ: TELEGRAM_BOT_TOKEN пуст — о заполненном диске никто не узнает"
+fi
+EOF
+}
+
+# Только монитор: настройки в .env плюс сервис. Всё остальное на уже
+# развёрнутой машине не трогается — ни стек, ни миграции, ни расписание.
+if [[ $HOSTMON_ONLY -eq 1 ]]; then
+    hostmon_env
+    hostmon_service
+    printf '\n\033[1;32m✓ монитор ресурсов настроен\033[0m\n'
+    echo "  Страница: админка → «Сервер»"
+    echo "  Логи:     $REMOTE_DIR/logs/hostmon.log"
+    exit 0
+fi
+
 if [[ $NGINX_ONLY -eq 1 ]]; then
     setup_nginx
     printf '\n\033[1;32m✓ nginx настроен\033[0m\n'
@@ -438,24 +550,29 @@ BINANCE_REST_URL=$BINANCE_REST_URL
 # дороги: метка набора меняется, нужен полный train, group_id
 # перенумеровываются, накопленный граф Neo4j сносится.
 #
-# Оба источника прошли механизм docs/extending_features.md целиком, и оба
-# ОТВЕРГНУТЫ по замерам (SMC — журнал 22.5, Fear & Greed — журнал 34): ни один
-# не предсказывает ни направление, ни размах. Атомы включены не потому, что
+# Все ТРИ источника прошли механизм docs/extending_features.md целиком, и
+# признаки не заведены ни у одного — по замерам, а не по осторожности:
+# SMC (журнал 22.5) и Fear & Greed (34) не предсказывают ни направление, ни
+# размах; у деривативов (36) гейт по размаху прошла одна величина из шести
+# (oi_chg_1h), но не прошла гейт по градации. Атомы включены не потому, что
 # работают, а потому что размечают историю даром — «зона ликвидности»,
-# «крайний страх» на узле графа и в инспекторе бара. Признаки выключены оба.
+# «крайний страх», «набор лонгов» на узле графа и в инспекторе бара.
 SMC_ENABLED=true
 SMC_FEATURES_ENABLED=false
 # FGI требует наполненной external_daily: без неё атомы молча всегда False.
 # Наполняет крон fetch-external (FETCH_CRON), включённый ниже вместе с флагом.
 FGI_ENABLED=true
 FGI_FEATURES_ENABLED=false
-# Деривативные метрики Binance USD-M — третий источник (docs/tz_deriv_ingest_14-08-26.md),
-# фаза 0–2 (загрузчик, атомы, замеры). Требует наполненной deriv_metrics —
-# наполняет крон ingest-metrics (DERIV_CRON) ниже. Порядок выкатки как у FGI:
-# сначала код, потом наполнение таблицы, и только потом флаг — иначе пустая
-# таблица даёт сплошной False молча (урок 34.10). Выключен здесь до тех пор,
-# пока фаза 2 (гейты) не даст решения по каждой монете.
-DERIV_ENABLED=false
+# Деривативные метрики Binance USD-M — третий источник (docs/tz_deriv_ingest_14-08-26.md).
+# Требует наполненной deriv_metrics — наполняет крон ingest-metrics (DERIV_CRON)
+# ниже. Порядок выкатки как у FGI: сначала код, потом наполнение таблицы, и
+# только потом флаг — иначе пустая таблица даёт сплошной False молча
+# (урок 34.10). Именно в этом порядке источник и введён 2026-08-15: архив
+# залит по всем четырём монетам (208 тыс. строк по BTC с 2020-09, 99.7%
+# полных баров), после чего поднят флаг. На чистой машине тот же порядок
+# держит шаг «Наполняю таблицы внешних источников» ниже — он идёт ДО первого
+# train намеренно.
+DERIV_ENABLED=true
 DERIV_FEATURES_ENABLED=false
 
 # ─── Пороги кластеризации ───────────────────────────────────────────────────
@@ -500,13 +617,47 @@ ADMIN_PORT=8100
 # каждый следующий live, а админка отдавала бы 409. Значение должно быть
 # заметно больше самой долгой стадии train.
 RUN_STALE_AFTER_MINUTES=120
+
+# ─── Монитор ресурсов хоста (страница «Сервер» в админке) ───────────────────
+# Замеры пишет сервис btcproc-hostmon в SQLite. Путь — вне каталогов
+# подпроектов: 01_deploy.sh гонит их rsync --delete, и файл внутри проекта
+# сносило бы при каждой выкатке кода.
+HOSTMON_DB=$REMOTE_DIR/logs/hostmon.sqlite
+HOSTMON_INTERVAL_SECONDS=60
+HOSTMON_KEEP_DAYS=30
+HOSTMON_MOUNTS=/
+HOSTMON_DOCKER=true
+
+# Уведомления о нагрузке в Telegram. Токен и чат заполняются руками — их
+# скрипту взять негде; до тех пор алерты считаются, но не отправляются, и
+# страница «Сервер» об этом прямо говорит. Проверка: btcproc hostmon --test-telegram
+HOSTMON_ALERTS_ENABLED=true
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+HOSTMON_ALERT_COOLDOWN_MINUTES=5
+HOSTMON_ALERT_HYSTERESIS=5
+HOSTMON_ALERT_SUSTAIN_TICKS=5
+HOSTMON_ALERT_DISK_PCT=90
+HOSTMON_ALERT_DISK_CRITICAL_PCT=96
+HOSTMON_ALERT_MEM_PCT=90
+# Swap на этой машине — ранний признак близкого OOM, а не резерв памяти:
+# расчёт признаков без него уже ловил killer. Отсюда порог ниже остальных.
+HOSTMON_ALERT_SWAP_PCT=60
+HOSTMON_ALERT_CPU_PCT=90
+HOSTMON_ALERT_LOAD_PER_CORE=2
 ENV
     chmod 600 btc-graph-processing/.env
     printf 'ADMIN_USER=admin\nADMIN_PASSWORD=%s\n' "\$ADMIN_PASS" > "$REMOTE_DIR/logs/.admin_creds"
     chmod 600 "$REMOTE_DIR/logs/.admin_creds"
     echo "  btc-graph-processing/.env создан, пароль админки сгенерирован"
 fi
+
 EOF
+
+# Настройки монитора ресурсов досыпаются отдельно от шага 1: существующий .env
+# скрипт не перезаписывает, поэтому на уже развёрнутой машине новые переменные
+# иначе не появились бы вовсе.
+hostmon_env
 
 # ─── 2. Обёртка для запусков ─────────────────────────────────────────────────
 # Один вход для cron, systemd и рук. Важен cd: btcproc читает .env через
@@ -791,6 +942,9 @@ else
 fi
 EOF
 
+# ─── 6b. Монитор ресурсов ────────────────────────────────────────────────────
+hostmon_service
+
 # ─── 7. nginx ────────────────────────────────────────────────────────────────
 setup_nginx
 
@@ -812,6 +966,35 @@ REMOTE_DIR="$REMOTE_DIR" remote <<'EOF'
 crontab /tmp/ct.pause.$$ 2>/dev/null || crontab -r 2>/dev/null || true
 rm -f /tmp/ct.pause.$$
 echo "  снято"
+EOF
+
+# ─── Внешние источники ДО обучения ──────────────────────────────────────────
+# Порядок здесь не косметический. Атомы FGI и деривативов считаются джойном из
+# external_daily / deriv_metrics, а пишет bar_events ТОЛЬКО train. Если первый
+# train пройдёт по пустым таблицам, вся история получит False по этим атомам —
+# без единой ошибки в логе, — и починится это лишь следующим еженедельным
+# переобучением, то есть через неделю. Ровно тот тихий разъезд, о котором
+# предупреждает урок 34.10, только с другой стороны: там забыли завести крон,
+# здесь крон есть, но первый раз он отработает уже после обучения.
+#
+# Обе команды идемпотентны и инкрементальны: на повторном запуске
+# ingest-metrics берёт несколько последних суток, а не весь архив.
+# Сеть — единственный риск, поэтому падение здесь не роняет установку:
+# пустая таблица даёт выключенные атомы, а не сломанный контур.
+# Heredoc НЕ закавычен намеренно: $REMOTE_DIR подставляется локально, как во
+# всех остальных шагах этого скрипта — функция remote переменные окружения на
+# сервер не проносит, она гонит туда только текст скрипта.
+step "Наполняю таблицы внешних источников (до первого train)"
+remote <<EOF
+if [[ ! -x "$REMOTE_DIR/bin/btcproc" ]]; then
+    echo "  обёртки ещё нет — пропускаю"
+    exit 0
+fi
+# Внутри remote стоит set -e, поэтому недоступность чужого API иначе уронила
+# бы всю установку. Пустая таблица — это выключенные атомы, а не сломанный
+# контур, и остановка установки такой цены не стоит.
+"$REMOTE_DIR/bin/btcproc" fetch-external 2>&1 | tail -3 || echo "  ВНИМАНИЕ: fetch-external не отработал — FGI-атомы будут False до крона"
+"$REMOTE_DIR/bin/btcproc" ingest-metrics --all 2>&1 | tail -5 || echo "  ВНИМАНИЕ: ingest-metrics не отработал — deriv-атомы будут False до крона"
 EOF
 
 for symbol in $TRAIN_SYMBOLS; do
@@ -982,7 +1165,7 @@ $(printf '%s\n' "$ADMIN_CREDS" | sed 's/^/    /')
 
   Расписание:  live по ${TRAIN_SYMBOLS} (${LIVE_CRON}), train (${TRAIN_CRON}),
                сводка status в 06:17, уборка базы (${MAINT_CRON})
-  Логи:        $REMOTE_DIR/logs/{train,live,status,admin,maintenance}.log
+  Логи:        $REMOTE_DIR/logs/{train,live,status,admin,hostmon,maintenance}.log
 
   Осталось руками:
     • вписать ANTHROPIC_API_KEY в $REMOTE_DIR/btc-graph/.env и перезапустить

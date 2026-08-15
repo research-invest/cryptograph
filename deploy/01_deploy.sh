@@ -465,7 +465,7 @@ fi
 EOF
 fi
 
-step "Перезапускаю админку"
+step "Перезапускаю админку и монитор ресурсов"
 remote <<'EOF'
 if systemctl list-unit-files btcproc-admin.service >/dev/null 2>&1 \
    && systemctl is-enabled --quiet btcproc-admin 2>/dev/null; then
@@ -480,6 +480,24 @@ if systemctl list-unit-files btcproc-admin.service >/dev/null 2>&1 \
     fi
 else
     echo "  админка ещё не установлена — это сделает 02_configure.sh"
+fi
+
+# Сэмплер нагрузки. Его перезапуск не критичен для выкатки (пропущенный такт —
+# одна точка на графике), поэтому неудача здесь не роняет деплой: ругаемся и
+# идём дальше. Состояние алертов лежит в SQLite, так что перезапуск не
+# превращается в повторную рассылку про уже известную проблему.
+if systemctl list-unit-files btcproc-hostmon.service >/dev/null 2>&1 \
+   && systemctl is-enabled --quiet btcproc-hostmon 2>/dev/null; then
+    sudo systemctl restart btcproc-hostmon
+    sleep 3
+    if systemctl is-active --quiet btcproc-hostmon; then
+        echo "  монитор ресурсов перезапущен"
+    else
+        echo "  монитор ресурсов не поднялся:" >&2
+        sudo journalctl -u btcproc-hostmon -n 20 --no-pager >&2
+    fi
+else
+    echo "  монитор ресурсов ещё не установлен — это сделает 02_configure.sh"
 fi
 EOF
 

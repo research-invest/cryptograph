@@ -61,6 +61,10 @@
     <a href="/chart?{{ symbol_qs }}" class="{{ 'on' if active == 'chart' }}">График</a>
     <a href="/candidates?{{ symbol_qs }}" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
     <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
+    {# Сервер без ?symbol=: страница про машину целиком, монета к ней отношения
+       не имеет. Стоит рядом с прогонами — читают их вместе: график в потолке
+       обычно объясняется идущим train. #}
+    <a href="/server" class="{{ 'on' if active == 'server' }}">Сервер</a>
     {# Уведомления без ?symbol=: правило само выбирает монету, и подставлять
        ей текущую из шапки было бы враньём — фильтр там свой. #}
     <a href="/notifications" class="{{ 'on' if active == 'notifications' }}">Уведомления</a>

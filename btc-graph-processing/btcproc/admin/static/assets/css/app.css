@@ -512,3 +512,27 @@ nav.pager .muted { opacity: .45; }
 .callout.warn {
   background: rgba(180, 83, 9, .10); border-left-color: var(--amber);
 }
+
+/* ─── Сервер ────────────────────────────────────────────────────────────── */
+/* Четыре графика нагрузки в две колонки. Фиксированная высота, а не auto:
+   lightweight-charts с autoSize берёт размер контейнера, и у нулевой высоты
+   график не рисуется вовсе. */
+.server-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.server-charts .panel { gap: 4px; padding: 10px 10px 6px; }
+.server-charts h4 { margin: 0 0 2px; }
+.server-charts h4 .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.chart-box { height: 210px; }
+@media (max-width: 1000px) { .server-charts { grid-template-columns: 1fr; } }
+
+/* Окно графиков — ссылки, а не кнопки: выбор живёт в ?window= и должен
+   переживать перезагрузку страницы и копирование адреса. Вид как у кнопок
+   осцилляторов, чтобы не заводить третий стиль переключателя. */
+.window-btn {
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 9px; font-size: 12.5px; line-height: 1.2;
+}
+.window-btn:hover { color: var(--text); border-color: var(--accent); text-decoration: none; }
+.window-btn.on {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--text);
+}

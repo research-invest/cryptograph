@@ -7,13 +7,18 @@
   /chart       свечи, раскрашенные по состояниям, с маркерами кандидатов
   /candidates  таблица кандидатов с фильтрами
   /runs        прогоны: запуск, прогресс, лог
+  /server      нагрузка хоста: CPU, память, swap, диск, процессы, контейнеры
 
 Всё за авторизацией: middleware пускает без сессии только на /login и /static.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import sqlite3
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -26,12 +31,63 @@ from btcproc import config, symbols
 from btcproc.admin import auth, queries
 from btcproc.db import runs as runs_repo
 from btcproc.db.session import init_schema
+from btcproc.hostmon import store as hostmon_store
 from btcproc.sink import graph_sink
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+# ─── Форматирование для шаблонов ────────────────────────────────────────────
+# Байты, длительности и «сколько прошло» встречаются на странице «Сервер»
+# десятками, и считать их в шаблоне значило бы размазать формулы по разметке.
+def human_bytes(value) -> str:
+    if value is None:
+        return "—"
+    value = float(value)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if abs(value) < 1024 or unit == "ТБ":
+            return f"{value:.0f} {unit}" if unit in ("Б", "КБ") else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} ПБ"
+
+
+def human_seconds(value) -> str:
+    """Длительность словами: «3 сут 4 ч», «12 мин», «40 с»."""
+    if value is None:
+        return "—"
+    seconds = int(value)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if days:
+        return f"{days} сут {hours} ч"
+    if hours:
+        return f"{hours} ч {minutes} мин"
+    if minutes:
+        return f"{minutes} мин"
+    return f"{seconds} с"
+
+
+def human_ago(ts) -> str:
+    if ts is None:
+        return "—"
+    delta = int(time.time()) - int(ts)
+    return "только что" if delta < 5 else f"{human_seconds(delta)} назад"
+
+
+def human_ts(ts) -> str:
+    if ts is None:
+        return "—"
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+templates.env.filters["bytes"] = human_bytes
+templates.env.filters["duration"] = human_seconds
+templates.env.filters["ago"] = human_ago
+templates.env.filters["ts"] = human_ts
 
 app = FastAPI(title="crypto-graph admin", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -284,6 +340,157 @@ def help_page(request: Request):
     страница не заменяет её, а избавляет от похода в репозиторий за мелочью.
     """
     return page(request, "help.html", active="help")
+
+
+# ─── Сервер: нагрузка хоста ─────────────────────────────────────────────────
+# Окна графиков: ключ уходит в ?window=, подпись — на кнопку, число — глубина
+# в секундах.
+SERVER_WINDOWS = {
+    "1h": ("1 час", 3600),
+    "6h": ("6 часов", 6 * 3600),
+    "24h": ("сутки", 86400),
+    "7d": ("неделя", 7 * 86400),
+    "30d": ("месяц", 30 * 86400),
+}
+SERVER_DEFAULT_WINDOW = "6h"
+# Сколько пропущенных тактов означают «сэмплер молчит». Три, а не один:
+# перезапуск сервиса при выкатке кода штатно съедает такт, и ругаться на это
+# каждый раз значило бы приучить не смотреть на предупреждение.
+SERVER_STALE_TICKS = 3
+
+
+def monitor_state() -> dict:
+    """
+    Что монитор знает о машине: последний замер, покрытие, журнал алертов.
+
+    Отсутствие базы — не ошибка страницы, а понятный диагноз: сэмплер не
+    запущен. Поэтому она открывается всегда и говорит, что именно поднять.
+    """
+    interval = max(1, config.hostmon.interval)
+    empty = {
+        "ok": False, "error": None, "latest": None, "fresh": False,
+        "coverage": None, "alerts": [], "states": {},
+    }
+    try:
+        with contextlib.closing(hostmon_store.connect(read_only=True)) as conn:
+            latest = hostmon_store.latest(conn)
+            coverage = hostmon_store.coverage(conn)
+            recent = hostmon_store.recent_alerts(conn, 15)
+            states = hostmon_store.alert_states(conn)
+    except FileNotFoundError:
+        return {**empty, "error": (
+            f"Базы замеров нет ({config.hostmon.db_path}) — сэмплер ни разу не "
+            "отработал. Запусти сервис: systemctl status btcproc-hostmon "
+            "(локально — make hostmon)."
+        )}
+    except sqlite3.Error as exc:
+        logger.warning("База монитора не читается: %s", exc)
+        return {**empty, "error": f"База замеров не читается: {exc}"}
+
+    fresh = bool(latest) and (time.time() - latest["ts"]) < interval * SERVER_STALE_TICKS
+    return {
+        "ok": True, "error": None, "latest": latest, "fresh": fresh,
+        "coverage": coverage, "alerts": recent, "states": states,
+    }
+
+
+def _live_snapshot() -> dict:
+    """
+    Живой срез процессов и контейнеров. Собирается на каждый запрос — истории
+    по ним монитор не ведёт (обоснование — докстринг `hostmon/collect.py`).
+    """
+    try:
+        from btcproc.hostmon import collect
+    except ImportError as exc:      # psutil не установлен в этом интерпретаторе
+        logger.warning("Монитор процессов недоступен: %s", exc)
+        return {"procs": None, "containers": None, "collect_error": str(exc)}
+
+    try:
+        procs = collect.processes()
+    except Exception as exc:        # noqa: BLE001 — страница обязана открыться
+        logger.warning("Снимок процессов не собран: %s", exc)
+        procs = None
+    return {
+        "procs": procs,
+        "containers": collect.containers_cached(),
+        "collect_error": None,
+    }
+
+
+def _runs_state() -> dict:
+    """
+    Прогоны рядом с нагрузкой: график в потолке объясняется тем, что идёт
+    `train`, а не поломкой.
+
+    Postgres живёт в docker-стеке, и именно его недоступность — сама по себе
+    ценный факт для этой страницы. Поэтому ошибка не роняет её, а показывается
+    как состояние базы.
+    """
+    try:
+        active = runs_repo.active_runs()
+        return {
+            "ok": True, "error": None, "active": active,
+            "recent": runs_repo.list_runs(8),
+            "stale": [run for run in active if runs_repo.is_stale(run)],
+        }
+    except Exception as exc:        # noqa: BLE001
+        logger.warning("Состояние прогонов недоступно: %s", exc)
+        return {"ok": False, "error": str(exc)[:300], "active": [], "recent": [], "stale": []}
+
+
+def _server_context(window: str) -> dict:
+    return {
+        "mon": monitor_state(),
+        "runs_state": _runs_state(),
+        "hostmon": config.hostmon,
+        "alerts_cfg": config.alerts,
+        "window": window,
+        "windows": SERVER_WINDOWS,
+        "stale_ticks": SERVER_STALE_TICKS,
+        "now_ts": int(time.time()),
+        **_live_snapshot(),
+    }
+
+
+@app.get("/server", response_class=HTMLResponse)
+def server_page(request: Request, window: str | None = None):
+    """
+    Состояние машины: CPU, память, swap, диск в динамике плюс живой срез
+    процессов, контейнеров и прогонов.
+
+    Страница про хост, а не про монету, поэтому `?symbol=` она не читает — но
+    в ссылках шапки его сохраняет (см. `page`).
+
+    Верхняя половина обновляется htmx-запросом сюда же (partial), графики —
+    отдельным запросом к /api/server/series: их данные приходят JSON'ом и
+    перерисовываются реже, чем цифры.
+    """
+    window = window if window in SERVER_WINDOWS else SERVER_DEFAULT_WINDOW
+    template = "partials/server_live.html" if request.headers.get("hx-request") \
+        else "server.html"
+    return page(request, template, active="server", **_server_context(window))
+
+
+@app.get("/api/server/series")
+def api_server_series(window: str | None = None):
+    """Ряды нагрузки за окно — для графиков страницы «Сервер»."""
+    key = window if window in SERVER_WINDOWS else SERVER_DEFAULT_WINDOW
+    now = int(time.time())
+    since = now - SERVER_WINDOWS[key][1]
+    try:
+        with contextlib.closing(hostmon_store.connect(read_only=True)) as conn:
+            data = hostmon_store.series(conn, since, now)
+            latest = hostmon_store.latest(conn)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"detail": "Сэмплер не запущен — базы замеров нет"}, status_code=503,
+        )
+    except sqlite3.Error as exc:
+        return JSONResponse({"detail": f"База замеров: {exc}"}, status_code=503)
+
+    data.update(window=key, since=since, now=now,
+                interval=config.hostmon.interval, latest=latest)
+    return JSONResponse(data)
 
 
 # ─── Уведомления ────────────────────────────────────────────────────────────

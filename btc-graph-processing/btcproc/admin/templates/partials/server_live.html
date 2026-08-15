@@ -1,0 +1,228 @@
+{# Живая половина страницы «Сервер»: цифры «сейчас».
+
+   Обновляется htmx-запросом на /server раз в несколько секунд, поэтому здесь
+   не должно быть ни <script>, ни графиков — они пересоздавались бы на каждом
+   обновлении. Всё, что рисуется библиотекой, живёт в server.html. #}
+
+{% if mon.error %}
+  <div class="error">{{ mon.error }}</div>
+{% elif not mon.latest %}
+  <div class="banner">Замеров ещё нет — сэмплер запущен только что, первая точка появится
+    через {{ hostmon.interval }} с.</div>
+{% elif not mon.fresh %}
+  {# Отдельно от ошибки: база есть, замеры есть, но новых нет. Обычно это
+     остановленный сервис — самый тихий из отказов монитора. #}
+  <div class="error">
+    Последний замер {{ mon.latest.ts|ago }} — сэмплер молчит больше
+    {{ stale_ticks }} тактов. Проверь: <code>systemctl status btcproc-hostmon</code>.
+  </div>
+{% endif %}
+
+{% set s = mon.latest %}
+{% if s %}
+<section class="cards">
+  <div class="card {{ 'bad' if s.cpu >= alerts_cfg.cpu_pct }}">
+    <div class="card-label">Процессор</div>
+    <div class="card-value">{{ '%.0f'|format(s.cpu) }}%</div>
+    <div class="card-sub">
+      <span class="bar"><span style="width: {{ [s.cpu, 100]|min }}%"></span></span>
+      load {{ '%.2f'|format(s.load1) if s.load1 is not none else '—' }}
+    </div>
+  </div>
+  <div class="card {{ 'bad' if s.mem_pct >= alerts_cfg.mem_pct }}">
+    <div class="card-label">Память</div>
+    <div class="card-value">{{ '%.0f'|format(s.mem_pct) }}%</div>
+    <div class="card-sub">
+      <span class="bar"><span style="width: {{ [s.mem_pct, 100]|min }}%"></span></span>
+      {{ s.mem_used|bytes }} из {{ s.mem_total|bytes }}
+    </div>
+  </div>
+  <div class="card {{ 'bad' if s.swap_pct >= alerts_cfg.swap_pct }}">
+    <div class="card-label">Swap</div>
+    <div class="card-value">
+      {% if s.swap_total %}{{ '%.0f'|format(s.swap_pct) }}%{% else %}нет{% endif %}
+    </div>
+    {# Swap на этой машине — не «резерв памяти», а ранний признак близкого
+       OOM: расчёт признаков без него ловил killer. Поэтому он в карточках, а
+       не в мелких строках. #}
+    <div class="card-sub">
+      {% if s.swap_total %}{{ s.swap_used|bytes }} из {{ s.swap_total|bytes }}
+      {% else %}не настроен — прогон может поймать OOM{% endif %}
+    </div>
+  </div>
+  {% for disk in s.disks %}
+  <div class="card {{ 'bad' if disk.pct >= alerts_cfg.disk_pct }}">
+    <div class="card-label">Диск {{ disk.mount }}</div>
+    <div class="card-value">{{ '%.0f'|format(disk.pct) }}%</div>
+    <div class="card-sub">
+      <span class="bar"><span style="width: {{ [disk.pct, 100]|min }}%"></span></span>
+      свободно {{ (disk.total - disk.used)|bytes }}
+    </div>
+  </div>
+  {% endfor %}
+  <div class="card">
+    <div class="card-label">Диск: чтение / запись</div>
+    <div class="card-value">{{ s.io_write|bytes }}/с</div>
+    <div class="card-sub">чтение {{ s.io_read|bytes }}/с</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Процессов</div>
+    <div class="card-value">{{ s.procs }}</div>
+    <div class="card-sub">аптайм {{ s.uptime|duration }}</div>
+  </div>
+</section>
+{% endif %}
+
+{# ─── Алерты ───────────────────────────────────────────────────────────────
+   Сначала то, что горит прямо сейчас, потом журнал отправок. Журнал нужен не
+   для истории: без него «уведомление не пришло» неотличимо от «повода не
+   было», а неудачную отправку иначе видно только в логе сервиса. #}
+{% set firing = mon.states.values()|selectattr('firing')|list %}
+{% if firing %}
+<div class="error">
+  Сейчас за порогом:
+  {% for state in firing %}
+    <b>{{ state.key }}</b> — {{ '%.1f'|format(state.value) }}
+    (с {{ state.since|ts }}){{ ", " if not loop.last }}
+  {% endfor %}
+</div>
+{% endif %}
+
+<section class="split">
+  <div>
+    <h2>Уведомления</h2>
+    <p class="hint" style="margin-top:0">
+      {% if not alerts_cfg.enabled %}
+        Выключены: <code>HOSTMON_ALERTS_ENABLED=false</code>.
+      {% elif not alerts_cfg.configured %}
+        Включены, но канал не настроен — задай <code>TELEGRAM_BOT_TOKEN</code> и
+        <code>TELEGRAM_CHAT_ID</code> в <code>.env</code>. Проверка:
+        <code>btcproc hostmon --test-telegram</code>.
+      {% else %}
+        В Telegram. Пороги: диск {{ '%g'|format(alerts_cfg.disk_pct) }}% (критично
+        {{ '%g'|format(alerts_cfg.disk_critical_pct) }}%), память
+        {{ '%g'|format(alerts_cfg.mem_pct) }}%, swap {{ '%g'|format(alerts_cfg.swap_pct) }}%,
+        CPU {{ '%g'|format(alerts_cfg.cpu_pct) }}%, load
+        {{ '%g'|format(alerts_cfg.load_per_core) }} на ядро. Напоминание не чаще
+        {{ alerts_cfg.cooldown_minutes }} мин, отпускает при возврате на
+        {{ '%g'|format(alerts_cfg.hysteresis) }} п.п. ниже порога.
+      {% endif %}
+    </p>
+    <table>
+      <thead><tr><th>Когда</th><th>Правило</th><th>Что</th><th>Значение</th><th>Отправка</th></tr></thead>
+      <tbody>
+      {% for row in mon.alerts %}
+        <tr>
+          <td>{{ row.ts|ts }}</td>
+          <td><code>{{ row.key }}</code></td>
+          <td>
+            {%- if row.kind == 'fired' -%}<span class="short">сработал</span>
+            {%- elif row.kind == 'still' -%}<span class="muted">напоминание</span>
+            {%- else -%}<span class="long">отпустило</span>{%- endif -%}
+          </td>
+          <td class="num">{{ '%.1f'|format(row.value) if row.value is not none else '—' }}</td>
+          <td>
+            {% if row.sent %}<span class="long">ушло</span>
+            {% else %}<span class="short" title="{{ row.error }}">не ушло</span>{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">Порогов никто не нарушал</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Прогоны</h2>
+    {% if not runs_state.ok %}
+      {# Недоступный Postgres на этой странице — не сбой отображения, а
+         диагноз: он живёт в том же docker-стеке, за которым мы следим. #}
+      <div class="error">База прогонов недоступна: {{ runs_state.error }}</div>
+    {% else %}
+      {% if runs_state.stale %}
+        <div class="error">
+          Молчат дольше порога и считаются мёртвыми:
+          {% for run in runs_state.stale %}#{{ run.run_id }}{{ ", " if not loop.last }}{% endfor %} —
+          так выглядит прогон, убитый OOM killer; он блокирует следующий live.
+        </div>
+      {% endif %}
+      <table>
+        <thead><tr><th>#</th><th>Тип</th><th>Монета</th><th>Начат</th><th>Стадия</th></tr></thead>
+        <tbody>
+        {% for run in runs_state.active %}
+          <tr>
+            <td><a href="/runs/{{ run.run_id }}">#{{ run.run_id }}</a></td>
+            <td><b>{{ run.kind }}</b></td>
+            <td>{{ run.symbol or '—' }}</td>
+            <td>{{ run.started_at.strftime('%H:%M:%S') if run.started_at }}</td>
+            <td>{{ '%.0f'|format((run.progress or 0) * 100) }}% · {{ run.stage or '—' }}</td>
+          </tr>
+        {% endfor %}
+        {% for run in runs_state.recent if run.status != 'running' %}
+          <tr class="muted">
+            <td><a href="/runs/{{ run.run_id }}">#{{ run.run_id }}</a></td>
+            <td>{{ run.kind }}</td>
+            <td>{{ run.symbol or '—' }}</td>
+            <td>{{ run.started_at.strftime('%m-%d %H:%M') if run.started_at }}</td>
+            <td>{{ run.status }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
+
+{# ─── Кто ест ресурсы ───────────────────────────────────────────────────── #}
+{% if collect_error %}
+  <div class="error">Снимок процессов недоступен: {{ collect_error }}
+    (нужен пакет <code>psutil</code> в том же интерпретаторе, откуда запущена админка).</div>
+{% endif %}
+
+{% if procs %}
+<section class="split">
+  <div>
+    <h2>Процессы: процессор</h2>
+    <p class="hint" style="margin-top:0">100% — одно полностью занятое ядро.</p>
+    {% set rows = procs.by_cpu %}
+    {% include "partials/server_procs.html" %}
+  </div>
+  <div>
+    <h2>Процессы: память</h2>
+    <p class="hint" style="margin-top:0">RSS — сколько занято физически, всего процессов {{ procs.total }}.</p>
+    {% set rows = procs.by_memory %}
+    {% include "partials/server_procs.html" %}
+  </div>
+</section>
+{% endif %}
+
+<h2>Контейнеры</h2>
+{% if not containers or not containers.enabled %}
+  <p class="hint">Опрос docker выключен (<code>HOSTMON_DOCKER=false</code>).</p>
+{% elif containers.error %}
+  <div class="error">docker недоступен: {{ containers.error }}</div>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Контейнер</th><th>Состояние</th><th>CPU</th><th>Память</th><th>Сеть</th><th>Диск</th></tr>
+  </thead>
+  <tbody>
+  {% for c in containers.rows %}
+    <tr>
+      <td>{{ c.name }}<div class="muted" style="font-size:11px">{{ c.image }}</div></td>
+      <td>
+        {% if c.state == 'running' %}<span class="long">{{ c.status }}</span>
+        {% else %}<span class="short">{{ c.status or c.state }}</span>{% endif %}
+      </td>
+      <td class="num">{{ c.cpu or '—' }}</td>
+      <td class="num">{{ c.mem or '—' }}{% if c.mem_pct %} · {{ c.mem_pct }}{% endif %}</td>
+      <td class="num">{{ c.net or '—' }}</td>
+      <td class="num">{{ c.block or '—' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">Контейнеров нет</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

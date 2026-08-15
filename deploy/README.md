@@ -56,7 +56,9 @@ cd deploy
 3. поднимает стек и **ждёт healthcheck**, а не просто «контейнер запущен»;
 4. `alembic upgrade head`, миграция графа Neo4j, схема `processing`;
 5. ufw: наружу только 22, 80 и 443;
-6. админка btcproc как systemd-сервис;
+6. админка btcproc как systemd-сервис, рядом — **монитор ресурсов**
+   `btcproc-hostmon` (замеры CPU/RAM/swap/диска в `logs/hostmon.sqlite`,
+   пороговые уведомления в Telegram);
 7. **nginx** перед админкой + сертификат Let's Encrypt, после чего админка
    уезжает на `127.0.0.1` и 8100 закрывается;
 8. **обучение монет** из `TRAIN_SYMBOLS` под systemd, по одной подряд;
@@ -68,6 +70,8 @@ cd deploy
 `--reset-db` (снести тома PostgreSQL/Redis/Neo4j — необратимо),
 `--nginx-only` (только шаг 7 — поставить или починить прокси на уже
 развёрнутой машине, ничего больше не трогая),
+`--hostmon-only` (только монитор ресурсов: досыпать его настройки в `.env` и
+поставить сервис `btcproc-hostmon`),
 `--drop-symbols` (подтвердить, что обученная монета выводится из расписания
 осознанно — см. ниже).
 
@@ -210,6 +214,8 @@ tail -f /opt/crypto-graph/logs/live.log       # что делает cron
 cat /opt/crypto-graph/logs/maintenance.log   # недельная уборка: размеры и рост
 tail -3 /opt/crypto-graph/logs/fetch-external.log  # внешний ряд: диапазон суток
 sudo systemctl status btcproc-admin           # админка
+sudo systemctl status btcproc-hostmon         # монитор ресурсов (страница «Сервер»)
+tail -5 /opt/crypto-graph/logs/hostmon.log    # его лог: старт, пороги, отправки
 cd /opt/crypto-graph/btc-graph && docker compose ps
 ```
 
@@ -221,6 +227,12 @@ ssh -L 8000:127.0.0.1:8000 -L 5555:127.0.0.1:5555 -L 7474:127.0.0.1:7474 vps@<ho
 
 ### Осталось руками
 
+* **`TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`** в
+  `/opt/crypto-graph/btc-graph-processing/.env` — их скрипту взять негде.
+  Пока пусты, монитор считает пороги и пишет их в журнал, но никуда не
+  отправляет; страница «Сервер» это прямо показывает. Токен — у @BotFather,
+  chat_id — id личного чата или группы. После заполнения:
+  `sudo systemctl restart btcproc-hostmon && /opt/crypto-graph/bin/btcproc hostmon --test-telegram`.
 * **`ANTHROPIC_API_KEY`** в `/opt/crypto-graph/btc-graph/.env` — сейчас там
   заглушка. Без ключа система работает полностью, кроме текстовых объяснений:
   все числа считает детерминированный скорер, LLM только формулирует.

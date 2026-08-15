@@ -1,0 +1,21 @@
+{# Таблица процессов. Включается дважды — для сортировки по CPU и по памяти, —
+   поэтому строки приходят в переменной `rows`, а не выбираются здесь. #}
+<table>
+  <thead><tr><th>PID</th><th>Процесс</th><th>CPU</th><th>RSS</th><th>Живёт</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td class="num">{{ row.pid }}</td>
+      {# Полная командная строка — в title: у прогонов btcproc различие between
+         live и train видно только в аргументах, а в ширину таблицы она не лезет. #}
+      <td class="flags" title="{{ row.cmdline }}">{{ row.name }}
+        <span class="muted">{{ row.user }}</span></td>
+      <td class="num">{{ '%.1f'|format(row.cpu) }}%</td>
+      <td class="num">{{ row.rss|bytes }}</td>
+      <td class="num">{{ (now_ts - row.created)|duration if now_ts else row.created|ago }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">Нет данных</td></tr>
+  {% endfor %}
+  </tbody>
+</table>

@@ -579,6 +579,56 @@ def notify_test(
 
 
 @app.command()
+def hostmon(
+    interval: int = typer.Option(None, help="Шаг сетки замеров, секунд"),
+    once: bool = typer.Option(False, help="Один замер и выход — для проверки"),
+    test_telegram: bool = typer.Option(
+        False, "--test-telegram", help="Отправить пробное сообщение и выйти"
+    ),
+) -> None:
+    """
+    Монитор нагрузки хоста: писать замеры CPU/RAM/swap/диска в SQLite.
+
+    Смотреть их — страница «Сервер» в админке. На боевом контуре команда
+    поднята как systemd-сервис `btcproc-hostmon` (deploy/02_configure.sh);
+    руками нужна только для проверки и локальной разработки.
+
+    `--test-telegram` проверяет канал уведомлений: пороги при этом не
+    считаются, сообщение уходит независимо от состояния машины.
+    """
+    from btcproc.hostmon import daemon, telegram
+
+    if test_telegram:
+        import socket
+
+        if not config.alerts.configured:
+            typer.echo(
+                "Канал не настроен: задай TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env "
+                f"(HOSTMON_ALERTS_ENABLED={str(config.alerts.enabled).lower()})",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        try:
+            telegram.send(
+                f"✅ <b>{telegram.esc(socket.gethostname())}</b> · монитор ресурсов на связи.\n"
+                f"Пороги: диск {config.alerts.disk_pct:g}%, память {config.alerts.mem_pct:g}%, "
+                f"swap {config.alerts.swap_pct:g}%, CPU {config.alerts.cpu_pct:g}%. "
+                f"Напоминание не чаще {config.alerts.cooldown_minutes} мин."
+            )
+        except telegram.TelegramError as exc:
+            typer.echo(f"Не отправлено: {exc}", err=True)
+            raise typer.Exit(code=1) from None
+        typer.echo("Отправлено.")
+        return
+
+    if once:
+        sample = daemon.sample_once()
+        typer.echo(runs_repo.dumps(sample))
+        return
+    daemon.run(interval=interval)
+
+
+@app.command()
 def admin(
     host: str = typer.Option(None),
     port: int = typer.Option(None),

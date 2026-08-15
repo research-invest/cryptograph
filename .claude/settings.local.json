@@ -124,7 +124,11 @@
       "Bash(nohup env DERIV_ENABLED=false .venv/bin/python scripts/measure_deriv_range.py --symbol HYPEUSDT --n-boot 500)",
       "Bash(nohup env DERIV_ENABLED=false .venv/bin/python scripts/measure_deriv_gradation.py --symbol HYPEUSDT --n-boot 500 --horizon 24h)",
       "Bash(DERIV_ENABLED=true .venv/bin/python scripts/backfill_context_atoms.py --all --force --dry-run)",
-      "Bash(DERIV_ENABLED=true .venv/bin/python scripts/backfill_context_atoms.py --all --force)"
+      "Bash(DERIV_ENABLED=true .venv/bin/python scripts/backfill_context_atoms.py --all --force)",
+      "Bash(ADMIN_PORT=8124 nohup .venv/bin/python -m btcproc.cli admin)",
+      "Bash(python3 /private/tmp/claude-503/-Volumes-work-crypto-graph/f3735342-36f1-4a67-b46d-b4c1f5557c38/scratchpad/probe.py 8124)",
+      "Bash(HOSTMON_DB=/private/tmp/claude-503/-Volumes-work-crypto-graph/f3735342-36f1-4a67-b46d-b4c1f5557c38/scratchpad/alert_probe.sqlite HOSTMON_ALERT_MEM_PCT=1 HOSTMON_INTERVAL_SECONDS=1 .venv/bin/python -c ' *)",
+      "Bash(ssh -o BatchMode=yes vps@162.248.225.60 'rm -f /tmp/vps_check.py && echo \"временный файл убран\"')"
     ],
     "deny": [
       "Bash(rm -rf /)",

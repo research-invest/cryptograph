@@ -589,6 +589,107 @@ class AdminConfig:
             )
 
 
+@dataclass(frozen=True)
+class HostmonConfig:
+    """
+    Монитор ресурсов хоста: отдельный процесс-сэмплер + страница «Сервер»
+    в админке.
+
+    Хранилище — SQLite-файл, а не Postgres, намеренно. Смотреть на монитор
+    приходится ровно тогда, когда стеку плохо: OOM killer, полный диск,
+    подвисший контейнер. Ряд в Postgres в этот момент либо недоступен, либо
+    пишется с задержкой — то есть истории за момент аварии не осталось бы.
+    Файл на хосте от состояния docker не зависит вовсе.
+
+    Путь по умолчанию лежит ВНЕ каталогов подпроектов: `01_deploy.sh` гонит
+    их `rsync --delete`, и файл внутри `btc-graph-processing/` сносило бы при
+    каждой выкатке кода. `<repo>/logs/` — тот же каталог, где на боевом
+    контуре уже живут логи прогонов.
+    """
+    db_path: Path = field(
+        default_factory=lambda: Path(
+            _env("HOSTMON_DB")
+            or str(Path(__file__).resolve().parents[2] / "logs" / "hostmon.sqlite")
+        )
+    )
+    # Шаг сетки замеров. Минута — компромисс: на ней виден и всплеск от
+    # кластеризации (стадия идёт минутами), и месяц истории занимает единицы
+    # мегабайт. Секундная сетка ловила бы пики точнее, но монитор перестал бы
+    # быть бесплатным для машины, которую он сторожит.
+    interval: int = _env_int("HOSTMON_INTERVAL_SECONDS", 60)
+    # Сколько держать замеры. 30 суток — чтобы «в прошлый раз память кончилась
+    # на train» можно было проверить, а не вспоминать.
+    keep_days: int = _env_int("HOSTMON_KEEP_DAYS", 30)
+    # Точки монтирования под наблюдением. Первая считается корневой: её
+    # заполнение показывает карточка сводки.
+    mounts: list[str] = field(
+        default_factory=lambda: _env_list("HOSTMON_MOUNTS", "/")
+    )
+    # Опрашивать ли docker. Требует прав на его сокет (на боевом контуре
+    # пользователь в группе docker). Опрос идёт из сэмплера в отдельном
+    # процессе с таймаутом: `docker stats` без --no-stream висит вечно, и
+    # неудача обязана оставаться неудачей одного поля, а не всего замера.
+    docker: bool = _env_bool("HOSTMON_DOCKER", True)
+    # Сколько процессов показывать в таблицах «съедает CPU» и «съедает RAM».
+    top_processes: int = _env_int("HOSTMON_TOP_PROCESSES", 12)
+
+
+@dataclass(frozen=True)
+class AlertsConfig:
+    """
+    Пороговые уведомления монитора в Telegram.
+
+    Смысл здесь один: узнать о полном диске или подходящем OOM до того, как
+    остановится прогон. Поэтому правила описывают ровно те четыре ресурса,
+    исчерпание которых на этой машине уже приводило к тихим отказам, и ни
+    одного «на всякий случай».
+
+    Антиспам построен на трёх вещах, и убирать их по отдельности нельзя:
+
+    * **cooldown** (`HOSTMON_ALERT_COOLDOWN_MINUTES`) — пока проблема держится,
+      напоминание уходит не чаще, чем раз в это окно. Первое сообщение идёт
+      сразу.
+    * **гистерезис** (`hysteresis`) — «отпустило» считается не по возврату под
+      порог, а по возврату ниже `порог − гистерезис`. Метрика, топчущаяся
+      вокруг 90%, иначе прислала бы «сработало/отпустило» десятки раз за час.
+    * **выдержка** (`sustain`) — сколько замеров подряд нужно держаться за
+      порогом. Диск заполняется медленно и монотонно, там достаточно одного
+      замера; CPU и load на этой машине штатно уходят в потолок на время
+      кластеризации, и мгновенное значение там означало бы уведомление на
+      каждый `train`.
+    """
+    enabled: bool = _env_bool("HOSTMON_ALERTS_ENABLED", True)
+    # Канал. Токен бота — у @BotFather, chat_id — id личного чата или группы
+    # (у групп он отрицательный). Не заданы — алерты считаются выключенными,
+    # и сэмплер говорит об этом один раз при старте, а не молчит.
+    bot_token: str = _env("TELEGRAM_BOT_TOKEN")
+    chat_id: str = _env("TELEGRAM_CHAT_ID")
+    cooldown_minutes: int = _env_int("HOSTMON_ALERT_COOLDOWN_MINUTES", 5)
+    hysteresis: float = _env_float("HOSTMON_ALERT_HYSTERESIS", 5.0)
+    # Сколько замеров подряд за порогом нужно шумным метрикам (CPU, load).
+    sustain: int = _env_int("HOSTMON_ALERT_SUSTAIN_TICKS", 5)
+    # Пороги, %. Диск — два: «пора чистить» и «сейчас встанет всё».
+    disk_pct: float = _env_float("HOSTMON_ALERT_DISK_PCT", 90.0)
+    disk_critical_pct: float = _env_float("HOSTMON_ALERT_DISK_CRITICAL_PCT", 96.0)
+    mem_pct: float = _env_float("HOSTMON_ALERT_MEM_PCT", 90.0)
+    # Swap отдельным порогом и ниже остальных: на этой машине он не «резерв
+    # памяти», а индикатор близкого OOM — расчёт признаков без swap уже
+    # ловил killer, и рост swap идёт раньше, чем память покажет 90%.
+    swap_pct: float = _env_float("HOSTMON_ALERT_SWAP_PCT", 60.0)
+    cpu_pct: float = _env_float("HOSTMON_ALERT_CPU_PCT", 90.0)
+    # Load average на ядро: 2.0 означает «на каждое ядро по два ждущих
+    # процесса». В абсолютных числах порог был бы привязан к машине.
+    load_per_core: float = _env_float("HOSTMON_ALERT_LOAD_PER_CORE", 2.0)
+    # Сообщать ли о возврате в норму. Одно сообщение на событие, спама не
+    # даёт, зато закрывает вопрос «оно ещё горит или уже нет».
+    notify_recovery: bool = _env_bool("HOSTMON_ALERT_NOTIFY_RECOVERY", True)
+
+    @property
+    def configured(self) -> bool:
+        """Есть ли куда отправлять. Пустой токен — не ошибка, а «канал не заведён»."""
+        return bool(self.enabled and self.bot_token and self.chat_id)
+
+
 data = DataConfig()
 features = FeaturesConfig()
 db = DBConfig()
@@ -601,3 +702,5 @@ deriv = DerivConfig()
 sink = SinkConfig()
 notify = NotifyConfig()
 admin = AdminConfig()
+hostmon = HostmonConfig()
+alerts = AlertsConfig()

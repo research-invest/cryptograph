@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Сервер · crypto-graph{% endblock %}
+
+{% block head %}
+<script src="/static/assets/js/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+
+{% block content %}
+<h1>Сервер</h1>
+<p class="hint">
+  Замеры пишет отдельный сервис <code>btcproc-hostmon</code> раз в
+  {{ hostmon.interval }} с в файл <code>{{ hostmon.db_path }}</code>
+  {%- if mon.coverage %} ({{ mon.coverage.db_bytes|bytes }},
+  {{ '{:,}'.format(mon.coverage.samples).replace(',', ' ') }} замеров с
+  {{ mon.coverage.first_ts|ts }}){%- endif %}, хранение {{ hostmon.keep_days }} сут.
+  Файл, а не Postgres, намеренно: монитор нужен именно тогда, когда стек лежит.
+  Время на графиках — UTC.
+</p>
+
+{# Живая половина: цифры «сейчас», процессы, контейнеры, прогоны. Обновляется
+   сама, целиком, запросом на этот же адрес — сервер отдаёт partial, если видит
+   заголовок htmx. Раз в 10 с, а не чаще: внутри опрос docker (секунда-две
+   работы) и два прохода по процессам. #}
+<div id="live" hx-get="/server?window={{ window }}" hx-trigger="every 10s"
+     hx-target="this">
+  {% include "partials/server_live.html" %}
+</div>
+
+<h2>Динамика</h2>
+<form class="toolbar" onsubmit="return false;">
+  <div class="field" role="group" aria-label="Окно графиков">
+    <span>Окно</span>
+    <div class="osc-group">
+      {% for key, (label, seconds) in windows.items() %}
+        <a class="window-btn {{ 'on' if key == window }}" href="/server?window={{ key }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <span class="muted" id="series-note">загружаю…</span>
+</form>
+
+<section class="server-charts">
+  <div class="panel">
+    <h4>Процессор, % <span class="muted">линия — среднее, светлая — пик в интервале, отдельная шкала — load1</span></h4>
+    <div class="chart-box" id="chart-cpu"></div>
+  </div>
+  <div class="panel">
+    <h4>Память и swap, % <span class="muted">пик показан отдельной линией</span></h4>
+    <div class="chart-box" id="chart-mem"></div>
+  </div>
+  <div class="panel">
+    <h4>Занято на диске, %</h4>
+    <div class="chart-box" id="chart-disk"></div>
+  </div>
+  <div class="panel">
+    <h4>Диск, МБ/с <span class="muted">чтение и запись</span></h4>
+    <div class="chart-box" id="chart-io"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Графики нагрузки. Данные приходят отдельным JSON-запросом, а не с разметкой
+// live-блока: тот обновляется каждые 10 с, и пересоздавать на каждом обновлении
+// четыре графика (вместе с положением курсора и масштабом) нельзя.
+const WINDOW = {{ window|tojson }};
+// Ряды тянем реже, чем цифры: точка на графике появляется раз в
+// HOSTMON_INTERVAL_SECONDS, чаще опрашивать нечего.
+const RELOAD_MS = 30000;
+
+function baseTheme() {
+  return {
+    layout: { background: { color: cssVar('--chart-bg') }, textColor: cssVar('--chart-text') },
+    grid: { vertLines: { color: cssVar('--chart-grid') }, horzLines: { color: cssVar('--chart-grid') } },
+    rightPriceScale: { borderColor: cssVar('--chart-border') },
+    timeScale: { borderColor: cssVar('--chart-border'), timeVisible: true, secondsVisible: false },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { width: 8, color: cssVar('--chart-cross-band'),
+                  labelBackgroundColor: cssVar('--chart-cross') },
+      horzLine: { color: cssVar('--chart-cross'), labelBackgroundColor: cssVar('--chart-cross') },
+    },
+  };
+}
+
+// Описание графиков данными, а не четырьмя копиями кода: у всех одна и та же
+// сборка, различаются только серии и то, из какого поля ответа они берутся.
+// `transform` нужен диску и сети — байты в секунду читаются на графике только
+// после перевода в мегабайты.
+const MB = 1024 * 1024;
+const SPEC = [
+  {
+    id: 'chart-cpu',
+    series: [
+      { key: 'cpu',       label: 'CPU',    colorVar: '--accent',        type: 'area' },
+      { key: 'cpu_peak',  label: 'пик',    colorVar: '--amber',         type: 'line', width: 1 },
+      { key: 'cpu_iowait', label: 'iowait', colorVar: '--chart-osc-1d', type: 'line', width: 1 },
+      // load — другая величина (очередь, не проценты), поэтому левая шкала.
+      { key: 'load1',     label: 'load1',  colorVar: '--chart-osc-1w',  type: 'line',
+        width: 1, scale: 'left', precision: 2 },
+    ],
+  },
+  {
+    id: 'chart-mem',
+    series: [
+      { key: 'mem_pct',      label: 'память', colorVar: '--accent', type: 'area' },
+      { key: 'mem_pct_peak', label: 'пик',    colorVar: '--amber',  type: 'line', width: 1 },
+      { key: 'swap_pct',     label: 'swap',   colorVar: '--red',    type: 'line', width: 2 },
+    ],
+  },
+  // Диск — единственный график с заранее неизвестным составом серий: точек
+  // монтирования может быть сколько угодно (HOSTMON_MOUNTS).
+  { id: 'chart-disk', fromDisks: true, series: [] },
+  {
+    id: 'chart-io',
+    series: [
+      { key: 'io_read',  label: 'чтение', colorVar: '--chart-osc-1d',  type: 'line',
+        transform: (v) => v / MB, precision: 2 },
+      { key: 'io_write', label: 'запись', colorVar: '--chart-osc-rsi', type: 'line',
+        transform: (v) => v / MB, precision: 2 },
+    ],
+  },
+];
+const DISK_COLORS = ['--chart-osc-1d', '--chart-osc-1m', '--chart-osc-1w', '--chart-osc-rsi'];
+
+const charts = new Map();     // id -> { chart, series: Map(name -> {series, spec}) }
+
+// Заливка площади задаётся опцией библиотеки, то есть парсится ею, а не
+// браузером: `color-mix(...)` и `hsl(...)` она не понимает и падает с
+// «Cannot parse color». Поэтому прозрачность делаем руками из hex.
+function withAlpha(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+function addSeries(chart, spec) {
+  const options = {
+    color: cssVar(spec.colorVar),
+    lineWidth: spec.width || 2,
+    priceScaleId: spec.scale || 'right',
+    priceLineVisible: false,
+    lastValueVisible: true,
+    priceFormat: { type: 'price', precision: spec.precision ?? 1,
+                   minMove: spec.precision === 2 ? 0.01 : 0.1 },
+    title: spec.label,
+  };
+  if (spec.type === 'area') {
+    // Полупрозрачная заливка: у площади должен читаться и уровень, и то, что
+    // под ней проходят другие линии того же графика.
+    return chart.addAreaSeries(Object.assign(options, {
+      lineColor: cssVar(spec.colorVar),
+      topColor: withAlpha(cssVar(spec.colorVar), 0.35),
+      bottomColor: withAlpha(cssVar(spec.colorVar), 0.02),
+    }));
+  }
+  return chart.addLineSeries(options);
+}
+
+function buildChart(spec) {
+  const el = document.getElementById(spec.id);
+  const chart = LightweightCharts.createChart(el, Object.assign({ autoSize: true }, baseTheme()));
+  const series = new Map();
+  for (const s of spec.series) series.set(s.key, { series: addSeries(chart, s), spec: s });
+  charts.set(spec.id, { chart, series, spec });
+}
+
+SPEC.forEach(buildChart);
+
+function fill(entry, points) {
+  const t = entry.spec.transform;
+  entry.series.setData(points.map((p) => ({
+    time: p.time, value: t ? t(p.value) : p.value,
+  })));
+}
+
+async function loadSeries() {
+  const note = document.getElementById('series-note');
+  let payload;
+  try {
+    const response = await fetch(`/api/server/series?window=${encodeURIComponent(WINDOW)}`);
+    if (!response.ok) {
+      // 503 — «сэмплер не запущен». Это не сбой страницы, а состояние контура,
+      // и подпись должна говорить именно это, а не «ошибка загрузки».
+      const detail = await response.json().catch(() => ({}));
+      note.textContent = detail.detail || `не удалось прочитать замеры (HTTP ${response.status})`;
+      return;
+    }
+    payload = await response.json();
+  } catch (err) {
+    note.textContent = 'нет связи с админкой';
+    return;
+  }
+
+  for (const [id, box] of charts) {
+    if (box.spec.fromDisks) {
+      // Серии дисков создаются по факту, при первом ответе: их состав задан
+      // конфигурацией сэмплера, а не шаблоном страницы.
+      let index = 0;
+      for (const [mount, points] of Object.entries(payload.disks || {})) {
+        if (!box.series.has(mount)) {
+          const spec = { key: mount, label: mount,
+                         colorVar: DISK_COLORS[index % DISK_COLORS.length], type: 'line' };
+          box.series.set(mount, { series: addSeries(box.chart, spec), spec });
+        }
+        fill(box.series.get(mount), points);
+        index += 1;
+      }
+    } else {
+      for (const [key, entry] of box.series) fill(entry, payload.metrics[key] || []);
+    }
+    box.chart.timeScale().fitContent();
+  }
+
+  const minutes = Math.round(payload.bucket / 60);
+  note.textContent = payload.points
+    ? `${payload.points} точек, шаг ${minutes >= 1 ? minutes + ' мин' : payload.bucket + ' с'}`
+    : 'в этом окне замеров нет';
+}
+
+loadSeries();
+setInterval(loadSeries, RELOAD_MS);
+
+// Палитра графиков живёт в опциях библиотеки, а не в CSS: при смене темы её
+// нужно применить руками — иначе графики останутся в цветах прежней темы.
+window.addEventListener('btcproc:theme', () => {
+  for (const box of charts.values()) {
+    box.chart.applyOptions(baseTheme());
+    for (const entry of box.series.values()) {
+      const color = cssVar(entry.spec.colorVar);
+      entry.series.applyOptions(entry.spec.type === 'area'
+        ? { lineColor: color, topColor: withAlpha(color, 0.35),
+            bottomColor: withAlpha(color, 0.02) }
+        : { color });
+    }
+  }
+});
+</script>
+{% endblock %}
