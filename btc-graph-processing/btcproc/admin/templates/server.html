@@ -17,15 +17,10 @@
   Время на графиках — UTC.
 </p>
 
-{# Живая половина: цифры «сейчас», процессы, контейнеры, прогоны. Обновляется
-   сама, целиком, запросом на этот же адрес — сервер отдаёт partial, если видит
-   заголовок htmx. Раз в 10 с, а не чаще: внутри опрос docker (секунда-две
-   работы) и два прохода по процессам. #}
-<div id="live" hx-get="/server?window={{ window }}" hx-trigger="every 10s"
-     hx-target="this">
-  {% include "partials/server_live.html" %}
-</div>
-
+{# Графики стоят ВЫШЕ живого блока намеренно: на странице их четыре, а под
+   ними ещё таблицы процессов, контейнеров и прогонов — с обратным порядком
+   до динамики приходилось мотать при каждом заходе, а смотрят на неё чаще,
+   чем на список процессов. #}
 <h2>Динамика</h2>
 <form class="toolbar" onsubmit="return false;">
   <div class="field" role="group" aria-label="Окно графиков">
@@ -50,7 +45,10 @@
     <div class="chart-box" id="chart-mem"></div>
   </div>
   <div class="panel">
-    <h4>Занято на диске, %</h4>
+    {# Подпись с гигабайтами заполняется из последней точки ряда: процент без
+       абсолютных чисел не говорит, сколько времени есть на реакцию — 91% это
+       и 6 ГБ запаса, и 60. #}
+    <h4>Занято на диске, % <span class="muted" id="disk-note">—</span></h4>
     <div class="chart-box" id="chart-disk"></div>
   </div>
   <div class="panel">
@@ -58,6 +56,16 @@
     <div class="chart-box" id="chart-io"></div>
   </div>
 </section>
+
+{# Живая половина: цифры «сейчас», процессы, контейнеры, прогоны. Обновляется
+   сама, целиком, запросом на этот же адрес — сервер отдаёт partial, если видит
+   заголовок htmx. Раз в 10 с, а не чаще: внутри опрос docker (секунда-две
+   работы) и два прохода по процессам. #}
+<div id="live" hx-get="/server?window={{ window }}" hx-trigger="every 10s"
+     hx-target="this">
+  {% include "partials/server_live.html" %}
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -66,6 +74,10 @@
 // live-блока: тот обновляется каждые 10 с, и пересоздавать на каждом обновлении
 // четыре графика (вместе с положением курсора и масштабом) нельзя.
 const WINDOW = {{ window|tojson }};
+// Пороги берутся из тех же настроек, по которым сэмплер шлёт Telegram —
+// иначе линия на графике и уведомление разошлись бы, и график врал бы про
+// то, когда «уже пора».
+const DISK_LIMITS = {{ {'warn': alerts_cfg.disk_pct, 'crit': alerts_cfg.disk_critical_pct}|tojson }};
 // Ряды тянем реже, чем цифры: точка на графике появляется раз в
 // HOSTMON_INTERVAL_SECONDS, чаще опрашивать нечего.
 const RELOAD_MS = 30000;
@@ -160,6 +172,35 @@ function addSeries(chart, spec) {
   return chart.addLineSeries(options);
 }
 
+// Байты в человеческий вид. Дублирует фильтр `|bytes` шаблона намеренно:
+// подпись обновляется из JSON каждые 30 с, до сервера за форматированием не
+// сходишь.
+function fmtBytes(value) {
+  if (value === null || value === undefined) return '—';
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let n = value, i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+
+// Пороговые линии рисуются один раз на первую серию диска: они принадлежат
+// шкале, а не ряду, и вторая копия на каждом разделе только загромождала бы
+// график.
+function addDiskLimits(entry) {
+  if (entry._limits) return;
+  entry._limits = true;
+  entry.series.createPriceLine({
+    price: DISK_LIMITS.warn, color: cssVar('--amber'), lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: 'порог',
+  });
+  entry.series.createPriceLine({
+    price: DISK_LIMITS.crit, color: cssVar('--red'), lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: 'критично',
+  });
+}
+
 function buildChart(spec) {
   const el = document.getElementById(spec.id);
   const chart = LightweightCharts.createChart(el, Object.assign({ autoSize: true }, baseTheme()));
@@ -200,15 +241,28 @@ async function loadSeries() {
       // Серии дисков создаются по факту, при первом ответе: их состав задан
       // конфигурацией сэмплера, а не шаблоном страницы.
       let index = 0;
+      const notes = [];
       for (const [mount, points] of Object.entries(payload.disks || {})) {
         if (!box.series.has(mount)) {
           const spec = { key: mount, label: mount,
                          colorVar: DISK_COLORS[index % DISK_COLORS.length], type: 'line' };
           box.series.set(mount, { series: addSeries(box.chart, spec), spec });
         }
-        fill(box.series.get(mount), points);
+        const entry = box.series.get(mount);
+        fill(entry, points);
+        if (index === 0) addDiskLimits(entry);
+        // Абсолютные числа — по ПОСЛЕДНЕЙ точке окна, а не по среднему:
+        // «сколько осталось сейчас» и «сколько было в среднем за неделю» —
+        // разные вопросы, и на этот график ходят с первым.
+        const last = points.length ? points[points.length - 1] : null;
+        if (last && last.total) {
+          notes.push(`${mount}: занято ${fmtBytes(last.used)} из ${fmtBytes(last.total)}, `
+                     + `свободно ${fmtBytes(last.total - last.used)}`);
+        }
         index += 1;
       }
+      const diskNote = document.getElementById('disk-note');
+      if (diskNote) diskNote.textContent = notes.join(' · ') || '—';
     } else {
       for (const [key, entry] of box.series) fill(entry, payload.metrics[key] || []);
     }

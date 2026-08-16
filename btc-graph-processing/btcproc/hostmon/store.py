@@ -206,10 +206,15 @@ def series(
 
     # Заполнение дисков — по каждой точке монтирования своим рядом: разделы
     # заполняются независимо, и общий график по ним был бы бессмысленным.
+    #
+    # Рядом с процентом отдаются занятые и общие байты: график рисуется в
+    # процентах (разделы разного размера иначе несопоставимы), но «91%» без
+    # «осталось 6 ГБ» не говорит, сколько времени есть на реакцию.
     disks: dict[str, list[dict]] = {}
     for row in conn.execute(
         f"""
-        SELECT (ts / {bucket}) * {bucket} AS bucket, mount, AVG(pct) AS pct
+        SELECT (ts / {bucket}) * {bucket} AS bucket, mount,
+               AVG(pct) AS pct, AVG(used) AS used, AVG(total) AS total
           FROM disk_samples
          WHERE ts BETWEEN ? AND ?
          GROUP BY bucket, mount
@@ -218,9 +223,12 @@ def series(
         (since_ts, until_ts),
     ):
         if row["pct"] is not None:
-            disks.setdefault(row["mount"], []).append(
-                {"time": row["bucket"], "value": round(row["pct"], 3)}
-            )
+            disks.setdefault(row["mount"], []).append({
+                "time": row["bucket"],
+                "value": round(row["pct"], 3),
+                "used": int(row["used"]) if row["used"] is not None else None,
+                "total": int(row["total"]) if row["total"] is not None else None,
+            })
 
     return {"bucket": bucket, "points": len(rows), "metrics": out, "disks": disks}
 
