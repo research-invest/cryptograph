@@ -221,6 +221,156 @@ def save_groups(run_id: int, groups: pd.DataFrame, centroids: dict | None = None
     )
 
 
+# ─── Фон состояний ──────────────────────────────────────────────────────────
+#
+# Насколько часто контекстный атом встречается внутри состояния по сравнению
+# со всей размеченной историей прогона. Считается ОДИН РАЗ, в конце train, и
+# ложится в `state_context` — до 2026-08-16 админка гоняла этот агрегат на
+# каждое открытие узла графа (журнал 43).
+#
+# Считается целиком на сервере: разворот массивов атомов по трёмстам тысячам
+# баров в питон тянуть незачем, наружу выходят полторы тысячи строк.
+#
+# Пороги отбора (доля, лифт, верхушка) здесь НЕ применяются — они живут в
+# админке и меняются без пересчёта агрегата.
+
+#: Размеченные бары прогона вместе с их фоном — во временную таблицу.
+#:
+#: Форма запроса выбрана так, чтобы НЕ ЗАВИСЕТЬ ОТ ОЦЕНОК ПЛАНИРОВЩИКА, и это
+#: не перестраховка. У свежей монеты статистики по `symbol` ещё нет (ANALYZE
+#: не прошёл), и PostgreSQL оценивает выборку в ОДНУ строку — после чего
+#: берёт nested loop, в котором внутренний скан идёт по `bar_events` без
+#: условия на `ts`: 80 тысяч строк × 80 тысяч строк с проверкой в join-фильтре.
+#: На боевом контуре это и наблюдалось: у пяти монет со статистикой агрегат
+#: считался за 3–4 секунды, у только что заведённой TAOUSDT тот же запрос шёл
+#: больше десяти минут (журнал 43.7).
+#:
+#: Оба входа обёрнуты в MATERIALIZED CTE: у материализованного набора индекса
+#: нет, поэтому вложенный цикл по нему невыгоден при любой оценке, и
+#: планировщику остаются hash/merge join. Цена — временный набор на время
+#: запроса; выигрыш — устойчивость к незнанию статистики.
+_LABELED_SQL = """
+CREATE TEMP TABLE _state_context_labeled ON COMMIT DROP AS
+WITH ev AS MATERIALIZED (
+    SELECT ts, context_atoms FROM bar_events
+    WHERE symbol = %(symbol)s AND context_atoms IS NOT NULL
+),
+st AS MATERIALIZED (
+    SELECT ts, group_id FROM bar_states
+    WHERE symbol = %(symbol)s AND run_id = %(run_id)s
+)
+SELECT st.group_id, ev.context_atoms FROM st JOIN ev ON ev.ts = st.ts
+"""
+
+#: Сам агрегат — уже по временной таблице, то есть join сделан один раз.
+#: Общая частота атома считается из `atom_group`, а не вторым `unnest`ом по
+#: всей истории: тот удваивал время запроса на ровном месте.
+_STATE_CONTEXT_SQL = """
+INSERT INTO state_context (run_id, group_id, atom, share, lift)
+WITH per_group AS (
+    SELECT group_id, count(*) AS bars FROM _state_context_labeled GROUP BY 1
+),
+atom_group AS (
+    SELECT l.group_id, a.atom, count(*) AS n
+    FROM _state_context_labeled l, unnest(l.context_atoms) AS a(atom)
+    GROUP BY 1, 2
+),
+atom_total AS (SELECT atom, sum(n) AS n FROM atom_group GROUP BY 1),
+totals AS (SELECT sum(bars) AS bars FROM per_group)
+SELECT %(run_id)s,
+       ag.group_id,
+       ag.atom,
+       ag.n::float / pg.bars,
+       (ag.n::float / pg.bars) / NULLIF(at.n::float / t.bars, 0)
+FROM atom_group ag
+JOIN per_group pg ON pg.group_id = ag.group_id
+JOIN atom_total at ON at.atom = ag.atom
+CROSS JOIN totals t
+ON CONFLICT (run_id, group_id, atom) DO UPDATE
+   SET share = EXCLUDED.share, lift = EXCLUDED.lift
+"""
+
+
+def save_state_context(run_id: int, symbol: str | None = None,
+                       timeout_ms: int | None = None) -> dict:
+    """
+    Считает и сохраняет фон состояний прогона. Идемпотентно.
+
+    Возвращает {"bars": ..., "rows": ...} — сколько баров участвовало и
+    сколько пар «состояние × атом» получилось. Ноль баров — законный исход
+    (история размечена до появления `bar_events.context_atoms`), и отметка
+    в `state_context_runs` ставится всё равно: без неё «посчитано и пусто»
+    неотличимо от «не считалось», и читатель гонял бы агрегат заново.
+    """
+    symbol = symbol or config.data.symbol
+    params = {"symbol": symbol, "run_id": run_id}
+    with connect(timeout_ms=timeout_ms) as conn, conn.cursor() as cur:
+        # ON COMMIT DROP: соединение уходит обратно в пул, и оставленная на
+        # нём временная таблица досталась бы следующему запросу.
+        cur.execute(_LABELED_SQL, params)
+        cur.execute("SELECT count(*) FROM _state_context_labeled")
+        bars = cur.fetchone()[0]
+        # Пересчёт, а не досчёт: состав атомов мог измениться бэкфиллом, и
+        # строка, переставшая проходить, обязана исчезнуть.
+        cur.execute("DELETE FROM state_context WHERE run_id = %s", (run_id,))
+        cur.execute(_STATE_CONTEXT_SQL, params)
+        rows = cur.rowcount
+        cur.execute(
+            "INSERT INTO state_context_runs (run_id, bars, atom_rows, computed_at) "
+            "VALUES (%s, %s, %s, NOW()) "
+            "ON CONFLICT (run_id) DO UPDATE SET bars = EXCLUDED.bars, "
+            "  atom_rows = EXCLUDED.atom_rows, computed_at = EXCLUDED.computed_at",
+            (run_id, bars, rows),
+        )
+    logger.info("Фон состояний прогона %s: %s баров, %s строк", run_id, bars, rows)
+    return {"bars": bars, "rows": rows}
+
+
+#: Таблицы, чья статистика для планировщика устаревает за один прогон
+#: настолько, что это меняет планы: в них прогон пишет от десятков тысяч до
+#: сотен тысяч строк.
+_ANALYZE_TABLES = ("ohlcv", "features", "bar_events", "bar_states", "candidates")
+
+
+def refresh_planner_stats(tables: Sequence[str] = _ANALYZE_TABLES) -> None:
+    """
+    Собирает статистику для планировщика по таблицам, которые только что
+    пополнил прогон.
+
+    Нужно не «для скорости вообще», а из-за НОВОЙ МОНЕТЫ. Пока ANALYZE по ней
+    не прошёл, планировщик не знает про её `symbol` вовсе и оценивает любую
+    выборку в одну строку — после чего выбирает планы, рассчитанные на одну
+    строку, для сотен тысяч. Автовакуум это исправляет, но своим чередом, а
+    оператор открывает граф сразу после обучения (журнал 43.7).
+
+    Здесь же собирается расширенная статистика `bar_states (symbol, run_id)`:
+    сама по себе `CREATE STATISTICS` только объявляет её, данные появляются
+    при ANALYZE.
+
+    Три-четыре секунды на прогон в полчаса — цена, которую не жалко.
+    """
+    with connect(autocommit=True) as conn, conn.cursor() as cur:
+        for table in tables:
+            cur.execute(f"ANALYZE {table}")
+    logger.info("Статистика планировщика обновлена: %s", ", ".join(tables))
+
+
+def state_context_ready(run_id: int) -> bool:
+    """Посчитан ли фон этого прогона. Пустой результат — тоже посчитанный."""
+    return fetch_one(
+        "SELECT 1 FROM state_context_runs WHERE run_id = %s", (run_id,)
+    ) is not None
+
+
+def load_state_context(run_id: int) -> list[dict]:
+    """Фон состояний прогона, от сильнейшего лифта внутри состояния."""
+    return fetch_all(
+        "SELECT group_id, atom, share, lift FROM state_context "
+        "WHERE run_id = %s ORDER BY group_id, lift DESC NULLS LAST",
+        (run_id,),
+    )
+
+
 def save_transitions(run_id: int, transitions: pd.DataFrame) -> int:
     rows = [
         (

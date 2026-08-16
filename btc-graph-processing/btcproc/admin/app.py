@@ -20,7 +20,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -448,10 +448,30 @@ def _runs_state() -> dict:
         return {"ok": False, "error": str(exc)[:300], "active": [], "recent": [], "stale": []}
 
 
+def _pg_activity() -> dict:
+    """
+    Что база делает прямо сейчас. Собирается на каждое обновление страницы —
+    истории по запросам монитор не ведёт, `pg_stat_activity` её и не хранит.
+
+    Как и у прогонов, недоступный Postgres здесь не сбой страницы, а факт:
+    он живёт в том же стеке, за которым мы следим.
+    """
+    from btcproc.db import activity
+
+    try:
+        data = activity.snapshot(config.admin.pg_slow_seconds)
+        return {"ok": True, "error": None, **data}
+    except Exception as exc:        # noqa: BLE001 — страница обязана открыться
+        logger.warning("Срез запросов PostgreSQL не собран: %s", exc)
+        return {"ok": False, "error": str(exc)[:300], "rows": [], "summary": {},
+                "slow_seconds": config.admin.pg_slow_seconds}
+
+
 def _server_context(window: str) -> dict:
     return {
         "mon": monitor_state(),
         "runs_state": _runs_state(),
+        "pg": _pg_activity(),
         "hostmon": config.hostmon,
         "alerts_cfg": config.alerts,
         "window": window,
@@ -463,7 +483,8 @@ def _server_context(window: str) -> dict:
 
 
 @app.get("/server", response_class=HTMLResponse)
-def server_page(request: Request, window: str | None = None):
+def server_page(request: Request, window: str | None = None,
+                pg_note: str | None = None):
     """
     Состояние машины: CPU, память, swap, диск в динамике плюс живой срез
     процессов, контейнеров и прогонов.
@@ -478,7 +499,11 @@ def server_page(request: Request, window: str | None = None):
     window = window if window in SERVER_WINDOWS else SERVER_DEFAULT_WINDOW
     template = "partials/server_live.html" if request.headers.get("hx-request") \
         else "server.html"
-    return page(request, template, active="server", **_server_context(window))
+    # Итог снятия бэкенда показывается в СТАТИЧНОЙ половине страницы: живая
+    # перерисовывается каждые 10 секунд и сообщение унесла бы раньше, чем
+    # оператор дочитает.
+    return page(request, template, active="server",
+                pg_note=opt_str(pg_note), **_server_context(window))
 
 
 @app.get("/api/server/series")
@@ -827,6 +852,32 @@ def resend(background: BackgroundTasks, run_id: int):
     return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
 
+@app.post("/server/pg/{pid}/stop")
+def server_pg_stop(pid: int, window: str | None = None):
+    """
+    Снять один бэкенд PostgreSQL: отменить запрос, а для висящей транзакции —
+    закрыть соединение. Выбор способа — в `activity.stop_query`.
+
+    Действие пишущее и в чужой процесс, поэтому оно: только POST, только по
+    сессии админки (как и вся страница), с подтверждением в интерфейсе и
+    записью в лог. Результат уезжает в query-строку редиректа, чтобы
+    оператор увидел, что именно произошло, — «кнопка нажалась и ничего»
+    здесь худший из исходов.
+    """
+    from btcproc.db import activity
+
+    try:
+        result = activity.stop_query(pid)
+        note = result["note"]
+    except Exception as exc:        # noqa: BLE001
+        logger.warning("Снять бэкенд %s не удалось: %s", pid, exc)
+        note = f"Не удалось: {exc}"[:300]
+    params = {"pg_note": note}
+    if window:
+        params["window"] = window
+    return RedirectResponse(f"/server?{urlencode(params)}", status_code=303)
+
+
 def _safe_run(func, *args, **kwargs) -> None:
     """Фоновая задача не должна ронять процесс — диагноз уже лёг в runs."""
     try:
@@ -864,10 +915,12 @@ def api_graph_context(request: Request, run: str | None = None):
     """
     Фон состояний целиком: {group_id: [атомы]}.
 
-    Существует ради прогрева. Агрегат разворачивает массивы атомов по всей
-    размеченной истории и считается секундами; в панели узла он нужен сразу
-    по клику, поэтому страница графа дёргает эту ручку сразу после отрисовки
-    и результат выбрасывает. Дальше всё берётся из кэша.
+    Существует ради прогрева, и с 2026-08-16 прогревать почти нечего: агрегат
+    считает train, ручка читает готовые строки. Остаётся она по двум
+    причинам — держит кэш процесса тёплым и досчитывает фон прогонам, сделанным
+    до появления таблицы (единственный тяжёлый случай, один раз на прогон;
+    заранее его закрывает `scripts/backfill_state_context.py`). Страница графа
+    дёргает ручку после отрисовки и результат выбрасывает.
     """
     symbol = current_symbol(request)
     run_id = opt_int(run) or _latest_train_id(symbol)

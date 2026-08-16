@@ -250,6 +250,11 @@ def run_train(
         }
         repo.save_transitions(run_id, transitions)
         repo.save_groups(run_id, groups, centroids)
+        # Фон состояний считается здесь, а не при открытии узла в админке.
+        # Величина неизменна: разметка завершённого train не меняется, — а
+        # считать её на клик значило разворачивать массивы атомов по всей
+        # истории монеты каждый раз (журнал 43).
+        stats["context"] = repo.save_state_context(run_id, symbol)
         stats["graph"] = {"nodes": len(groups), "edges": len(transitions)}
         progress.finish(f"{len(groups)} узлов, {len(transitions)} рёбер")
 
@@ -281,6 +286,13 @@ def run_train(
             "produced": produced, "snapshots": len(snapshots), "scopes": scopes,
         }
         progress.finish(f"{produced} кандидатов из {len(snapshots)} снимков")
+
+        # ── 7а. Статистика планировщика ─────────────────────────────────────
+        # Прогон только что дописал сотни тысяч строк, а у новой монеты её
+        # `symbol` планировщику вообще незнаком: он оценивает выборку в одну
+        # строку и выбирает планы под одну строку. Первым это ловит оператор,
+        # открывший граф сразу после обучения (журнал 43.7).
+        repo.refresh_planner_stats()
 
         # ── 8. Отправка в btc-graph ─────────────────────────────────────────
         progress.start("emit", f"режим {config.sink.mode}")

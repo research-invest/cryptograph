@@ -392,3 +392,44 @@ CREATE TABLE IF NOT EXISTS deriv_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS deriv_metrics_tf_ts_idx ON deriv_metrics (tf, ts DESC);
+
+-- ─── Фон состояний: посчитанный агрегат ─────────────────────────────────────
+-- Насколько часто контекстный атом встречается внутри состояния по сравнению
+-- со всей размеченной историей. Считался на лету при каждом открытии узла
+-- графа: join bar_states × bar_events по всей истории монеты плюс unnest
+-- массивов — секунды на прогретом кэше, десятки секунд на холодном, и
+-- параллельные воркеры на каждый запрос. Пять кликов подряд укладывали базу.
+--
+-- Хранится, а не кэшируется в памяти, потому что величина неизменна: фон
+-- считается по разметке train-прогона, а она после его завершения не
+-- меняется. Пороги отбора (доля, лифт, верхушка) здесь НЕ применяются —
+-- лежат сырые доли: что показывать, решает btc-graph-приёмник этой таблицы,
+-- то есть админка, и менять пороги без пересчёта агрегата она обязана уметь.
+CREATE TABLE IF NOT EXISTS state_context (
+    run_id   BIGINT           NOT NULL,
+    group_id DOUBLE PRECISION NOT NULL,
+    atom     TEXT             NOT NULL,
+    share    DOUBLE PRECISION NOT NULL,
+    lift     DOUBLE PRECISION,
+    PRIMARY KEY (run_id, group_id, atom)
+);
+
+-- Отметка «фон этого прогона посчитан». Без неё пустой результат неотличим
+-- от непосчитанного: у прогона может честно не быть ни одного контекстного
+-- атома (вся история размечена до появления колонки `bar_events.context_atoms`),
+-- и тогда каждое открытие узла заново гоняло бы тот самый тяжёлый запрос.
+CREATE TABLE IF NOT EXISTS state_context_runs (
+    run_id      BIGINT PRIMARY KEY,
+    bars        INTEGER     NOT NULL,
+    atom_rows   INTEGER     NOT NULL,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── Корреляция symbol ↔ run_id ─────────────────────────────────────────────
+-- run_id однозначно задаёт монету (один прогон = одна монета), но планировщик
+-- считает условия независимыми и множит селективности: на `symbol = X AND
+-- run_id = N` он ожидал 23 строки вместо 80 тысяч и выбирал nested loop с
+-- отдельным index scan на каждый бар — 320 тыс. обращений к буферам там, где
+-- хватает 14 тыс. Статистика зависимостей чинит оценку.
+CREATE STATISTICS IF NOT EXISTS bar_states_symbol_run_stx (dependencies, ndistinct)
+    ON symbol, run_id FROM bar_states;

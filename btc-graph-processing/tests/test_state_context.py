@@ -6,8 +6,14 @@
 принципе. Но состояния по ним различаются, и это различие показывается
 отдельным блоком. Здесь проверяется отбор: что показывается, что нет и
 почему.
+
+Сам агрегат считает `repo.save_state_context` (train, один раз на прогон) —
+здесь он подменяется: проверяется решение админки о показе, а не SQL.
 """
 from __future__ import annotations
+
+import threading
+import time
 
 import pytest
 
@@ -27,11 +33,19 @@ def clean_cache():
 
 @pytest.fixture
 def rows(monkeypatch):
-    def _install(data):
+    """Готовый фон в таблице: считать нечего, читаем."""
+    def _install(data, ready=True):
         calls = []
+        monkeypatch.setattr(queries.repo, "state_context_ready", lambda run_id: ready)
         monkeypatch.setattr(
-            queries, "fetch_all",
-            lambda sql, params=None: calls.append(params) or data,
+            queries.repo, "load_state_context",
+            lambda run_id: calls.append(run_id) or data,
+        )
+        monkeypatch.setattr(
+            queries.repo, "save_state_context",
+            lambda run_id, symbol=None, timeout_ms=None: pytest.fail(
+                "готовый фон не должен пересчитываться"
+            ),
         )
         return calls
 
@@ -126,3 +140,74 @@ def test_null_lift_does_not_crash(rows):
     rows([_row(1.0, "in_premium", 0.4, None)])
 
     assert queries.state_context_atoms(7, "BTCUSDT") == {}
+
+
+def test_run_without_precomputed_context_is_computed_once(monkeypatch):
+    """
+    Прогоны, сделанные до появления таблицы, досчитываются по первому
+    обращению — и ровно один раз: отметку ставит сам расчёт, а пустой
+    результат от непосчитанного отличается только ею.
+    """
+    computed = []
+    ready = {"value": False}
+
+    def _save(run_id, symbol=None, timeout_ms=None):
+        computed.append((run_id, symbol))
+        ready["value"] = True
+        return {"bars": 0, "rows": 0}
+
+    monkeypatch.setattr(queries.repo, "state_context_ready",
+                        lambda run_id: ready["value"])
+    monkeypatch.setattr(queries.repo, "save_state_context", _save)
+    monkeypatch.setattr(queries.repo, "load_state_context",
+                        lambda run_id: [_row(1.0, "in_premium", 0.4, 1.5)])
+
+    queries.state_context_atoms(7, "BTCUSDT")
+    queries._CONTEXT_CACHE.clear()          # кэш не должен быть единственной защитой
+    queries.state_context_atoms(7, "BTCUSDT")
+
+    assert computed == [(7, "BTCUSDT")]
+
+
+def test_parallel_requests_for_one_state_hit_the_db_once(monkeypatch):
+    """
+    Пять кликов по узлу — пять потоков uvicorn, и кэш их не ловит: он
+    заполняется после первого ответа, а уходят они одновременно. Ровно это
+    и укладывало базу, поэтому проверяется именно параллельный случай.
+    """
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def _load(run_id):
+        calls.append(run_id)
+        started.set()
+        release.wait(timeout=5)
+        return [_row(1.0, "in_premium", 0.4, 1.5)]
+
+    monkeypatch.setattr(queries.repo, "state_context_ready", lambda run_id: True)
+    monkeypatch.setattr(queries.repo, "load_state_context", _load)
+
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(
+            queries.state_context_atoms(7, "BTCUSDT")))
+        for _ in range(5)
+    ]
+    threads[0].start()
+    started.wait(timeout=5)                 # первый гарантированно в БД
+    for t in threads[1:]:
+        t.start()
+    # Ждём, пока все четверо реально прицепятся к чужому результату. Без
+    # этого тест зеленел бы и на сломанном коде: опоздавший поток нашёл бы
+    # реестр уже пустым и честно пошёл бы в БД вторым.
+    deadline = time.time() + 5
+    while queries._CONTEXT_FLIGHT.waiters(("BTCUSDT", 7)) < 4:
+        assert time.time() < deadline, "ждущие не прицепились"
+    release.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert calls == [7], "остальные обязаны дождаться первого, а не пойти своим путём"
+    assert len(results) == 5
+    assert all(r == results[0] for r in results)

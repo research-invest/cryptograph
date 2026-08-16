@@ -272,22 +272,55 @@ function resetFocus() {
   cy.elements().removeClass('faded highlight found');
 }
 
-cy.on('tap', 'node', async (evt) => {
-  const node = evt.target;
-  const d = node.data();
-  resetFocus();
-  focusOn(node.closedNeighborhood());
+// Загрузка панели узла: в любой момент времени летит РОВНО ОДИН запрос.
+//
+// Пять кликов подряд означали пять одновременных запросов, каждый из которых
+// разворачивал массивы атомов по всей истории монеты — этого хватало, чтобы
+// база перестала отвечать. Сам запрос с тех пор стал чтением готовой таблицы
+// (журнал 43), но правило остаётся: клик, пока идёт загрузка, нового запроса
+// не порождает. Промежуточные выборы схлопываются — рисуется последний
+// выбранный узел, а не очередь из пяти.
+let nodeInflight = null;   // промис текущего запроса
+let nodeWanted = null;     // что показать, когда он завершится
 
-  const run = el('run').value;
-  const info = await (await fetch(
-    `/api/graph/group/${d.group_id}?run=${run}&symbol=${encodeURIComponent(SYMBOL)}`
-  )).json();
+async function showNode(node) {
+  nodeWanted = node;
+  if (nodeInflight) return;   // текущий цикл сам подхватит последний выбор
+  while (nodeWanted) {
+    const target = nodeWanted;
+    nodeWanted = null;
+    const d = target.data();
+    const run = el('run').value;
+    el('details').innerHTML =
+      `<h3>${SYMBOL} · состояние ${d.label}</h3><p class="muted">загружаю…</p>`;
+    try {
+      nodeInflight = fetch(
+        `/api/graph/group/${d.group_id}?run=${run}&symbol=${encodeURIComponent(SYMBOL)}`
+      ).then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)));
+      const info = await nodeInflight;
+      // Пока грузилось, могли выбрать другой узел — рисовать устаревший
+      // ответ нельзя, он ляжет поверх нового выбора.
+      if (!nodeWanted) renderNode(d, info, run);
+    } catch (err) {
+      if (!nodeWanted) {
+        el('details').innerHTML =
+          `<h3>${SYMBOL} · состояние ${d.label}</h3>
+           <p class="muted">не удалось загрузить: ${err.message}</p>`;
+      }
+    } finally {
+      nodeInflight = null;
+    }
+  }
+}
+
+function renderNode(d, info, run) {
   const feats = Object.entries(d.top_features || {})
     .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
     .join('');
-  // Атомы приходят из того же вызова, что и переходы: запрос тяжёлый, и в
-  // payload графа ему делать нечего. Подпись уже русская — словарь один на
-  // проект и живёт в naming.py, дублировать его в шаблоне нельзя.
+  // Атомы приходят из того же вызова, что и переходы: в payload графа им
+  // делать нечего — он грузится на каждую перерисовку, а фон нужен только
+  // открытому узлу. Подпись уже русская: словарь один на проект и живёт
+  // в naming.py, дублировать его в шаблоне нельзя.
   const atoms = (info.context_atoms || [])
     .map(a => `<li>${a.label} <span class="up">×${a.lift.toFixed(2)}</span>
                <span class="muted">${pct(a.share)} баров</span></li>`)
@@ -317,6 +350,13 @@ cy.on('tap', 'node', async (evt) => {
     <h4>Исходящие переходы</h4>
     <table><tbody>${rows(info.outgoing || [])}</tbody></table>
     <p><a href="/candidates?run=${run}">кандидаты этого прогона</a></p>`;
+}
+
+cy.on('tap', 'node', (evt) => {
+  const node = evt.target;
+  resetFocus();
+  focusOn(node.closedNeighborhood());
+  showNode(node);
 });
 
 cy.on('tap', 'edge', (evt) => {

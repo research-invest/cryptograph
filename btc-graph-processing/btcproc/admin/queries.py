@@ -4,14 +4,31 @@
 from __future__ import annotations
 
 import colorsys
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 
 from btcproc import config
-from btcproc.db import runs as runs_repo
-from btcproc.db.session import fetch_all, fetch_one
+from btcproc.admin.single_flight import SingleFlight
+from btcproc.db import repo, runs as runs_repo
+from btcproc.db import session
 from btcproc.states import naming
+
+#: Потолок на каждый запрос страницы. Ставится здесь, а не в пуле и не в
+#: конфиге сервера, потому что пул общий: фоновые потоки той же админки
+#: гоняют train с bulk-вставками на десятки минут, и единый потолок убивал бы
+#: их. Смысл потолка — не ускорить страницу, а сделать невозможным сценарий
+#: «одна кривая страница положила базу для всех»: запрос, идущий минуту,
+#: заведомо сломан, и его лучше оборвать с ошибкой в логе.
+STATEMENT_TIMEOUT_MS = 60_000
+
+
+def fetch_all(sql: str, params: Sequence[Any] | None = None) -> list[dict]:
+    return session.fetch_all(sql, params, timeout_ms=STATEMENT_TIMEOUT_MS)
+
+
+def fetch_one(sql: str, params: Sequence[Any] | None = None) -> dict | None:
+    return session.fetch_one(sql, params, timeout_ms=STATEMENT_TIMEOUT_MS)
 
 # Потолок маркеров на графике: больше пятисот стрелок всё равно сливаются в
 # кашу и перекрывают раскраску состояний. Факт обрезки отдаётся наружу
@@ -578,49 +595,38 @@ def transitions_table(run_id: int, limit: int = 200) -> list[dict]:
 #
 # Считается как лифт: доля баров состояния с атомом, делённая на долю по всей
 # истории. 1.0 — атом встречается ровно как обычно, 2.0 — вдвое чаще.
+#
+# САМ АГРЕГАТ ЗДЕСЬ БОЛЬШЕ НЕ СЧИТАЕТСЯ. До 2026-08-16 считался, и открытие
+# узла графа означало join `bar_states` × `bar_events` по всей истории монеты
+# плюс разворот массивов атомов: секунды на прогретом кэше, десятки секунд на
+# холодном, параллельные воркеры на каждый запрос. Теперь его пишет train
+# (`repo.save_state_context`), а страница читает полторы тысячи готовых строк.
+# Разбор — журнал 43.
 
 #: Атом показывается, только если он и заметен, и выражен. Пороги отсекают
 #: две разные ерунды: редкий атом даёт огромный лифт на десятке баров, а
 #: вездесущий (in_breaker сидит на 83% истории) даёт лифт 1.02 и не значит
-#: ничего.
+#: ничего. Живут здесь, а не в агрегате: менять их можно без пересчёта.
 CONTEXT_MIN_SHARE = 0.05
 CONTEXT_MIN_LIFT = 1.25
 CONTEXT_TOP_N = 6
 
-_CONTEXT_SQL = """
-WITH labeled AS (
-    SELECT s.group_id, e.context_atoms
-    FROM bar_states s
-    JOIN bar_events e ON e.symbol = s.symbol AND e.ts = s.ts
-    WHERE s.symbol = %s AND s.run_id = %s AND e.context_atoms IS NOT NULL
-),
-per_group AS (SELECT group_id, count(*) AS bars FROM labeled GROUP BY 1),
-atom_group AS (
-    SELECT l.group_id, a.atom, count(*) AS n
-    FROM labeled l, unnest(l.context_atoms) AS a(atom)
-    GROUP BY 1, 2
-),
--- Общая частота считается из уже посчитанного atom_group, а не вторым
--- unnest'ом по всей истории: тот удваивал время запроса на ровном месте.
-atom_total AS (SELECT atom, sum(n) AS n FROM atom_group GROUP BY 1),
-totals AS (SELECT sum(bars) AS bars FROM per_group)
-SELECT ag.group_id,
-       ag.atom,
-       ag.n::float / pg.bars AS share,
-       (ag.n::float / pg.bars) / NULLIF(at.n::float / t.bars, 0) AS lift
-FROM atom_group ag
-JOIN per_group pg ON pg.group_id = ag.group_id
-JOIN atom_total at ON at.atom = ag.atom
-CROSS JOIN totals t
-ORDER BY ag.group_id, lift DESC
-"""
+#: Потолок на разовый досчёт фона прогонам, посчитанным до появления таблицы.
+#: Заметно больше страничного: это тот самый тяжёлый агрегат, только один раз
+#: за прогон, а не на каждый клик.
+CONTEXT_BACKFILL_TIMEOUT_MS = 300_000
 
-#: Кэш «монета+модель → фон по состояниям». Запрос разворачивает массивы атомов
-#: на всей размеченной истории — около четырёх секунд на 300 тыс. баров, что
-#: недопустимо на каждый клик по узлу. Кэшировать при этом безопасно: разметка
-#: train-прогона после его завершения не меняется, и ключ включает run_id.
+#: Кэш «монета+модель → фон по состояниям». Чтение уже дешёвое, но кэш
+#: остаётся: он же держит результат разового досчёта старых прогонов.
+#: Кэшировать безопасно — разметка train-прогона после завершения не меняется,
+#: и ключ включает run_id.
 _CONTEXT_CACHE: dict[tuple[str, int], dict[float, list[dict]]] = {}
 _CONTEXT_CACHE_LIMIT = 8
+
+#: Пять кликов по узлу — пять потоков uvicorn, и кэш их не спасает: он
+#: заполняется после первого ответа, а уходят они в БД одновременно. Первый
+#: считает, остальные ждут его результат.
+_CONTEXT_FLIGHT = SingleFlight()
 
 
 def state_context_atoms(run_id: int, symbol: str) -> dict[float, list[dict]]:
@@ -633,11 +639,29 @@ def state_context_atoms(run_id: int, symbol: str) -> dict[float, list[dict]]:
     хранить сорок пустых списков незачем.
     """
     key = (symbol, run_id)
-    if key in _CONTEXT_CACHE:
-        return _CONTEXT_CACHE[key]
+    cached = _CONTEXT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    return _CONTEXT_FLIGHT.run(key, lambda: _load_context(key))
+
+
+def _load_context(key: tuple[str, int]) -> dict[float, list[dict]]:
+    symbol, run_id = key
+    # Лидер мог посчитать, пока мы стояли в очереди на ключ.
+    cached = _CONTEXT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    if not repo.state_context_ready(run_id):
+        # Единственное место, где админка что-то считает, и то не сама:
+        # зовёт расчёт генератора для прогона, сделанного до появления
+        # таблицы. Отметка ставится и при пустом результате, поэтому
+        # повторно сюда прогон уже не попадёт.
+        repo.save_state_context(run_id, symbol,
+                                timeout_ms=CONTEXT_BACKFILL_TIMEOUT_MS)
 
     result: dict[float, list[dict]] = {}
-    for row in fetch_all(_CONTEXT_SQL, (symbol, run_id)):
+    for row in repo.load_state_context(run_id):
         if row["share"] < CONTEXT_MIN_SHARE or (row["lift"] or 0) < CONTEXT_MIN_LIFT:
             continue
         bucket = result.setdefault(float(row["group_id"]), [])

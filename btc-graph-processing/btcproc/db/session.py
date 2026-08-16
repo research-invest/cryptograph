@@ -70,8 +70,22 @@ def close_pool() -> None:
 
 
 @contextmanager
-def connect(autocommit: bool = False) -> Iterator[psycopg2.extensions.connection]:
-    """Соединение с выставленным search_path на нашу схему."""
+def connect(autocommit: bool = False,
+            timeout_ms: int | None = None) -> Iterator[psycopg2.extensions.connection]:
+    """
+    Соединение с выставленным search_path на нашу схему.
+
+    `timeout_ms` — потолок на КАЖДЫЙ запрос этого соединения. Ставится не
+    глобально в конфиге и не на пул, потому что пул общий: в том же процессе
+    админки фоновые потоки гоняют train с bulk-вставками на десятки минут, и
+    единый потолок убивал бы их. Значение задают вызывающие — чтения админки
+    им ограничены, расчётные пути нет.
+
+    Ставится обычным SET, рядом с search_path, и обязательно снимается перед
+    возвратом соединения в пул: пул общий, и унаследованный чужой потолок
+    оборвал бы bulk-вставку прогона. SET LOCAL здесь не годится — он
+    откатился бы ближайшим commit, то есть ещё до первого запроса.
+    """
     if not _pool_slots.acquire(timeout=POOL_WAIT_SECONDS):
         raise TimeoutError(
             f"Свободное соединение с БД не дождалось за {POOL_WAIT_SECONDS} с: "
@@ -89,6 +103,8 @@ def connect(autocommit: bool = False) -> Iterator[psycopg2.extensions.connection
         conn.autocommit = autocommit
         with conn.cursor() as cur:
             cur.execute(f"SET search_path TO {config.db.schema}, public")
+            if timeout_ms is not None:
+                cur.execute("SET statement_timeout = %s", (int(timeout_ms),))
         if not autocommit:
             conn.commit()
         yield conn
@@ -106,8 +122,15 @@ def connect(autocommit: bool = False) -> Iterator[psycopg2.extensions.connection
         raise
     finally:
         # autocommit — свойство соединения, а не запроса: следующий, кто
-        # возьмёт его из пула, не должен унаследовать чужой режим.
+        # возьмёт его из пула, не должен унаследовать чужой режим. Ровно то
+        # же и с потолком запроса: чужой statement_timeout, унаследованный
+        # прогоном, оборвал бы ему bulk-вставку — снимаем явно.
         try:
+            if timeout_ms is not None:
+                with conn.cursor() as cur:
+                    cur.execute("SET statement_timeout = 0")
+                if not conn.autocommit:
+                    conn.commit()
             conn.autocommit = False
         except psycopg2.Error:
             broken = True
@@ -127,20 +150,23 @@ def init_schema() -> None:
     logger.info("Схема %s готова", config.db.schema)
 
 
-def fetch_all(sql: str, params: Sequence[Any] | None = None) -> list[dict]:
-    with connect() as conn:
+def fetch_all(sql: str, params: Sequence[Any] | None = None,
+              timeout_ms: int | None = None) -> list[dict]:
+    with connect(timeout_ms=timeout_ms) as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
             return [dict(row) for row in cur.fetchall()]
 
 
-def fetch_one(sql: str, params: Sequence[Any] | None = None) -> dict | None:
-    rows = fetch_all(sql, params)
+def fetch_one(sql: str, params: Sequence[Any] | None = None,
+              timeout_ms: int | None = None) -> dict | None:
+    rows = fetch_all(sql, params, timeout_ms=timeout_ms)
     return rows[0] if rows else None
 
 
-def execute(sql: str, params: Sequence[Any] | None = None) -> None:
-    with connect() as conn, conn.cursor() as cur:
+def execute(sql: str, params: Sequence[Any] | None = None,
+            timeout_ms: int | None = None) -> None:
+    with connect(timeout_ms=timeout_ms) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
 
 
