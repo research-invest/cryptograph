@@ -51,8 +51,9 @@ make ingest-metrics         # деривативные метрики Binance US
 
 Мультимонетность: у команд с данными есть `--symbol` (можно несколько раз) и
 `--all`. Без флагов — монета из `.env`. Реестр пар — `btcproc/symbols.py`,
-сейчас заведены BTCUSDT, ETHUSDT, SOLUSDT и HYPEUSDT (все активны; последняя —
-с Bybit, `venue="bybit_spot"`). Цикл по монетам живёт
+сейчас заведены BTCUSDT, ETHUSDT, SOLUSDT, HYPEUSDT, AAVEUSDT и TAOUSDT (все
+активны; HYPEUSDT — с Bybit, `venue="bybit_spot"`; у TAOUSDT единственные в
+реестре `states_overrides`, журнал 42). Цикл по монетам живёт
 в `sources.sync_many`, а не в CLI: он нужен ещё админке и обкатке новой монеты.
 
 Быстрая проверка без ожидания полного прогона:

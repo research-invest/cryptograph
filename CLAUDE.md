@@ -237,8 +237,10 @@ make live                                             # дальше — тол�
 символ) и `btc-graph-processing/docs/task_multi_symbol.md` (реестр монет, помонетные прогоны).
 Отчёт о реализации, найденные дефекты и что осталось — `docs/implementation_2026-08-08.md`.
 
-В работе четыре монеты: BTCUSDT, ETHUSDT, SOLUSDT (спот Binance) и HYPEUSDT
-(спот **Bybit** — на споте Binance этой пары нет вовсе).
+В работе шесть монет: BTCUSDT, ETHUSDT, SOLUSDT, AAVEUSDT, TAOUSDT (спот
+Binance) и HYPEUSDT (спот **Bybit** — на споте Binance этой пары нет вовсе).
+Замеры, сделанные до 2026-08-16 и говорящие «четыре монеты», перемерять на
+шести никто не обязывался — их выводы читаются как есть.
 
 **Площадка — свойство монеты, а не системы.** `SymbolSpec.venue` выбирает
 загрузчик через `btcproc/ingest/sources.py`; ниже по течению разницы нет —
