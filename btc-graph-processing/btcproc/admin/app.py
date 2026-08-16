@@ -271,10 +271,20 @@ def dashboard(request: Request):
 def graph_page(request: Request, run: str | None = None):
     # Список прогонов фильтруется по монете: выбрать в нём чужой прогон
     # значило бы получить граф другого инструмента под заголовком этого.
+    #
+    # kind="train" — обязательно на этом запросе, а не только в шаблоне.
+    # Граф (market_groups/transitions) пишет исключительно train, а live
+    # значительно чаще: без фильтра тут топ-20 ЛЮБЫХ прогонов монеты, и через
+    # ~10 часов после недельного train (20 live-прогонов по расписанию раз в
+    # 30 мин) train вытесняется из этого окна целиком — селектор показывает
+    # пустой список до следующего train, хотя граф на месте и прекрасно
+    # выбирается по прямой ссылке ?run=. Заметили на бою: у монеты, которую
+    # только что переобучили, список был с одной опцией, а через несколько
+    # часов стал бы пустым для всех монет разом.
     symbol = current_symbol(request)
     run_id = opt_int(run) or _latest_train_id(symbol)
     return page(request, "graph.html", active="graph", symbol=symbol, run_id=run_id,
-                runs=runs_repo.list_runs(20, symbol))
+                runs=runs_repo.list_runs(20, symbol, kind="train"))
 
 
 @app.get("/chart", response_class=HTMLResponse)

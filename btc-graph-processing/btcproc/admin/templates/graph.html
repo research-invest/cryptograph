@@ -14,7 +14,9 @@
 <form class="toolbar" onsubmit="return false;">
   <label>Прогон
     <select id="run">
-      {% for run in runs if run.kind == 'train' %}
+      {# Список уже отфильтрован по kind="train" на сервере (app.py:graph_page) —
+         только train пишет market_groups/transitions, live сюда попасть не должен. #}
+      {% for run in runs %}
         <option value="{{ run.run_id }}" {{ 'selected' if run.run_id == run_id }}>
           #{{ run.run_id }} — {{ run.started_at.strftime('%Y-%m-%d %H:%M') }} ({{ run.status }})
         </option>
