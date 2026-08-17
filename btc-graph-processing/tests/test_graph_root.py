@@ -32,7 +32,7 @@ def test_graph_payload_resolves_live_run_to_its_model(monkeypatch):
 
     out = queries.graph_payload(LIVE_RUN)
 
-    assert out == {"nodes": [], "edges": []}
+    assert out == {"nodes": [], "edges": [], "feature_labels": {}}
     assert seen, "запросы должны были уйти"
     assert all(params[0] == TRAIN_RUN for params in seen), (
         "узлы и рёбра должны браться у train-прогона модели, а не у live"

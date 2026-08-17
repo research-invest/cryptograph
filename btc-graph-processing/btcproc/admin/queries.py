@@ -137,11 +137,18 @@ def graph_payload(run_id: int, min_count: int = 1, rarity: str | None = None) ->
     transitions = fetch_all(sql, params)
 
     if not groups:
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "edges": [], "feature_labels": {}}
 
     from btcproc.states.graph import to_cytoscape
 
-    return to_cytoscape(pd.DataFrame(groups), pd.DataFrame(transitions))
+    payload = to_cytoscape(pd.DataFrame(groups), pd.DataFrame(transitions))
+    # Подписи признаков едут словарём на весь граф, а не полем в каждом узле:
+    # один и тот же признак выделяется у десятков состояний, и русская строка
+    # в каждом top_features раздувала бы ответ без единого нового факта. Тот
+    # же приём, что с atom_labels на графике.
+    seen = {feature for node in payload["nodes"] for feature in node["data"]["top_features"]}
+    payload["feature_labels"] = naming.feature_labels(sorted(seen))
+    return payload
 
 
 class SymbolRunMismatch(ValueError):
@@ -358,8 +365,8 @@ def indicator_catalog(run_id: int) -> list[dict]:
     available = set(row["names"])
 
     out = [
-        {"name": feature, "axis": axis, "high": positive, "low": negative}
-        for axis, feature, positive, negative in naming.feature_catalog()
+        {"name": feature, "axis": axis, "title": title, "high": positive, "low": negative}
+        for axis, feature, title, positive, negative in naming.feature_catalog()
         if feature in available
     ]
     # Признак без словарной строки — нарушение инварианта 7, и тест полноты
@@ -367,7 +374,7 @@ def indicator_catalog(run_id: int) -> list[dict]:
     # видно будет здесь, а не только в упавшем тесте.
     named = {item["name"] for item in out}
     out.extend(
-        {"name": feature, "axis": "без описания", "high": "", "low": ""}
+        {"name": feature, "axis": "без описания", "title": feature, "high": "", "low": ""}
         for feature in row["names"] if feature not in named
     )
     return out
@@ -420,6 +427,9 @@ def indicator_series(run_id: int, symbol: str, name: str,
     return {
         "name": name,
         "version": version,
+        # Русское название — то же, что в селекторе и в панели узла графа:
+        # три места, один словарь naming.AXES.
+        "title": described.get("title", name),
         "high": described.get("high", ""),
         "low": described.get("low", ""),
         "points": points,

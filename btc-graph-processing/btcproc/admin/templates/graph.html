@@ -23,7 +23,7 @@
       {% endfor %}
     </select>
   </label>
-  <label>Редкость перехода
+  <label title="Ранг внутри прогона: треть переходов с наименьшим числом случаев — rare, средняя треть — uncommon, треть самых частых — common">Редкость перехода
     <select id="rarity">
       <option value="">все</option>
       <option value="rare">только rare</option>
@@ -80,6 +80,12 @@
     <span class="legend-item"><i class="line" style="background:var(--rarity-uncommon)"></i>uncommon</span>
     <span class="legend-item"><i class="line" style="background:var(--rarity-common)"></i>common</span>
     <span class="legend-item">толщина = сколько раз случался</span>
+    {# Редкость — ранг, а не абсолютная частота, и это главное недоразумение
+       страницы: «rare» читается как «случалось редко вообще», а означает
+       «реже других переходов этой монеты в этом прогоне». #}
+    <span class="legend-item muted">редкость = ранг по числу случаев внутри
+      прогона: нижняя треть переходов, средняя, верхняя ·
+      <a href="/help#rarity">что это значит</a></span>
   </div>
   <div class="legend-group">
     <span class="legend-item" id="graphInfo"></span>
@@ -314,8 +320,21 @@ async function showNode(node) {
 }
 
 function renderNode(d, info, run) {
+  // Признаки подписаны по-русски: `tf1h_dist_ema` читается не лучше, чем
+  // «состояние 42». Словарь один на проект и живёт в naming.py — подписи
+  // приходят с payload графа (feature_labels), заводить их в шаблоне нельзя:
+  // разъехавшись, панель называла бы признак иначе, чем имя самого узла,
+  // посчитанное из этого же признака. Сырой идентификатор остаётся в
+  // подсказке — он нужен, когда строку сверяют с моделью или с логом.
+  const labels = raw.feature_labels || {};
   const feats = Object.entries(d.top_features || {})
-    .map(([k, v]) => `<li><code>${k}</code> <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span></li>`)
+    .map(([k, v]) => {
+      const meta = labels[k] || { title: k, high: '', low: '' };
+      const phrase = v > 0 ? meta.high : meta.low;
+      return `<li title="${k}">${meta.title}
+        <span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span>
+        ${phrase ? `<span class="muted">${phrase}</span>` : ''}</li>`;
+    })
     .join('');
   // Атомы приходят из того же вызова, что и переходы: в payload графа им
   // делать нечего — он грузится на каждую перерисовку, а фон нужен только
@@ -339,7 +358,8 @@ function renderNode(d, info, run) {
        рост в ${pct(d.up_share)} случаев<br>
        Средний исход за 24ч: ${num(d.avg_ret_pct, 2)}%</p>
     <h4>Чем отличается от рынка в среднем</h4>
-    <p class="muted" style="font-size:11px;margin:2px 0">Отклонение признака в стандартных отклонениях</p>
+    <p class="muted" style="font-size:11px;margin:2px 0">Отклонение признака от среднего
+       по истории, в стандартных отклонениях. Наведи на строку — имя признака в модели</p>
     <ul class="feats">${feats || '<li class="muted">нет данных</li>'}</ul>
     <h4>Фон состояния</h4>
     <p class="muted" style="font-size:11px;margin:2px 0">Контекстные атомы, включая Smart Money.
@@ -372,8 +392,13 @@ cy.on('tap', 'edge', (evt) => {
        Редкость: <span class="tag ${d.rarity}">${d.rarity}</span><br>
        Рост после перехода: ${pct(d.up_share)} случаев<br>
        Средний исход за 24ч: ${num(d.avg_horizon_return, 2)}%</p>
-    <p class="muted">Чем реже переход, тем специфичнее сигнал — в btc-graph это
-       ось rarity, 15% итогового quality_score.</p>
+    <p class="muted">Редкость считается рангом: все переходы этого прогона
+       отсортированы по числу случаев, нижняя треть — <b>rare</b>, средняя —
+       <b>uncommon</b>, верхняя — <b>common</b>. Это не абсолютная частота:
+       у монеты с длинной историей «rare» — это сотни случаев.
+       Чем реже переход, тем специфичнее конфигурация; в оценке кандидата
+       это ось rarity — около 15% quality_score, точный вес в профиле монеты.
+       <a href="/help#rarity">Подробнее</a></p>
     <p><a href="/candidates?run=${run}&transition=${encodeURIComponent(d.label)}">
        кандидаты по этому переходу →</a></p>`;
 });

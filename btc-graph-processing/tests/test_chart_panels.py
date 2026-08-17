@@ -227,3 +227,7 @@ def test_catalog_offers_only_features_of_this_model(model):
     assert offered[0] == "rv_rank", "оси идут в порядке naming.AXES"
     assert {item["axis"] for item in catalog} == {"волатильность", "тренд",
                                                   "импульс", "объём"}
+    # Русское название едет вместе с признаком: в селекторе выбирают по
+    # смыслу, а идентификатор нужен только для сверки с моделью.
+    titles = {item["name"]: item["title"] for item in catalog}
+    assert titles["rsi"] == "RSI(14) на базовом ТФ"

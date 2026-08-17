@@ -467,7 +467,10 @@ function fillIndicatorSelect(items) {
     html += `<optgroup label="${axis}">`;
     html += list.map(item => {
       const hint = item.high ? ` — ${item.high} / ${item.low}` : '';
-      return `<option value="${item.name}">${item.name}${hint}</option>`;
+      // В списке — русское название, идентификатор остаётся в подсказке:
+      // выбирают признак по смыслу, а сверяют с моделью по имени.
+      return `<option value="${item.name}" title="${item.name}">` +
+             `${item.title || item.name}${hint}</option>`;
     }).join('');
     html += '</optgroup>';
   });
@@ -547,7 +550,7 @@ async function loadOneIndicator(name) {
 
   entry.values = new Map((data.points || []).map(p => [p.time, p.value]));
   entry.meta = {
-    label: (OSC_PRESETS[name] || {}).label || data.name,
+    label: (OSC_PRESETS[name] || {}).label || data.title || data.name,
     high: data.high, low: data.low, note: data.note, version: data.version,
   };
   // Точка на КАЖДЫЙ бар: там, где значения нет, уходит whitespace `{time}`.

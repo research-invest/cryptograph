@@ -263,5 +263,32 @@ def test_feature_catalog_is_exactly_the_vocabulary():
     axes = dict(naming.AXES)
 
     assert len(catalog) == sum(len(vocabulary) for _axis, vocabulary in naming.AXES)
-    for axis, feature, positive, negative in catalog:
-        assert axes[axis][feature] == (positive, negative)
+    for axis, feature, title, positive, negative in catalog:
+        assert axes[axis][feature] == (title, positive, negative)
+
+
+def test_every_feature_has_a_title(all_features):
+    """
+    Название — вторая половина словарной строки, и без неё интерфейс молча
+    показывает сырой `tf1h_dist_ema`. Пустая строка не ошибка синтаксиса,
+    поэтому проверяем явно: название есть, оно не совпадает с идентификатором
+    и написано по-русски.
+    """
+    for feature in all_features.columns:
+        if feature in naming._UNNAMED:
+            continue
+        title = naming.title_for_feature(feature)
+        assert title and title != feature, f"признак без названия: {feature}"
+
+
+def test_feature_labels_survives_unknown_feature():
+    """
+    Панель узла рисуется по top_features прогона, а он может содержать
+    признак старого набора, которого в словаре уже нет. Подпись обязана
+    деградировать до идентификатора, а не ронять ответ.
+    """
+    labels = naming.feature_labels(["rsi", "признака_нет"])
+
+    assert labels["rsi"]["title"] == "RSI(14) на базовом ТФ"
+    assert labels["rsi"]["low"] == "перепродан"
+    assert labels["признака_нет"] == {"title": "признака_нет", "high": "", "low": ""}
