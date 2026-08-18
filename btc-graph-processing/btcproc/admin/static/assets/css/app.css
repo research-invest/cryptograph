@@ -278,6 +278,11 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.flags { color: var(--muted); font-size: 11.5px; max-width: 230px;
            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kv td:first-child { width: 260px; color: var(--muted); }
+/* Имя состояния второй строкой под номером. Номер сам по себе не значит
+   ничего — он перенумеровывается каждым обучением, — а имя длинное и в одну
+   строку с числом не помещается ни в одной из трёх колонок сводки. */
+.cell-name { display: block; color: var(--muted); font-size: 11px;
+             line-height: 1.3; margin-top: 1px; }
 /* Долгий запрос PostgreSQL — подсвечивается вся строка: таблицу не читают
    сверху вниз, в неё смотрят и ищут, что красное. */
 tr.slow td { background: color-mix(in srgb, var(--red) 12%, transparent); }

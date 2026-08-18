@@ -515,6 +515,38 @@ def candidates_page(
     }
 
 
+#: Что попадает в общую сводку дашборда. WEAK не попадает намеренно: их
+#: большинство, и лента из них перестаёт быть сводкой.
+HIGHLIGHT_RATINGS = ("STRONG", "MODERATE")
+
+
+def recent_highlights(hours: int = 24, limit: int = 50) -> list[dict]:
+    """
+    Заметные кандидаты ПО ВСЕМ монетам за последние часы.
+
+    Единственное место в админке, которое смотрит поперёк монет: остальные
+    страницы работают внутри выбранной. Смысл именно в этом — оператор
+    открывает сводку, чтобы увидеть, где вообще что-то произошло, не
+    перебирая шесть монет по очереди.
+
+    Рейтинг ставит btc-graph уже после отправки, поэтому свежий кандидат
+    несколько секунд живёт с `rating IS NULL` и в выдачу не попадает — это
+    не потеря, а задержка.
+
+    Фильтр по `ts`, а не по `created_at`: интересует время бара, к которому
+    относится кандидат, а не момент, когда его посчитали (после `train` они
+    расходятся на всю историю).
+    """
+    return fetch_all(
+        "SELECT candidate_id, symbol, run_id, ts, transition_id, event_block_id, "
+        "research_side, research_score, sample_size, quality_score, rating, "
+        "warning_flags, emitted_at FROM candidates "
+        "WHERE rating = ANY(%s) AND ts >= now() - make_interval(hours => %s) "
+        "ORDER BY ts DESC, quality_score DESC NULLS LAST LIMIT %s",
+        (list(HIGHLIGHT_RATINGS), hours, limit),
+    )
+
+
 def candidate_detail(candidate_id: str) -> dict | None:
     return fetch_one("SELECT * FROM candidates WHERE candidate_id = %s", (candidate_id,))
 
@@ -578,9 +610,16 @@ def transition_options(run_id: int | None, limit: int = 200) -> list[str]:
 
 
 def top_groups(run_id: int, limit: int = 10) -> list[dict]:
-    """Крупнейшие состояния — где рынок проводит больше всего времени."""
+    """
+    Крупнейшие состояния — где рынок проводит больше всего времени.
+
+    `name` берётся вместе с числами намеренно: номер состояния сам по себе
+    не значит ничего (он перенумеровывается каждым train и осмыслен только
+    в паре `(symbol, run_id)`), поэтому таблица из одних номеров читается
+    как список идентификаторов, а не как описание рынка.
+    """
     return fetch_all(
-        "SELECT group_id, size, share, dominant_bias, up_share, avg_ret_pct "
+        "SELECT group_id, name, size, share, dominant_bias, up_share, avg_ret_pct "
         "FROM market_groups WHERE run_id = %s ORDER BY size DESC LIMIT %s",
         (run_id, limit),
     )

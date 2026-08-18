@@ -97,13 +97,20 @@
 
   <div>
     <h2>Крупнейшие состояния</h2>
-    <p class="hint" style="margin-top:0">Где рынок проводит больше всего времени</p>
+    <p class="hint" style="margin-top:0">Где рынок проводит больше всего времени.
+      Имя выведено из отклонений признаков — номера при каждом обучении разные,
+      имена сравнимы</p>
     <table>
       <thead><tr><th>Состояние</th><th>Доля</th><th>Дальше</th><th>Рост</th></tr></thead>
       <tbody>
       {% for row in top_groups %}
         <tr>
-          <td><a href="/graph?run={{ run_id }}">{{ '%g'|format(row.group_id) }}</a></td>
+          {# Ссылка ведёт в поиск по графу: номер там же и подсвечивается.
+             symbol обязателен — «состояние 7» существует у каждой монеты. #}
+          <td><a href="/graph?symbol={{ symbol }}&run={{ run_id }}&find={{ '%g'|format(row.group_id) }}"
+                 title="показать на графе">
+            <b>{{ '%g'|format(row.group_id) }}</b>
+            <span class="cell-name">{{ row.name or 'без имени' }}</span></a></td>
           <td class="num">{{ '%.1f'|format(row.share * 100) }}%</td>
           <td>
             {%- if row.dominant_bias == 'long_skew' -%}<span class="long">чаще рост</span>
@@ -140,6 +147,49 @@
     </table>
   </div>
 </section>
+
+{# Единственный блок страницы, смотрящий поперёк монет. Всё выше — про ту,
+   что выбрана в шапке; здесь наоборот, смысл в том, чтобы не перебирать
+   шесть монет по очереди в поисках «а где что-то было». #}
+<h2>Заметное по всем монетам · {{ highlight_hours }} ч</h2>
+<p class="hint" style="margin-top:0">
+  Только <span class="tag strong">STRONG</span> и <span class="tag moderate">MODERATE</span>;
+  WEAK не показывается — их большинство. Клик по строке открывает график монеты
+  на этом баре. Кандидат — исследовательская идея, а не торговый сигнал:
+  ни входа, ни стопа, ни размера позиции в нём нет.
+</p>
+<div class="scroll-y">
+<table>
+  <thead>
+    <tr>
+      <th>Время (UTC)</th><th>Монета</th><th>Рейтинг</th><th>Сторона</th>
+      <th>quality</th><th>Переход</th><th>Выборка</th><th>Флаги</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in highlights %}
+    {# focus — время бара в секундах; страница графика подводит окно к нему.
+       Прогон в ссылке не нужен: раскраска и маркеры берутся по корню модели. #}
+    <tr onclick="location.href='/chart?symbol={{ row.symbol }}&focus={{ row.ts.timestamp()|int }}'">
+      <td>{{ row.ts|utc }}</td>
+      <td><b>{{ row.symbol }}</b></td>
+      <td><span class="tag {{ row.rating|lower }}">{{ row.rating }}</span></td>
+      <td class="{{ row.research_side }}">{{ row.research_side }}</td>
+      <td class="num">{{ '%.3f'|format(row.quality_score) if row.quality_score is not none else '—' }}</td>
+      <td><code>{{ row.transition_id }}</code></td>
+      <td class="num">{{ row.sample_size }}</td>
+      <td class="flags">{{ (row.warning_flags or [])|join(', ') or '—' }}</td>
+      <td><a href="/candidates/{{ row.candidate_id }}" onclick="event.stopPropagation()">карточка</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="muted">
+      За последние {{ highlight_hours }} ч ни одной монете не выпало STRONG или MODERATE.
+      Это обычное состояние, а не поломка.
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
 
 <h2>Последние прогоны</h2>
 {% include "partials/runs_table.html" %}

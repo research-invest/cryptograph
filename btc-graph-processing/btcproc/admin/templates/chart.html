@@ -361,6 +361,10 @@ function stateMarkers(bars, taken) {
 // монеты по умолчанию и молча раскрасил чужой график.
 const SYMBOL = {{ symbol | tojson }};
 
+// Время бара в секундах, если пришли по ссылке «показать этого кандидата».
+// null при обычном открытии страницы.
+const FOCUS = {{ focus | tojson }};
+
 async function load() {
   const params = new URLSearchParams({
     run: el('run').value, limit: el('limit').value, symbol: SYMBOL,
@@ -838,6 +842,26 @@ function scheduleAutoReload() {
 
 scheduleAutoReload();
 
-load();
+// Наводка на бар кандидата (`?focus=`). Окно данных не сужаем: кандидат из
+// сводки свежий, а 1500 баров базового ТФ — это две недели, он в них есть.
+// Двигаем только вид, чтобы соседние бары остались под рукой прокруткой.
+function focusAt(time) {
+  if (!bars.length) return;
+  let idx = 0;
+  let best = Infinity;
+  bars.forEach((bar, i) => {
+    const distance = Math.abs(bar.time - time);
+    if (distance < best) { best = distance; idx = i; }
+  });
+  // Асимметрично: интересен бар и то, что было ДО него, — исход по кандидату
+  // ещё не наступил, а контекст входа весь слева.
+  chart.timeScale().setVisibleLogicalRange({ from: idx - 90, to: idx + 30 });
+  fitPrice();
+  // Инспектор внизу заполняем сразу: иначе он пуст до первого наведения, и
+  // непонятно, какой именно бар нам показали.
+  showBar(bars[idx]);
+}
+
+load().then(() => { if (FOCUS) focusAt(FOCUS); });
 </script>
 {% endblock %}

@@ -84,10 +84,28 @@ def human_ts(ts) -> str:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def utc_minutes(value) -> str:
+    """
+    Время бара в UTC, до минут.
+
+    Соединение с БД пояс не задаёт, поэтому TIMESTAMPTZ приезжает в поясе
+    процесса: на боевом это UTC, на ноутбуке разработчика — нет. Подписать
+    колонку «UTC» и напечатать местное время значило бы разойтись с графиком,
+    который ось честно рисует в UTC, — и выглядело бы это как сдвиг данных,
+    а не как разница поясов.
+    """
+    if value is None:
+        return "—"
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
 templates.env.filters["bytes"] = human_bytes
 templates.env.filters["duration"] = human_seconds
 templates.env.filters["ago"] = human_ago
 templates.env.filters["ts"] = human_ts
+templates.env.filters["utc"] = utc_minutes
 
 app = FastAPI(title="crypto-graph admin", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -248,6 +266,12 @@ def health():
 
 
 # ─── Страницы ───────────────────────────────────────────────────────────────
+#: Окно общей сводки на дашборде. Сутки — потому что `live` идёт раз в
+#: полчаса: за меньшее окно у половины монет не окажется ни одного бара с
+#: заметным кандидатом, и блок будет выглядеть сломанным.
+HIGHLIGHT_HOURS = 24
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     symbol = current_symbol(request)
@@ -263,12 +287,16 @@ def dashboard(request: Request):
         recent_runs=runs_repo.list_runs(6),
         top_groups=queries.top_groups(run_id, 10) if run_id else [],
         top_transitions=queries.transitions_table(run_id, 10) if run_id else [],
+        # Единственный блок страницы, который смотрит поперёк монет:
+        # заголовок и все карточки выше — про выбранную.
+        highlights=queries.recent_highlights(HIGHLIGHT_HOURS, 50),
+        highlight_hours=HIGHLIGHT_HOURS,
         run_id=run_id,
     )
 
 
 @app.get("/graph", response_class=HTMLResponse)
-def graph_page(request: Request, run: str | None = None):
+def graph_page(request: Request, run: str | None = None, find: str | None = None):
     # Список прогонов фильтруется по монете: выбрать в нём чужой прогон
     # значило бы получить граф другого инструмента под заголовком этого.
     #
@@ -283,15 +311,25 @@ def graph_page(request: Request, run: str | None = None):
     # часов стал бы пустым для всех монет разом.
     symbol = current_symbol(request)
     run_id = opt_int(run) or _latest_train_id(symbol)
+    # ?find= — наводка с дашборда: «это состояние, покажи его на графе».
+    # Значение только подставляется в поле поиска, дальше работает та же
+    # клиентская логика, что и при ручном вводе.
     return page(request, "graph.html", active="graph", symbol=symbol, run_id=run_id,
+                find=(find or "").strip(),
                 runs=runs_repo.list_runs(20, symbol, kind="train"))
 
 
 @app.get("/chart", response_class=HTMLResponse)
-def chart_page(request: Request, run: str | None = None):
+def chart_page(request: Request, run: str | None = None, focus: str | None = None):
+    # ?focus=<unix-время> — переход «показать этого кандидата на графике».
+    # Прогон в ссылке не нужен и намеренно не передаётся: и раскраска, и
+    # маркеры кандидатов берутся по КОРНЮ модели (model_run_scope), а не по
+    # одному run_id, поэтому свежий train показывает кандидата любого своего
+    # live-прогона.
     symbol = current_symbol(request)
     run_id = opt_int(run) or _latest_train_id(symbol)
     return page(request, "chart.html", active="chart", symbol=symbol, run_id=run_id,
+                focus=opt_int(focus),
                 runs=runs_repo.list_runs(20, symbol))
 
 

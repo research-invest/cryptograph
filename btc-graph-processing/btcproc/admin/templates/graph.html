@@ -57,7 +57,8 @@
     </select>
   </label>
   <label>Найти состояние
-    <input type="text" id="findNode" placeholder="напр. 7" style="width: 90px">
+    <input type="text" id="findNode" placeholder="напр. 7" value="{{ find or '' }}"
+           style="width: 90px">
   </label>
   <label><input type="checkbox" id="hideIsolated" checked> скрывать без связей</label>
 
@@ -405,16 +406,24 @@ cy.on('tap', 'edge', (evt) => {
 
 cy.on('tap', (evt) => { if (evt.target === cy) resetFocus(); });
 
-el('findNode').addEventListener('input', (e) => {
-  const value = e.target.value.trim();
+// Подсветка искомого состояния. Вынесена из обработчика, потому что тот же
+// путь нужен ссылке с дашборда (`?find=`): поле уже заполнено сервером, а
+// события `input` при этом не происходит.
+function highlightFound() {
+  const value = el('findNode').value.trim();
   cy.nodes().removeClass('found');
   if (!value) return;
   const node = cy.nodes().filter(n => String(n.data('label')) === value);
   if (node.length) {
     node.addClass('found');
     cy.animate({ center: { eles: node }, zoom: 1.2 }, { duration: 250 });
+    // Панель справа открывается сама: переход с дашборда — это «покажи мне
+    // вот это состояние», и заставлять ещё раз кликать по узлу незачем.
+    showNode(node);
   }
-});
+}
+
+el('findNode').addEventListener('input', highlightFound);
 
 ['rarity', 'run'].forEach(id => el(id).addEventListener('change', load));
 ['topEdges', 'minCount', 'hideIsolated'].forEach(id => el(id).addEventListener('change', render));
@@ -431,6 +440,8 @@ window.addEventListener('btcproc:theme', () => {
   render();
 });
 
-load();
+// Первая загрузка. Наводку из `?find=` применяем после неё — до отрисовки
+// графа искать в нём нечего.
+load().then(highlightFound);
 </script>
 {% endblock %}
