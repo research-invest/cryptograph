@@ -41,6 +41,83 @@ def test_outcomes_align_with_prices(bars):
     assert outcomes["valid"].iloc[:-horizon].all()
 
 
+def test_range_outcomes_align_with_prices(bars):
+    """
+    Три величины размаха на том же окне (t, t+H], что и ret/mfe/mae.
+
+    Считаются руками по ценам, а не сверяются с собственной реализацией: это
+    единственный способ поймать сдвиг окна на бар — ошибку, которая не падает,
+    а тихо подмешивает в исход бар, известный на момент входа.
+    """
+    horizon = 96
+    outcomes = compute_outcomes(bars, horizon)
+    i = 500
+    window = slice(i + 1, i + 1 + horizon)
+    entry = bars["close"].iloc[i]
+
+    expected_range = (bars["high"].iloc[window].max()
+                      - bars["low"].iloc[window].min()) / entry * 100
+    assert outcomes["range_pct"].iloc[i] == pytest.approx(expected_range)
+
+    expected_rv = np.log(bars["close"]).diff().iloc[window].std(ddof=1)
+    assert outcomes["rv_fwd"].iloc[i] == pytest.approx(expected_rv)
+
+    # range_ratio — тот же размах, поделённый на ATR14(t)·√H в процентах.
+    from btcproc.features import indicators as ind
+    atr_pct = ind.atr(bars, 14).iloc[i] / entry * 100 * np.sqrt(horizon)
+    assert outcomes["range_ratio"].iloc[i] == pytest.approx(expected_range / atr_pct)
+
+
+def test_range_outcomes_do_not_look_ahead_of_the_entry_bar(bars):
+    """
+    Размах считается по барам СТРОГО ПОСЛЕ входа: подмена бара входа
+    гигантской свечой не должна менять ни одну из трёх величин.
+
+    Инвариант 4 в применении к новым колонкам. Ошибка на один бар здесь
+    сделала бы `range_ratio` частично известным на момент входа, и вся
+    статистика размаха стала бы фикцией — ровно как это было бы с признаком.
+    """
+    horizon = 96
+    i = 500
+    spiked = bars.copy()
+    spiked.iloc[i, spiked.columns.get_loc("high")] = bars["high"].iloc[i] * 5
+    spiked.iloc[i, spiked.columns.get_loc("low")] = bars["low"].iloc[i] / 5
+
+    before = compute_outcomes(bars, horizon)
+    after = compute_outcomes(spiked, horizon)
+    for column in ("range_pct", "rv_fwd"):
+        assert after[column].iloc[i] == pytest.approx(before[column].iloc[i]), column
+    # range_ratio через ATR14(t) от бара входа зависеть ОБЯЗАН — это его
+    # знаменатель. Меняется он, а не числитель.
+    assert after["range_pct"].iloc[i] == pytest.approx(before["range_pct"].iloc[i])
+
+
+def test_extra_horizons_are_separate_frames(bars, monkeypatch):
+    """
+    Дополнительные горизонты считаются рядом и не трогают основной.
+
+    `horizon` входит в первичный ключ `outcomes`, поэтому «рядом» — это
+    буквально: те же бары, другая метка. Проверяется, что горизонт реально
+    другой (окно короче — размах меньше) и что основной в список не попадает
+    дважды.
+    """
+    import dataclasses
+
+    from btcproc.candidates.outcomes import extra_horizon_frames
+
+    monkeypatch.setattr(
+        config, "data",
+        dataclasses.replace(config.data, extra_horizons=["4h", "24h"]),
+    )
+    frames = extra_horizon_frames(bars)
+
+    assert set(frames) == {"4h"}, "основной горизонт не должен считаться дважды"
+    main = compute_outcomes(bars)
+    common = frames["4h"]["range_pct"].notna() & main["range_pct"].notna()
+    assert (frames["4h"]["range_pct"][common]
+            <= main["range_pct"][common] + 1e-9).all()
+
+
 def test_outcomes_marks_gaps_invalid(bars):
     """Дыра в данных внутри горизонта делает метку невалидной."""
     holed = pd.concat([bars.iloc[:1000], bars.iloc[1100:]])
@@ -82,6 +159,50 @@ def test_generated_candidates_match_btc_graph_schema(pipeline_data):
         assert 0.0 <= parsed.research_score <= 1.0
         assert parsed.valid_label_count + parsed.invalid_label_count == parsed.sample_size
         assert parsed.long_outcome_count + parsed.short_outcome_count == parsed.valid_label_count
+        # Поля размаха присутствуют и пусты: модели в этой сборке нет.
+        assert parsed.expected_range_ratio_p50 is None
+        assert parsed.range_regime is None
+
+
+def test_candidates_with_range_fields_match_btc_graph_schema(pipeline_data):
+    """
+    Вторая половина контракта: кандидат С ЗАПОЛНЕННЫМ размахом тоже обязан
+    пройти модель приёмника.
+
+    Проверять только пустые поля было бы самообманом — схема ломается ровно
+    тогда, когда в них появляются значения: у `range_regime` в приёмнике не
+    строка, а enum, и опечатка в имени режима вылезла бы только в проде.
+    """
+    pytest.importorskip("pydantic")
+    Candidate = _load_btc_graph_model()
+
+    rarity = dict(zip(pipeline_data["transitions"]["transition_id"],
+                      pipeline_data["transitions"]["rarity"]))
+    blocks = pipeline_data["blocks"].set_index("event_block_id").to_dict("index")
+    snapshots = pipeline_data["snapshots"]
+
+    # Все три режима разом: enum приёмника обязан знать каждый.
+    stamps = pd.DatetimeIndex(sorted(set(snapshots["ts"])))
+    view = pd.DataFrame({
+        "p50": np.linspace(0.5, 2.0, len(stamps)),
+        "p90": np.linspace(1.0, 4.0, len(stamps)),
+        "range_lift": np.tile([0.7, 1.0, 1.4], len(stamps))[:len(stamps)],
+        "range_regime": np.tile(["compressed", "normal", "expanded"],
+                                len(stamps))[:len(stamps)],
+    }, index=stamps)
+
+    produced = list(cand.generate(snapshots, rarity, blocks, "BTCUSDT",
+                                  cfg=TEST_CAND_CFG, range_view=view))
+    assert produced
+    seen = set()
+    for item in produced[:200]:
+        parsed = Candidate(**cand.strip_meta(item))
+        assert parsed.expected_range_ratio_p50 is not None
+        assert parsed.range_lift is not None
+        seen.add(parsed.range_regime.value)
+    assert seen == {"compressed", "normal", "expanded"}, (
+        f"проверены не все режимы: {seen}"
+    )
 
 
 def test_candidate_sample_uses_only_matured_past(pipeline_data):

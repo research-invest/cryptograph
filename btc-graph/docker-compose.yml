@@ -11,6 +11,31 @@ services:
     volumes:
       - postgres_data:/home/postgres/pgdata/data
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    # Память задаётся здесь, а не оставляется на timescaledb-tune. Тюнер
+    # отрабатывает один раз при создании тома и считает, что машина
+    # принадлежит только базе: на 8 ГБ VPS он выставил shared_buffers=1985MB
+    # и autovacuum_work_mem, унаследованный от maintenance_work_mem=993MB.
+    # Первое — постоянные 2 ГБ shmem в выдаче docker stats при базе в 3 ГБ и
+    # попадании в кэш 99.9%; второе — до 10 воркеров по 993 МБ на машине,
+    # где рядом живут Neo4j, celery и python-процессы прогонов. Аргументы
+    # командной строки имеют приоритет над postgresql.conf, поэтому правка
+    # тюнера остаётся в файле, но не действует.
+    #
+    # pg_stat_statements тут же: он грузится только из shared_preload_libraries,
+    # то есть включается исключительно рестартом. Без него видно «что идёт
+    # прямо сейчас» (pg_stat_activity), но не «что грузило базу за сутки».
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - autovacuum_work_mem=128MB
+      - -c
+      - shared_preload_libraries=timescaledb,pg_stat_statements
+      - -c
+      - pg_stat_statements.max=5000
+      - -c
+      - pg_stat_statements.track=top
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U btc_user -d btc_graph"]
       interval: 10s

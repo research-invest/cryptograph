@@ -10,6 +10,14 @@
 «range_ratio считается автономно, в самом скрипте, из баров и ATR, без правки
 outcomes.py и без правки candidates/builder.py»).
 
+**С 2026-08-19 первая половина этой оговорки больше не действует** (задача D
+`crypto-graph/docs/tz_range_horizons_19-08-26.md`): `range_ratio` считает и
+разметка исходов, и формула переехала туда — в единственный модуль, которому
+положено смотреть вперёд. Замеры продолжают звать её отсюда; важно только,
+что реализация одна. `candidates/builder.py` при этом по-прежнему не тронут:
+поля размаха в кандидате не заведены, и решение об этом отложено (раздел 47.10
+журнала).
+
 Зависимость наблюдений — та же природа (перекрытие горизонта), поэтому
 переиспользуется `stationary_block_indices` из `lift.py`, но статистика
 другая: Spearman вместо разницы долей, а нулевая гипотеза воспроизводится
@@ -42,23 +50,11 @@ import numpy as np
 import pandas as pd
 
 from btcproc.analysis.lift import CHUNK_CELLS, stationary_block_indices
-
-
-def forward_range_ratio(base: pd.DataFrame, atr14: pd.Series, horizon_bars: int) -> pd.Series:
-    """
-    range_ratio(t) = размах цены за (t, t+H] баров, нормированный на ATR14(t)
-    и на √H (размах растёт примерно как корень из времени — без нормировки
-    величина мерила бы длину горизонта, а не рынок).
-
-    NaN на последних horizon_bars барах истории (окно не помещается) и там,
-    где ATR14 недоступен (прогрев).
-    """
-    high, low, close = base["high"], base["low"], base["close"]
-    fwd_high = high.shift(-1).rolling(horizon_bars, min_periods=horizon_bars).max().shift(-(horizon_bars - 1))
-    fwd_low = low.shift(-1).rolling(horizon_bars, min_periods=horizon_bars).min().shift(-(horizon_bars - 1))
-    range_pct = (fwd_high - fwd_low) / close * 100.0
-    atr_pct = (atr14 / close * 100.0) * math.sqrt(horizon_bars)
-    return range_pct / atr_pct.replace(0.0, np.nan)
+# `range_ratio` с 2026-08-19 считает и разметка исходов, поэтому формула
+# живёт там — в единственном модуле, которому положено смотреть вперёд.
+# Здесь остаётся исторический адрес: им пользуются три скрипта замера и
+# тесты, и ломать их ради переезда незачем.
+from btcproc.candidates.outcomes import forward_range_ratio  # noqa: F401
 
 
 def _aligned(*series: pd.Series) -> list[np.ndarray]:

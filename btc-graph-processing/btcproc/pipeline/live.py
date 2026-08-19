@@ -270,8 +270,16 @@ def run_live(
         # candidate_id детерминирован (symbol|ts|переход|блок|смещение), запись
         # идёт upsert'ом, а emitted_at при этом не сбрасывается — повторно
         # отправлен уже отправленный кандидат не будет.
+        # Прогноз размаха моделью ТОГО ЖЕ прогона, что дал модель состояний.
+        # `load_range_model` отдаёт только прошедшую гейт (`calibrated`), а
+        # `view` — только бары строго после конца её обучения: на исторических
+        # она обучалась, и её квантили там запоминание, а не прогноз. Пустой
+        # результат — штатный случай, кандидаты просто идут без размаха.
+        range_view = _range_view(model_run_id, base, features, run_id)
+
         fresh = []
-        for candidate in cand.generate(snapshots, rarity_map, block_map, symbol):
+        for candidate in cand.generate(snapshots, rarity_map, block_map, symbol,
+                                       range_view=range_view):
             ts = pd.Timestamp(candidate["_meta"]["ts"])
             if ts >= cutoff:
                 fresh.append(candidate)
@@ -311,3 +319,38 @@ def run_live(
         logger.exception("Live-прогон %s упал", run_id)
         runs.fail_run(run_id, f"{type(exc).__name__}: {exc}")
         raise
+
+
+def _range_view(model_run_id: int, base, features, run_id: int):
+    """
+    Прогноз размаха для сборки кандидата, или None.
+
+    Ни одна причина отказа не роняет прогон: модель может быть не обучена (флаг
+    выключен на момент train), не пройти гейт калибровки, не прочитаться после
+    обновления sklearn или разойтись набором признаков. Во всех случаях
+    кандидаты выпускаются как раньше, а причина уходит в лог прогона — молчать
+    здесь нельзя, иначе «поля размаха вдруг исчезли» будет неотличимо от
+    «модель не завелась».
+    """
+    if not config.range_forecast.enabled:
+        return None
+    try:
+        from btcproc.analysis import range_forecast as rf
+
+        model = repo.load_range_model(model_run_id)
+        if model is None:
+            runs.log(run_id, "Модель размаха недоступна (нет или не прошла гейт) — "
+                             "кандидаты без размаха")
+            return None
+        view = rf.view(model, base, features,
+                       log=lambda msg, *a: runs.log(run_id, msg % a if a else msg))
+        if view.empty:
+            runs.log(run_id, "Прогноз размаха пуст: все бары окна не позже конца "
+                             "обучения модели")
+            return None
+        runs.log(run_id, f"Прогноз размаха на {len(view)} барах")
+        return view
+    except Exception as exc:  # noqa: BLE001 — прогон важнее украшения
+        logger.exception("Прогноз размаха не построен")
+        runs.log(run_id, f"Прогноз размаха не построен: {exc}")
+        return None

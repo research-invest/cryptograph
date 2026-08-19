@@ -140,6 +140,10 @@ CREATE TABLE IF NOT EXISTS outcomes (
     mfe_pct  DOUBLE PRECISION,
     mae_pct  DOUBLE PRECISION,
     is_up    BOOLEAN,
+    -- Размах на том же окне: см. шапку candidates/outcomes.py.
+    range_pct   DOUBLE PRECISION,
+    rv_fwd      DOUBLE PRECISION,
+    range_ratio DOUBLE PRECISION,
     valid    BOOLEAN          NOT NULL,
     PRIMARY KEY (symbol, ts, horizon)
 );
@@ -271,6 +275,49 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAUL
 
 CREATE INDEX IF NOT EXISTS runs_running_idx ON runs (status, updated_at DESC)
     WHERE status = 'running';
+
+-- ─── Размах как предмет разметки (2026-08-19) ───────────────────────────────
+-- Задача D `crypto-graph/docs/tz_range_horizons_19-08-26.md`, блок C аудита
+-- §C1. До этого `outcomes` описывал только НАПРАВЛЕНИЕ и путь (ret/mfe/mae) —
+-- а замер раздела 47 показал, что предсказуемо здесь как раз не направление.
+-- Три величины размаха считает `candidates/outcomes.py`, их смысл и
+-- предупреждение про знаменатель ATR14 — в шапке того модуля.
+--
+-- Колонки добавляются к СУЩЕСТВУЮЩЕЙ таблице, а не заводится новая: у
+-- `outcomes` в первичном ключе уже есть `horizon`, и разные горизонты живут
+-- строками рядом. Старые строки не переписываются — ближайший прогон
+-- заполнит новые колонки штатным upsert'ом, а до него они NULL, что честно
+-- означает «не считалось».
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS range_pct   DOUBLE PRECISION;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS rv_fwd      DOUBLE PRECISION;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS range_ratio DOUBLE PRECISION;
+
+-- ─── Модель размаха (2026-08-19) ────────────────────────────────────────────
+-- Квантильный регрессор `analysis/range_forecast.py`, раздел 48 журнала.
+-- Устроена по образцу `state_models`: одна модель на прогон обучения, живёт
+-- во всех последующих `live` (связь через `runs.params.model_run_id`, тот же
+-- `runs.model_run_scope`).
+--
+-- `calibrated` — прошла ли модель гейт из трёх условий на отложенной части.
+-- Хранятся ОБЕ: непрошедшая нужна для разбора в админке, но её числа в
+-- кандидата не попадают. Решение не выбрасывать её принято ровно потому, что
+-- «модели нет» и «модель есть, но не годится» — разные диагнозы, а по
+-- отсутствию строки их не отличить.
+--
+-- `artifact` — joblib-пикл (внутри обученные бустинги, в JSON они не
+-- сериализуются). Версия sklearn лежит внутри артефакта: пиклы между
+-- версиями библиотеки несовместимы, и загрузчик обязан это проверять.
+CREATE TABLE IF NOT EXISTS range_models (
+    run_id        BIGINT PRIMARY KEY,
+    version       TEXT NOT NULL,
+    horizon       TEXT NOT NULL,
+    normalization TEXT NOT NULL,
+    calibrated    BOOLEAN NOT NULL,
+    train_end     TIMESTAMPTZ,
+    metrics       JSONB,
+    artifact      BYTEA,
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- ─── Уведомления (вебхуки) ──────────────────────────────────────────────────
 -- Правило = «куда слать» + «что именно слать» (фильтр по кандидату, теми же

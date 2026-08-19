@@ -94,6 +94,21 @@ class DataConfig:
     # Спека монеты его перекрывает (см. SymbolSpec.start_date).
     history_start: str = _env("HISTORY_START", "2017-08-01")
     horizon: str = _env("HORIZON", "24h")
+    # Горизонты, которые размечаются В ДОПОЛНЕНИЕ к основному и только
+    # СОХРАНЯЮТСЯ: ни кандидаты, ни модель состояний их не видят. Заведены
+    # задачей D `crypto-graph/docs/tz_range_horizons_19-08-26.md`: размах, в
+    # отличие от направления, на разных горизонтах — разный вопрос
+    # (раздел 47 журнала), и считать его каждый раз заново из баров дорого.
+    #
+    # **Это платная опция.** Каждый лишний горизонт — ещё один комплект строк
+    # в `outcomes` (на шести монетах это порядка миллиона строк и сотен
+    # мегабайт, навсегда) плюс один проход скользящих окон в `train`. В `live`
+    # цены нет вовсе: он исходы не сохраняет, а считает их в памяти и только
+    # на основном горизонте. Пустое значение выключает добавку целиком, и
+    # ничего, кроме доступности этих строк для замеров, не ломается.
+    extra_horizons: list[str] = field(
+        default_factory=lambda: _env_list("OUTCOME_EXTRA_HORIZONS", "4h,12h")
+    )
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "./data")))
     # Эндпоинт для добора свежего хвоста баров. Вынесен в окружение, потому
     # что api.binance.com отвечает 451 Unavailable For Legal Reasons из ряда
@@ -137,6 +152,22 @@ class DataConfig:
     def bars_per(self, timeframe: str) -> int:
         """Сколько базовых баров в одном баре старшего ТФ."""
         return TIMEFRAME_MINUTES[timeframe] // self.base_minutes
+
+    def bars_of_horizon(self, label: str) -> int:
+        """
+        «4h» → число базовых баров. Отдельно от `bars_per`, потому что
+        горизонт — не таймфрейм: `TIMEFRAME_MINUTES` перечисляет сетки, на
+        которых есть бары, а горизонтом может быть любая длительность.
+        """
+        unit = label[-1]
+        value = int(label[:-1])
+        minutes = value * {"m": 1, "h": 60, "d": 1440}[unit]
+        if minutes % self.base_minutes:
+            raise ValueError(
+                f"горизонт {label} не кратен базовому бару "
+                f"({self.base_minutes} мин)"
+            )
+        return minutes // self.base_minutes
 
 
 @dataclass(frozen=True)
@@ -287,6 +318,38 @@ class StatesConfig:
     # Подвыборка для силуэта — считать его на 300k точках бессмысленно долго.
     silhouette_sample: int = _env_int("STATES_SILHOUETTE_SAMPLE", 4000)
     random_state: int = 42
+
+
+@dataclass(frozen=True)
+class RangeForecastConfig:
+    """
+    Квантильный регрессор размаха (`analysis/range_forecast.py`, раздел 48).
+
+    **Флаг по умолчанию выключен, и это не осторожность, а порядок ввода**,
+    закреплённый уроком 34.10 и повторённый для деривативов (39): сначала
+    код и данные, потом флаг, и только на контуре, где уже есть чем считать.
+    Включение стоит `train` дороже: гейт обучает модель на 70% истории,
+    затем боевая версия переобучается на всей, — то есть примерно
+    полуторакратный набор из восьми квантильных бустингов на монету.
+
+    `enabled` включает обучение в `train`. Поля в кандидате появляются, только
+    если модель ПРОШЛА гейт: непрошедшая сохраняется для разбора, но её числа
+    наружу не идут.
+    """
+
+    enabled: bool = _env_bool("RANGE_FORECAST_ENABLED", False)
+    #: Нормировка цели. `atr14` совпадает с разделами 36, 47 и 48 и потому
+    #: сравнима с ними; вторая (`atr_h`) остаётся выбором ЗАМЕРА.
+    normalization: str = _env("RANGE_FORECAST_NORM", "atr14")
+    #: Зерно бустинга. Меняет результат слабо (48.6), но фиксируется, чтобы
+    #: два прогона одной истории давали одинаковую модель.
+    seed: int = _env_int("RANGE_FORECAST_SEED", 42)
+    #: Доля истории под обучение при расчёте гейта. Та же, что у Ш0 и D1.
+    train_frac: float = _env_float("RANGE_FORECAST_TRAIN_FRAC", 0.7)
+    #: Реплик блочного бутстрапа в гейте. Меньше, чем в замере (2000), —
+    #: гейт бинарный, а не публикуемое число; разрешения 500 реплик хватает
+    #: на порог 0.05 с запасом.
+    gate_n_boot: int = _env_int("RANGE_FORECAST_GATE_BOOT", 500)
 
 
 @dataclass(frozen=True)
@@ -704,6 +767,7 @@ db = DBConfig()
 runs = RunsConfig()
 states = StatesConfig()
 candidates = CandidateConfig()
+range_forecast = RangeForecastConfig()
 smc = SMCConfig()
 fgi = FearGreedConfig()
 deriv = DerivConfig()

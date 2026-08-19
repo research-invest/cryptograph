@@ -525,6 +525,103 @@ def ingest_metrics(
         raise typer.Exit(code=1)
 
 
+@app.command("fit-range")
+def fit_range(
+    symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно указать несколько раз"),
+    all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
+    run: int = typer.Option(
+        None, help="Прогон, под которым сохранить модель; по умолчанию последний train монеты"
+    ),
+) -> None:
+    """
+    Обучить квантильный регрессор размаха под уже существующую модель
+    состояний, НЕ запуская train.
+
+    Отдельная команда нужна ровно потому, что `train` — дорогая и разрушительная
+    операция: он перенумеровывает group_id и сносит граф монеты в Neo4j
+    (инвариант 13). Регрессор размаха от кластеризации не зависит вовсе (в этом
+    его смысл — журнал 47.8), поэтому заводить его через полный прогон было бы
+    бессмысленной платой.
+
+    Модель сохраняется под run_id указанной модели состояний, и ближайший `live`
+    подхватывает её штатно — связь та же, что у самой модели состояний.
+    Непрошедшая гейт модель тоже сохраняется, но помечена calibrated=false и в
+    кандидата не идёт.
+
+    Флаг RANGE_FORECAST_ENABLED здесь НЕ проверяется: команда запускается руками
+    и делает ровно то, о чём её просят. Флаг решает, обучать ли модель внутри
+    train и брать ли её в live.
+    """
+    from btcproc import config
+    from btcproc.analysis import range_forecast as rf
+    from btcproc.db import repo, runs as runs_repo
+    from btcproc.features import builder as feat
+    from btcproc.ingest import bars
+
+    specs = _resolve(symbol, all_symbols)
+    cfg = config.range_forecast
+    failed: dict[str, str] = {}
+    passed, rejected = [], []
+
+    for spec in specs:
+        ticker = spec.ticker
+        typer.echo(f"\n=== {ticker} ===")
+        try:
+            model_run = run
+            if model_run is None:
+                latest = runs_repo.latest_completed_run("train", ticker)
+                if not latest:
+                    raise RuntimeError("нет завершённого train — под что сохранять модель")
+                model_run = int(latest["run_id"])
+
+            start = spec.start_date()
+            base = bars.load_ohlcv(ticker, config.data.base_tf, start, None)
+            if base.empty:
+                raise RuntimeError("в БД нет баров — сначала ingest")
+            context = {
+                tf: bars.load_ohlcv(ticker, tf, start, None)
+                for tf in config.data.context_tfs
+            }
+            typer.echo(f"  баров {len(base)}, признаки…")
+            features = feat.build_features(base, context, symbol=ticker)
+
+            frame, target, benchmark = rf.design_matrix(
+                base, features, config.data.horizon, cfg.normalization,
+                config.data.base_minutes,
+            )
+            model, gate = rf.fit_production(
+                ticker, frame, target, benchmark,
+                horizon=config.data.horizon, normalization=cfg.normalization,
+                seed=cfg.seed, gap=config.data.horizon_bars,
+                train_frac=cfg.train_frac, n_boot=cfg.gate_n_boot,
+                log=lambda msg: typer.echo(f"  {msg}"),
+            )
+            repo.save_range_model(model_run, model, gate, config.data.horizon,
+                                  cfg.normalization)
+        except Exception as exc:  # noqa: BLE001 — одна монета не роняет остальные
+            failed[ticker] = str(exc)
+            typer.echo(typer.style(f"ОШИБКА {ticker}: {exc}", fg=typer.colors.RED))
+            continue
+
+        where = f"сохранена под прогоном #{model_run}"
+        if gate.passed:
+            passed.append(ticker)
+            typer.echo(typer.style(
+                f"  гейт пройден, {where} — кандидаты получат размах",
+                fg=typer.colors.GREEN))
+        else:
+            rejected.append(ticker)
+            typer.echo(typer.style(
+                f"  гейт НЕ пройден, {where} с calibrated=false — размах не пойдёт",
+                fg=typer.colors.YELLOW))
+
+    typer.echo("")
+    typer.echo(f"Гейт прошли: {', '.join(passed) or '—'}")
+    typer.echo(f"Не прошли:   {', '.join(rejected) or '—'}")
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @app.command("notify-example")
 def notify_example(
     mode: str = typer.Option("full", help="Формат payload: full | compact"),

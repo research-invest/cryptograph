@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% block title %}PostgreSQL · crypto-graph{% endblock %}
+
+{% block content %}
+<h1>PostgreSQL</h1>
+<p class="hint">
+  Контейнер <code>{{ memory.container }}</code>. Страница отвечает на два
+  вопроса, которые таблица контейнеров на «Сервере» задаёт, но не разрешает:
+  <b>из чего складывается занятая память</b> и <b>что базу грузит</b>.
+  Собирается на каждый заход и сама не обновляется — сбор дорогой
+  (<code>docker exec</code> в контейнер плюс запросы к системным вьюхам), а
+  открывают её по конкретному поводу.
+  <a href="/server">← назад к серверу</a>
+</p>
+
+{% if pg_note %}<div class="banner">{{ pg_note }}</div>{% endif %}
+
+{# ─── Разбор памяти ────────────────────────────────────────────────────────
+   Главный блок страницы и повод её завести. `docker stats` показывает у
+   Postgres одно число, в которое входит shared_buffers — пул, выделенный при
+   старте раз и навсегда. Выглядит это как «база съела два гигабайта», и
+   оператор идёт искать тяжёлые запросы там, где нагрузки нет вовсе. #}
+<h2>Из чего складывается память</h2>
+{% if not memory.enabled %}
+  <p class="hint">Опрос docker выключен (<code>HOSTMON_DOCKER=false</code>) —
+    разбор недоступен.</p>
+{% elif memory.error %}
+  <div class="error">Память контейнера не прочитана: {{ memory.error }}</div>
+{% else %}
+  {% if memory.summary %}
+  <p class="hint" style="margin-top:0">
+    Докер показывает <b>{{ memory.summary.counted }}</b> — это разделяемая плюс
+    приватная память.
+    {% if memory.summary.shmem_pct is not none and memory.summary.shmem_pct >= 50 %}
+      Из них <b class="long">{{ memory.summary.shmem_pct }}%</b>
+      ({{ memory.summary.shmem }}) — статический пул страниц, выделенный при
+      старте: он занят всегда, даже когда с системой никто не работает, и от
+      запросов не зависит. Реально тратят процессы {{ memory.summary.anon }} —
+      столько и стоит нагрузка. Уменьшается это не запросами, а настройкой
+      <code>shared_buffers</code> в <code>docker-compose.yml</code> и
+      рестартом контейнера.
+    {% else %}
+      Приватная память процессов — {{ memory.summary.anon }}: вот она и растёт
+      от запросов, её объясняет таблица ниже.
+    {% endif %}
+  </p>
+  {% endif %}
+  <table>
+    <thead><tr><th>Что</th><th>Сколько</th><th>Чем является</th></tr></thead>
+    <tbody>
+    {% for row in memory.rows %}
+      <tr>
+        <td><b>{{ row.label }}</b><div class="muted" style="font-size:11px"><code>{{ row.key }}</code></div></td>
+        <td class="num">{{ row.value }}</td>
+        <td class="muted">{{ row.note }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+
+{% if not profile.ok and profile.error %}
+  {# Недоступная база на этой странице — сам по себе ответ, а не сбой. #}
+  <div class="error">Часть данных не собрана: {{ profile.error }}</div>
+{% endif %}
+
+{# ─── Настройки ─────────────────────────────────────────────────────────── #}
+{% if profile.settings %}
+<h2>Настройки памяти</h2>
+<p class="hint" style="margin-top:0">
+  Колонка «откуда» отличает наши решения от чужих:
+  <code>command line</code> — заданное в <code>docker-compose.yml</code>,
+  <code>configuration file</code> — то, что записал <code>timescaledb-tune</code>
+  при первом старте контейнера, посчитав, что машина принадлежит только базе.
+</p>
+<table>
+  <thead><tr><th>Настройка</th><th>Значение</th><th>Откуда</th><th>Что означает</th></tr></thead>
+  <tbody>
+  {% for row in profile.settings %}
+    <tr>
+      <td><b>{{ row.label }}</b><div class="muted" style="font-size:11px"><code>{{ row.name }}</code></div></td>
+      <td class="num">{{ row.value }}</td>
+      <td class="{{ 'muted' if row.source == 'default' }}">{{ row.source }}</td>
+      <td class="muted">{{ row.note }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{# ─── Накопленная нагрузка ──────────────────────────────────────────────── #}
+{% if profile.stats %}
+{% set st = profile.stats %}
+<h2>Нагрузка с начала счёта</h2>
+<p class="hint" style="margin-top:0">
+  Счётчики идут
+  {% if st.stats_reset %}с {{ st.stats_reset.strftime('%Y-%m-%d %H:%M') }}{% else %}с создания базы{% endif %} —
+  без этой даты числа ниже не значат ничего.
+</p>
+<table>
+  <tbody>
+    <tr><td>Размер базы</td><td class="num"><b>{{ st.db_size }}</b></td>
+        <td class="muted">Против общего пула страниц из таблицы выше: если база меньше пула, пул кэширует её целиком.</td></tr>
+    <tr><td>Попадание в кэш</td>
+        <td class="num"><b class="{{ 'long' if st.cache_hit_pct and st.cache_hit_pct >= 99 else 'short' }}">{{ st.cache_hit_pct }}%</b></td>
+        <td class="muted">Доля чтений, обошедшихся без диска. Ниже 95% — базе не хватает памяти; 99%+ — не хватать нечему.</td></tr>
+    <tr><td>Временные файлы</td>
+        <td class="num"><b class="{{ 'short' if st.temp_files and st.temp_files > 0 }}">{{ st.temp_files }}</b> · {{ st.temp_size }}</td>
+        <td class="muted">Запросы, которым не хватило <code>work_mem</code> и которые досортировывались на диске. Именно они грузят машину, не оставляя следа в списке текущих запросов.</td></tr>
+    <tr><td>Транзакций</td><td class="num">{{ '{:,}'.format(st.xact_commit or 0).replace(',', ' ') }}</td>
+        <td class="muted">Откатов: {{ st.xact_rollback }}, взаимоблокировок: {{ st.deadlocks }}.</td></tr>
+    <tr><td>Строк прочитано</td><td class="num">{{ '{:,}'.format(st.tup_returned or 0).replace(',', ' ') }}</td>
+        <td class="muted">Отдано клиентам {{ '{:,}'.format(st.tup_fetched or 0).replace(',', ' ') }}. Большой разрыв означает, что база просматривает намного больше, чем возвращает.</td></tr>
+    <tr><td>Соединений сейчас</td><td class="num">{{ st.numbackends }}</td>
+        <td class="muted">Подробности — в таблице текущих запросов ниже.</td></tr>
+  </tbody>
+</table>
+{% endif %}
+
+{# ─── Текущие запросы ───────────────────────────────────────────────────── #}
+<h2>Запросы прямо сейчас</h2>
+{% if not pg.ok %}
+  <div class="error">Состояние базы недоступно: {{ pg.error }}</div>
+{% else %}
+{% set sm = pg.summary %}
+<p class="hint" style="margin-top:0">
+  Соединений {{ sm.total or 0 }} из {{ sm.max_connections or '—' }}:
+  активных {{ sm.active or 0 }}, простаивают {{ sm.idle or 0 }}.
+  {% if sm.in_transaction %}
+    <b class="short">В транзакции без запроса: {{ sm.in_transaction }}</b> —
+    такое соединение держит блокировки и мешает уборке мёртвых строк.
+  {% endif %}
+  Простаивающие соединения пула в таблицу не идут — они есть в сводке, как
+  расход лимита. Долгим считается запрос от {{ pg.slow_seconds }} с.
+</p>
+<table>
+  <thead>
+    <tr><th>Длится</th><th>Состояние</th><th>Ждёт</th><th>Кто</th><th>Запрос</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for q in pg.rows %}
+    <tr class="{{ 'slow' if q.slow }}">
+      <td class="num"><b>{{ q.duration }}</b>
+        {% if q.xact_seconds and q.query_seconds and q.xact_seconds - q.query_seconds > 1 %}
+          <div class="muted" style="font-size:11px">транзакция {{ q.xact_duration }}</div>
+        {% elif q.query_seconds is none and q.xact_seconds %}
+          <div class="muted" style="font-size:11px">транзакция {{ q.xact_duration }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if q.stuck_in_transaction %}<span class="short">{{ q.state }}</span>
+        {% elif q.state == 'active' %}<span class="long">active</span>
+        {% else %}<span class="muted">{{ q.state or '—' }}</span>{% endif %}
+      </td>
+      <td>{% if q.wait_event %}<code>{{ q.wait_event_type }}:{{ q.wait_event }}</code>
+          {% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{{ q.application_name or q.backend_type or '—' }}
+        <div class="muted" style="font-size:11px">pid {{ q.pid }}{% if q.client %} · {{ q.client }}{% endif %}</div>
+      </td>
+      <td><code style="font-size:11px">{{ q.query or '—' }}</code></td>
+      <td>
+        {# Прервать можно и запрос идущего прогона — прогон после этого упадёт. #}
+        <form method="post" action="/server/pg/{{ q.pid }}/stop" style="display:inline"
+              onsubmit="return confirm('{% if q.stuck_in_transaction %}Закрыть соединение {{ q.pid }}?{% else %}Прервать запрос {{ q.pid }}?{% endif %} Если его выполняет прогон, прогон упадёт.')">
+          <button type="submit">{{ 'отключить' if q.stuck_in_transaction else 'прервать' }}</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">Активных запросов нет — база свободна</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{# ─── Статистика запросов за период ─────────────────────────────────────── #}
+<h2>Что грузило базу за период</h2>
+{% if not profile.statements or not profile.statements.available %}
+  <p class="hint">
+    Расширение <code>pg_stat_statements</code> не работает
+    {%- if profile.statements and profile.statements.error %}
+      ({{ profile.statements.error }}){%- endif %} — видно только то, что идёт
+    прямо сейчас. Оно грузится исключительно из
+    <code>shared_preload_libraries</code>, то есть включается рестартом базы:
+    параметр прописан в <code>command</code> сервиса postgres в
+    <code>btc-graph/docker-compose.yml</code>, расширение создаёт миграция 005.
+    Проверь, что контейнер пересоздан после правки compose
+    (<code>docker compose up -d postgres</code>), а не просто перезапущен.
+  </p>
+{% else %}
+<p class="hint" style="margin-top:0">
+  Сортировка по <b>суммарному</b> времени, а не по среднему: запрос на 50 мс,
+  вызванный миллион раз, грузит машину сильнее одного десятиминутного — и
+  именно его обычно не замечают. Доля считается от показанных здесь запросов,
+  а не от всей работы базы: за пределами топа остаётся хвост.
+</p>
+<table>
+  <thead>
+    <tr><th>Всего времени</th><th>Доля</th><th>Вызовов</th><th>Среднее</th>
+        <th>Максимум</th><th>Кэш</th><th>Запрос</th></tr>
+  </thead>
+  <tbody>
+  {% for row in profile.statements.rows %}
+    <tr>
+      <td class="num"><b>{{ row.total_duration }}</b></td>
+      <td class="num">{{ row.share_pct }}%</td>
+      <td class="num">{{ '{:,}'.format(row.calls or 0).replace(',', ' ') }}</td>
+      <td class="num">{{ row.mean_ms }} мс</td>
+      <td class="num">{{ row.max_ms }} мс</td>
+      <td class="num">{% if row.cache_hit_pct is not none %}{{ row.cache_hit_pct }}%{% else %}—{% endif %}</td>
+      <td><code style="font-size:11px">{{ row.query or '—' }}</code></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted">Статистика пуста — она копится с последнего сброса или рестарта базы</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<form method="post" action="/server/postgres/statements/reset" style="margin-top:8px"
+      onsubmit="return confirm('Обнулить статистику запросов? Накопленный период будет потерян — это нужно, чтобы померить следующий с нуля.')">
+  <button type="submit">обнулить счёт периода</button>
+  <span class="hint">— чтобы померить конкретный отрезок: обнулить, дождаться, вернуться сюда.</span>
+</form>
+{% endif %}
+
+{# ─── Таблицы ───────────────────────────────────────────────────────────── #}
+{% if profile.tables %}
+<h2>Самые крупные таблицы</h2>
+<p class="hint" style="margin-top:0">
+  Последовательные чтения крупной таблицы — типичная причина, по которой база
+  вдруг начинает молотить диск. Доля мёртвых строк объясняет, почему таблица
+  занимает больше, чем в ней данных.
+</p>
+<table>
+  <thead>
+    <tr><th>Таблица</th><th>Размер</th><th>Посл. чтений</th><th>По индексу</th>
+        <th>Строк</th><th>Мёртвых</th><th>Автовакуум</th></tr>
+  </thead>
+  <tbody>
+  {% for row in profile.tables %}
+    <tr>
+      <td><code>{{ row.table_name }}</code></td>
+      <td class="num">{{ row.size }}</td>
+      <td class="num">{{ '{:,}'.format(row.seq_scan or 0).replace(',', ' ') }}</td>
+      <td class="num muted">{{ '{:,}'.format(row.idx_scan or 0).replace(',', ' ') }}</td>
+      <td class="num muted">{{ '{:,}'.format(row.n_live_tup or 0).replace(',', ' ') }}</td>
+      <td class="num">
+        {% if row.dead_pct >= 20 %}<span class="short">{{ row.dead_pct }}%</span>
+        {% else %}<span class="muted">{{ row.dead_pct }}%</span>{% endif %}
+      </td>
+      <td class="muted" style="font-size:11px">
+        {{ row.last_autovacuum.strftime('%m-%d %H:%M') if row.last_autovacuum else 'не было' }}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

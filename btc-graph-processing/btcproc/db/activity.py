@@ -23,7 +23,7 @@ import logging
 
 import psycopg2.extras
 
-from btcproc.db.session import connect, fetch_one
+from btcproc.db.session import connect, fetch_all, fetch_one
 
 logger = logging.getLogger(__name__)
 
@@ -190,3 +190,257 @@ def stop_query(pid: int) -> dict:
                 f"({row['backend_type']}) — скорее всего он принадлежит "
                 f"другой роли.")
     return {"action": action, "ok": ok, "note": note}
+
+
+# ─── Профиль базы: настройки, нагрузка, таблицы, статистика запросов ────────
+#
+# Всё ниже отвечает на вопрос, на который `snapshot()` не отвечает в принципе:
+# «из-за чего база столько занимает и что её грузило». `pg_stat_activity`
+# показывает мгновенный срез — закончившийся запрос из неё исчезает бесследно.
+
+#: Настройки, определяющие потребление памяти. Порядок — как их читать:
+#: сначала то, что выделяется при старте целиком, потом то, что умножается
+#: на число обслуживающих процессов.
+_MEMORY_SETTINGS = (
+    ("shared_buffers", "Общий пул страниц",
+     "Выделяется при старте целиком и не зависит от нагрузки. Именно он "
+     "составляет почти весь MEM USAGE контейнера в docker stats."),
+    ("work_mem", "Память на операцию сортировки",
+     "На КАЖДУЮ сортировку или хэш в запросе, а не на запрос. Что не влезло — "
+     "уходит во временные файлы на диск."),
+    ("maintenance_work_mem", "Память на обслуживание",
+     "Потолок для CREATE INDEX, VACUUM и ALTER TABLE, запущенных вручную."),
+    ("autovacuum_work_mem", "Память на автовакуум",
+     "Потолок на КАЖДОГО воркера автовакуума. При -1 берётся значение "
+     "предыдущей строки — на машине с десятью воркерами это и есть тихий OOM."),
+    ("autovacuum_max_workers", "Воркеров автовакуума",
+     "Сколько их может работать одновременно. Умножается на строку выше."),
+    ("max_connections", "Потолок соединений",
+     "Каждое соединение — процесс со своей памятью."),
+    ("effective_cache_size", "Оценка кэша ОС",
+     "Памяти не занимает: подсказка планировщику, сколько данных, по его "
+     "мнению, найдётся в кэше."),
+)
+
+#: Сколько запросов показывать в топе. Больше двух десятков на странице никто
+#: не читает, а `pg_stat_statements` хранит тысячи.
+STATEMENTS_LIMIT = 15
+
+
+def memory_settings() -> list[dict]:
+    """
+    Настройки памяти в человеческих единицах, с пояснением каждой.
+
+    `pg_settings` отдаёт значение и единицу раздельно (`8kB`, `kB`, пусто),
+    и складывать их приходится здесь: `setting` без `unit` — просто число,
+    и показать «shared_buffers = 254080» оператору нельзя.
+    """
+    names = tuple(name for name, _, _ in _MEMORY_SETTINGS)
+    rows = fetch_all(
+        "SELECT name, setting, unit, source FROM pg_settings WHERE name = ANY(%s)",
+        (list(names),),
+        timeout_ms=TIMEOUT_MS,
+    )
+    found = {row["name"]: row for row in rows}
+
+    result = []
+    for name, label, note in _MEMORY_SETTINGS:
+        row = found.get(name)
+        if row is None:                 # версия PostgreSQL без этой настройки
+            continue
+        result.append({
+            "name": name,
+            "label": label,
+            "note": note,
+            "value": _format_setting(row["setting"], row["unit"]),
+            "raw": row["setting"],
+            # `source` показывает, откуда значение: 'default', 'configuration
+            # file' (то есть postgresql.conf, куда пишет timescaledb-tune) или
+            # 'command line' (наш docker-compose). Без этого не отличить
+            # «мы так решили» от «так настроил тюнер при первом старте».
+            "source": row["source"],
+        })
+    return result
+
+
+def _format_setting(setting: str, unit: str | None) -> str:
+    """Значение настройки словами: '254080' + '8kB' → '1985 МБ'."""
+    if not unit:
+        return setting
+    try:
+        value = int(setting)
+    except (TypeError, ValueError):
+        return f"{setting} {unit}"
+
+    # -1 у настроек памяти означает «наследовать», а не «минус один байт».
+    if value < 0:
+        return str(value)
+
+    multipliers = {"B": 1, "kB": 1024, "8kB": 8 * 1024, "16kB": 16 * 1024,
+                   "MB": 1024 ** 2, "GB": 1024 ** 3}
+    if unit not in multipliers:         # ms, s, min — не про память
+        return f"{setting} {unit}"
+    return human_bytes(value * multipliers[unit])
+
+
+def human_bytes(value: float | None) -> str:
+    """Байты словами. Свой, а не из админки: модуль не должен зависеть от неё."""
+    if value is None:
+        return "—"
+    step = 1024.0
+    for suffix in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if abs(value) < step or suffix == "ТБ":
+            return f"{value:.0f} {suffix}" if suffix in ("Б", "КБ") \
+                else f"{value:.1f} {suffix}"
+        value /= step
+    return f"{value:.1f} ТБ"
+
+
+def database_stats() -> dict:
+    """
+    Накопленная нагрузка на базу: попадание в кэш, транзакции, временные файлы.
+
+    Ключевая строка здесь — временные файлы: это запросы, которым не хватило
+    `work_mem` и которые досортировывались на диске. Ровно они и грузят
+    машину, не оставляя следа в `pg_stat_activity`.
+
+    Все счётчики — с момента `stats_reset` (обычно с создания базы), поэтому
+    отдаём и его: «3.5 ГБ временных файлов» читается совсем по-разному за
+    сутки и за полгода.
+    """
+    row = fetch_one(
+        """
+        SELECT numbackends,
+               xact_commit, xact_rollback,
+               blks_read, blks_hit,
+               tup_returned, tup_fetched,
+               temp_files, temp_bytes,
+               deadlocks, conflicts,
+               stats_reset,
+               pg_database_size(datname) AS db_bytes
+        FROM pg_stat_database
+        WHERE datname = current_database()
+        """,
+        timeout_ms=TIMEOUT_MS,
+    ) or {}
+    if not row:
+        return {}
+
+    hits, reads = row.get("blks_hit") or 0, row.get("blks_read") or 0
+    total = hits + reads
+    row["cache_hit_pct"] = round(100.0 * hits / total, 2) if total else None
+    row["db_size"] = human_bytes(row.get("db_bytes"))
+    row["temp_size"] = human_bytes(row.get("temp_bytes"))
+    return row
+
+
+def top_tables(limit: int = 10) -> list[dict]:
+    """
+    Самые крупные таблицы с их профилем чтения.
+
+    `seq_scan` рядом с размером — не украшение: последовательное чтение
+    крупной таблицы и есть типичная причина, по которой база вдруг начинает
+    молотить диск. Мёртвые строки в соседней колонке объясняют, почему
+    таблица занимает больше, чем в ней данных.
+    """
+    rows = fetch_all(
+        """
+        SELECT schemaname || '.' || relname AS table_name,
+               pg_total_relation_size(relid) AS total_bytes,
+               seq_scan, idx_scan, n_live_tup, n_dead_tup,
+               last_autovacuum
+        FROM pg_stat_user_tables
+        ORDER BY pg_total_relation_size(relid) DESC
+        LIMIT %s
+        """,
+        (limit,),
+        timeout_ms=TIMEOUT_MS,
+    )
+    for row in rows:
+        row["size"] = human_bytes(row.get("total_bytes"))
+        live, dead = row.get("n_live_tup") or 0, row.get("n_dead_tup") or 0
+        # Доля мёртвых строк, а не их число: 90 тысяч мёртвых при двух
+        # миллионах живых — норма, при пяти тысячах живых — повод смотреть.
+        row["dead_pct"] = round(100.0 * dead / (live + dead), 1) if live + dead else 0.0
+    return rows
+
+
+def top_statements(limit: int = STATEMENTS_LIMIT) -> dict:
+    """
+    Что грузило базу за период — из `pg_stat_statements`.
+
+    Единственный источник, отвечающий на вопрос «из-за чего было плохо ночью»:
+    `pg_stat_activity` хранит только идущее сейчас. Сортировка по СУММАРНОМУ
+    времени, а не по среднему: запрос на 50 мс, вызванный миллион раз, грузит
+    машину сильнее одного десятиминутного, и именно его обычно и не замечают.
+
+    Отсутствие расширения — штатное состояние, а не ошибка: оно грузится
+    только из `shared_preload_libraries`, то есть требует рестарта базы.
+    Возвращаем `available=False` и текст того, что надо сделать.
+    """
+    installed = fetch_one(
+        "SELECT 1 AS ok FROM pg_extension WHERE extname = 'pg_stat_statements'",
+        timeout_ms=TIMEOUT_MS,
+    )
+    if not installed:
+        return {"available": False, "rows": [], "error": None}
+
+    try:
+        rows = fetch_all(
+            """
+            SELECT queryid,
+                   calls,
+                   total_exec_time,
+                   mean_exec_time,
+                   max_exec_time,
+                   rows AS row_count,
+                   shared_blks_hit,
+                   shared_blks_read,
+                   left(query, %s) AS query
+            FROM pg_stat_statements
+            WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+            ORDER BY total_exec_time DESC
+            LIMIT %s
+            """,
+            (QUERY_CHARS, limit),
+            timeout_ms=TIMEOUT_MS,
+        )
+    except Exception as exc:            # noqa: BLE001
+        # Расширение создано, но библиотека не загружена — на такой паре
+        # обращение к вьюхе падает. Для страницы это состояние, а не сбой.
+        logger.warning("pg_stat_statements не читается: %s", exc)
+        return {"available": False, "rows": [],
+                "error": str(exc).strip().splitlines()[0][:200]}
+
+    total_time = sum(row.get("total_exec_time") or 0.0 for row in rows) or 1.0
+    for row in rows:
+        row["query"] = " ".join((row.get("query") or "").split())
+        row["total_duration"] = format_seconds((row.get("total_exec_time") or 0) / 1000)
+        row["mean_ms"] = round(row.get("mean_exec_time") or 0.0, 1)
+        row["max_ms"] = round(row.get("max_exec_time") or 0.0, 1)
+        # Доля от показанного топа, а не от всей нагрузки базы: за пределами
+        # лимита остаётся хвост, и называть это «процентом нагрузки» было бы
+        # враньём. В шаблоне подписано именно так.
+        row["share_pct"] = round(100.0 * (row.get("total_exec_time") or 0) / total_time, 1)
+        reads = row.get("shared_blks_read") or 0
+        hits = row.get("shared_blks_hit") or 0
+        row["cache_hit_pct"] = round(100.0 * hits / (hits + reads), 1) if hits + reads else None
+    return {"available": True, "rows": rows, "error": None}
+
+
+def reset_statements() -> bool:
+    """
+    Обнулить накопленную статистику запросов.
+
+    Нужна, чтобы мерить период: «что грузило базу последний час» иначе не
+    отделить от того, что грузило её полгода назад. Права на
+    `pg_stat_statements_reset()` есть не у всякой роли — отказ возвращается
+    как False, а не как исключение.
+    """
+    try:
+        fetch_one("SELECT pg_stat_statements_reset() AS ok", timeout_ms=TIMEOUT_MS)
+        logger.warning("Оператор обнулил статистику pg_stat_statements")
+        return True
+    except Exception as exc:            # noqa: BLE001
+        logger.warning("Не удалось обнулить pg_stat_statements: %s", exc)
+        return False

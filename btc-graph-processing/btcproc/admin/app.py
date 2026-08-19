@@ -29,6 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from btcproc import config, symbols
 from btcproc.admin import auth, queries
+from btcproc.db import activity as activity_mod
 from btcproc.db import runs as runs_repo
 from btcproc.db.session import init_schema
 from btcproc.hostmon import store as hostmon_store
@@ -43,15 +44,11 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # ─── Форматирование для шаблонов ────────────────────────────────────────────
 # Байты, длительности и «сколько прошло» встречаются на странице «Сервер»
 # десятками, и считать их в шаблоне значило бы размазать формулы по разметке.
-def human_bytes(value) -> str:
-    if value is None:
-        return "—"
-    value = float(value)
-    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
-        if abs(value) < 1024 or unit == "ТБ":
-            return f"{value:.0f} {unit}" if unit in ("Б", "КБ") else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} ПБ"
+# Байты форматирует db-слой (`activity.human_bytes`): те же числа он
+# показывает в настройках памяти и размерах таблиц, и две реализации
+# разошлись бы на первом же округлении. Зависимость идёт в правильную
+# сторону — админка знает про db, db про админку не знает.
+human_bytes = activity_mod.human_bytes
 
 
 def human_seconds(value) -> str:
@@ -406,6 +403,11 @@ SERVER_DEFAULT_WINDOW = "6h"
 # каждый раз значило бы приучить не смотреть на предупреждение.
 SERVER_STALE_TICKS = 3
 
+#: Контейнер, чью память разбирает страница «PostgreSQL». Имя задано в
+#: docker-compose.yml btc-graph и в переменную не вынесено намеренно: страница
+#: разбирает КОНКРЕТНУЮ базу этого контура, а не произвольный контейнер.
+PG_CONTAINER = "btc_postgres"
+
 
 def monitor_state() -> dict:
     """
@@ -516,6 +518,9 @@ def _server_context(window: str) -> dict:
         "windows": SERVER_WINDOWS,
         "stale_ticks": SERVER_STALE_TICKS,
         "now_ts": int(time.time()),
+        # Имя контейнера базы шаблон знает по нему одному: строка таблицы
+        # контейнеров становится ссылкой на разбор его памяти.
+        "pg_container": PG_CONTAINER,
         **_live_snapshot(),
     }
 
@@ -888,6 +893,132 @@ def resend(background: BackgroundTasks, run_id: int):
 
     background.add_task(_safe_run, emit_pending, run_id)
     return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
+def _pg_container_memory() -> dict:
+    """
+    Разбор памяти контейнера базы плюс вывод, ради которого он и делается.
+
+    `docker stats` показывает у Postgres одно число, куда входит
+    `shared_buffers` — пул, выделенный при старте раз и навсегда. Оператор
+    видит «два гигабайта» и идёт искать тяжёлые запросы там, где нагрузки нет
+    вовсе. Поэтому строки таблицы здесь дополняются готовым выводом: сколько
+    из показанного докером — статика, а сколько действительно тратят
+    процессы.
+    """
+    try:
+        from btcproc.hostmon import collect
+    except ImportError as exc:      # psutil не установлен в этом интерпретаторе
+        return {"enabled": False, "rows": [], "error": str(exc), "summary": None}
+
+    try:
+        data = collect.container_memory(PG_CONTAINER)
+    except Exception as exc:        # noqa: BLE001 — страница обязана открыться
+        # `container_memory` штатные отказы docker возвращает полем `error`,
+        # но неожиданное исключение обязано остаться внутри блока, а не унести
+        # с собой запросы и настройки, ради которых страницу и открыли.
+        logger.warning("Память контейнера %s не разобрана: %s", PG_CONTAINER, exc)
+        return {"enabled": True, "rows": [], "error": str(exc)[:300],
+                "summary": None, "container": PG_CONTAINER}
+
+    values = data.get("values") or {}
+    rows = [
+        {"key": key, "label": label, "note": note,
+         "bytes": values.get(key), "value": activity_mod.human_bytes(values.get(key))}
+        for key, label, note in collect.CGROUP_MEMORY_KEYS
+        if values.get(key) is not None
+    ]
+
+    summary = None
+    if values:
+        shmem = values.get("shmem") or 0
+        anon = values.get("anon") or 0
+        # `docker stats` считает MEM USAGE как anon + shmem (страничный кэш в
+        # него не входит) — повторяем ту же арифметику, чтобы число на этой
+        # странице сходилось с числом в таблице контейнеров, а не спорило с ним.
+        counted = shmem + anon
+        summary = {
+            "counted": activity_mod.human_bytes(counted),
+            "shmem": activity_mod.human_bytes(shmem),
+            "anon": activity_mod.human_bytes(anon),
+            "shmem_pct": round(100.0 * shmem / counted, 1) if counted else None,
+        }
+    return {"enabled": data.get("enabled", False), "rows": rows,
+            "error": data.get("error"), "summary": summary,
+            "container": PG_CONTAINER}
+
+
+def _pg_profile() -> dict:
+    """
+    Всё, что страница «PostgreSQL» знает о базе, четырьмя независимыми
+    кусками.
+
+    Независимыми буквально: каждый блок ловит свою ошибку и отдаёт `None`.
+    База, которой плохо, — главный повод открыть эту страницу, и падение
+    одного запроса не имеет права унести с собой остальные три. Тот же
+    принцип, что у `_runs_state` и `_pg_activity`.
+    """
+    result: dict = {"ok": True, "error": None}
+    parts = (
+        ("settings", activity_mod.memory_settings),
+        ("stats", activity_mod.database_stats),
+        ("tables", activity_mod.top_tables),
+        ("statements", activity_mod.top_statements),
+    )
+    for name, func in parts:
+        try:
+            result[name] = func()
+        except Exception as exc:    # noqa: BLE001 — страница обязана открыться
+            logger.warning("Блок «%s» страницы PostgreSQL не собран: %s", name, exc)
+            result[name] = None
+            # Первая же ошибка обычно означает недоступную базу, и показать её
+            # надо один раз наверху, а не четырьмя одинаковыми строками.
+            result["ok"] = False
+            result.setdefault("error", None)
+            result["error"] = result["error"] or str(exc)[:300]
+    return result
+
+
+@app.get("/server/postgres", response_class=HTMLResponse)
+def server_postgres_page(request: Request, pg_note: str | None = None):
+    """
+    Что занимает память базы и что её грузит — вся диагностика Postgres на
+    одной странице.
+
+    Отдельная страница, а не блок на «Сервере»: собирается она дороже
+    (`docker exec` в контейнер плюс четыре запроса к системным вьюхам), а
+    открывают её редко и по конкретному поводу. Живая половина «Сервера»
+    перерисовывается каждые десять секунд, и тащить этот сбор в каждый её
+    такт значило бы сделать монитор заметной нагрузкой на машину, за которой
+    он следит.
+
+    Попадают сюда кликом по строке контейнера `btc_postgres` в таблице
+    контейнеров.
+    """
+    return page(request, "server_postgres.html", active="server",
+                pg_note=opt_str(pg_note),
+                memory=_pg_container_memory(),
+                pg=_pg_activity(),
+                profile=_pg_profile())
+
+
+@app.post("/server/postgres/statements/reset")
+def server_postgres_reset(request: Request):
+    """
+    Обнулить накопленную статистику запросов.
+
+    Действие пишущее, поэтому только POST и только по сессии админки. Оно
+    ничего не ломает — счётчики `pg_stat_statements` не данные, — но
+    необратимо: предыдущий период после нажатия не восстановить. Отсюда
+    подтверждение в интерфейсе.
+    """
+    ok = activity_mod.reset_statements()
+    note = ("Статистика запросов обнулена — счёт периода пошёл заново."
+            if ok else
+            "PostgreSQL отказал в сбросе статистики: у роли btc_user нет прав "
+            "на pg_stat_statements_reset(), либо расширение не загружено.")
+    return RedirectResponse(f"/server/postgres?{urlencode({'pg_note': note})}",
+                            status_code=303)
 
 
 @app.post("/server/pg/{pid}/stop")

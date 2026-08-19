@@ -268,3 +268,79 @@ def containers_cached(ttl: float = CONTAINERS_TTL) -> dict:
     if _containers_cache["value"] is None or now - _containers_cache["at"] > ttl:
         _containers_cache.update(at=now, value=containers())
     return _containers_cache["value"]
+
+
+#: Пути к memory.stat внутри контейнера: cgroup v2 (одна иерархия) и v1.
+#: Порядок важен — на v2 второго пути нет, на v1 первого.
+_CGROUP_STAT_PATHS = ("/sys/fs/cgroup/memory.stat",
+                      "/sys/fs/cgroup/memory/memory.stat")
+
+#: Что вытаскиваем из memory.stat и как это называется для оператора.
+#: `shmem` первым не случайно: у Postgres именно он и есть весь ответ на
+#: вопрос «почему контейнер съел два гигабайта».
+CGROUP_MEMORY_KEYS = (
+    ("shmem", "Разделяемая память",
+     "Пул страниц, выделенный при старте (shared_buffers). Постоянен и от "
+     "нагрузки не зависит."),
+    ("anon", "Приватная память процессов",
+     "Всё, что бэкенды заняли под себя: сортировки, соединения, планы. Растёт "
+     "от запросов."),
+    ("file", "Страничный кэш",
+     "Файлы базы, поднятые ядром в память. Отдаётся под давлением и в "
+     "MEM USAGE докера не входит."),
+    ("kernel", "Ядро", "Служебные структуры cgroup."),
+)
+
+
+def container_memory(name: str) -> dict:
+    """
+    Разбор памяти одного контейнера по cgroup: сколько из показанного
+    `docker stats` — разделяемая память, сколько приватная, сколько кэш.
+
+    Зачем отдельно от `containers()`. `docker stats` даёт одно число
+    `MemUsage`, и оно вводит в заблуждение ровно в том случае, ради которого
+    на него смотрят: у Postgres в него входит `shared_buffers` — статический
+    пул, выделенный при старте. Контейнер с 16 МБ реально занятой памяти
+    выглядит как контейнер, съевший два гигабайта, и оператор идёт искать
+    тяжёлые запросы там, где их нет. Разбор снимает вопрос за один взгляд.
+
+    Читается изнутри контейнера (`docker exec`), а не с хоста: путь к cgroup
+    контейнера на хосте зависит от драйвера cgroup, версии docker и systemd,
+    а `/sys/fs/cgroup/memory.stat` внутри — один и тот же везде.
+
+    Недоступный docker — состояние, а не исключение: вызывающий показывает
+    `error` строкой, страница открывается в любом случае.
+    """
+    if not config.hostmon.docker:
+        return {"enabled": False, "values": {}, "error": None}
+    if not shutil.which("docker"):
+        return {"enabled": True, "values": {}, "error": "docker не найден в PATH"}
+
+    last_error = "не удалось прочитать cgroup контейнера"
+    for path in _CGROUP_STAT_PATHS:
+        try:
+            proc = subprocess.run(
+                ["docker", "exec", name, "cat", path],
+                capture_output=True, text=True, timeout=DOCKER_TIMEOUT, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {"enabled": True, "values": {},
+                    "error": f"docker exec не ответил за {DOCKER_TIMEOUT} с"}
+        except OSError as exc:
+            return {"enabled": True, "values": {}, "error": f"docker exec: {exc}"}
+
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).strip().splitlines()
+            last_error = detail[-1] if detail else f"код {proc.returncode}"
+            continue
+
+        values: dict[str, int] = {}
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                values[parts[0]] = int(parts[1])
+        if values:
+            return {"enabled": True, "values": values, "error": None}
+        last_error = f"{path} пуст"
+
+    return {"enabled": True, "values": {}, "error": last_error}

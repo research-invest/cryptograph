@@ -22,6 +22,7 @@ import pandas as pd
 
 from btcproc import config, notify, symbols
 from btcproc.candidates import builder as cand
+from btcproc.candidates import outcomes as outcomes_mod
 from btcproc.candidates.outcomes import compute_outcomes
 from btcproc.db import repo, runs
 from btcproc.db.runs import dumps as runs_dumps
@@ -196,7 +197,42 @@ def run_train(
             "valid": int(outcomes["valid"].sum()),
             "total": int(len(outcomes)),
         }
-        progress.finish(f"{stats['outcomes']['valid']} валидных меток")
+        # Дополнительные горизонты — ТОЛЬКО на склад, строками рядом (горизонт
+        # входит в первичный ключ `outcomes`). Ни модель состояний, ни
+        # кандидаты их не видят: основной горизонт у системы один. Заведены
+        # задачей D `crypto-graph/docs/tz_range_horizons_19-08-26.md` под замеры
+        # размаха; выключаются `OUTCOME_EXTRA_HORIZONS=`.
+        extra = outcomes_mod.extra_horizon_frames(base, features.index)
+        for label, frame in extra.items():
+            repo.save_outcomes(frame, symbol, horizon=label)
+        if extra:
+            stats["outcomes"]["extra_horizons"] = sorted(extra)
+        progress.finish(
+            f"{stats['outcomes']['valid']} валидных меток"
+            + (f" (+ горизонты {', '.join(sorted(extra))})" if extra else "")
+        )
+
+        # ── 4б. Модель размаха ──────────────────────────────────────────────
+        # Заводится ЗДЕСЬ, а не рядом с моделью состояний, по двум причинам.
+        # Ей нужны признаки и бары — и то и другое уже посчитано, — и она НЕ
+        # зависит от кластеризации: в этом весь её смысл (раздел 48, эффект
+        # живёт в признаках, а не в разметке). Падение обучения не роняет
+        # прогон: размах украшает кандидата, но не является его частью.
+        if config.range_forecast.enabled:
+            progress.start("range_model", "квантильный регрессор размаха")
+            try:
+                stats["range_model"] = _fit_range_model(
+                    symbol, run_id, base, features,
+                    log=lambda msg: runs.log(run_id, msg),
+                )
+                progress.finish(
+                    "гейт пройден" if stats["range_model"]["calibrated"]
+                    else "гейт не пройден — в кандидата не пойдёт"
+                )
+            except Exception as exc:  # noqa: BLE001 — прогон важнее модели
+                logger.exception("Модель размаха не обучилась")
+                stats["range_model"] = {"error": str(exc)}
+                progress.finish(f"пропущена: {exc}")
 
         # ── 5. Состояния ────────────────────────────────────────────────────
         progress.start("states", "адаптивная кластеризация")
@@ -462,3 +498,37 @@ def _merge_counters(target: dict[str, int], summary: dict) -> None:
             target[key] = target.get(key, 0) + value
         else:
             target[key] = value
+
+
+def _fit_range_model(symbol: str, run_id: int, base, features, log) -> dict:
+    """
+    Обучает и сохраняет квантильный регрессор размаха прогона.
+
+    Порядок — гейт на отложенной части, затем переобучение на всей истории
+    (`range_forecast.fit_production`): гейт обязан считаться на невиданных
+    данных, боевая модель обязана видеть всё. Сохраняются обе судьбы:
+    непрошедшая гейт модель тоже пишется, но помечена `calibrated=false` и в
+    кандидата не попадает.
+    """
+    from btcproc.analysis import range_forecast as rf
+
+    cfg = config.range_forecast
+    frame, target, benchmark_names = rf.design_matrix(
+        base, features, config.data.horizon, cfg.normalization,
+        config.data.base_minutes,
+    )
+    model, gate = rf.fit_production(
+        symbol, frame, target, benchmark_names,
+        horizon=config.data.horizon, normalization=cfg.normalization,
+        seed=cfg.seed, gap=config.data.horizon_bars, train_frac=cfg.train_frac,
+        n_boot=cfg.gate_n_boot, log=log,
+    )
+    repo.save_range_model(run_id, model, gate, config.data.horizon, cfg.normalization)
+    return {
+        "calibrated": gate.passed,
+        "delta_r2": round(gate.delta_r2, 4),
+        "rho": round(gate.rho, 4),
+        "rho_bench": round(gate.rho_bench, 4),
+        "coverage_error": round(gate.coverage_error, 4),
+        "failures": gate.failures,
+    }

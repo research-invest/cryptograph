@@ -1,6 +1,8 @@
 .PHONY: help setup install init-db ingest ingest-all ingest-metrics train train-all train-fast \
         live live-all status admin hostmon hostmon-once hostmon-test-telegram \
-        maintenance validate-holdout test docker-up docker-down docker-logs
+        maintenance validate-holdout control-model measure-range \
+        validate-range range-forecast test \
+        docker-up docker-down docker-logs
 
 PY ?= python3
 
@@ -22,6 +24,10 @@ help:
 	@echo "hostmon-test-telegram — проверить канал уведомлений о нагрузке"
 	@echo "maintenance— недельная уборка: разметка старых live + вакуум"
 	@echo "validate-holdout — проверка системы на отложенной части истории (часы)"
+	@echo "control-model — контрольная модель без графа (D1)"
+	@echo "measure-range — стенд «размах × горизонт × бенчмарк»"
+	@echo "validate-range — размах на отложенной части: конфигурация против бенчмарка"
+	@echo "range-forecast — квантильный регрессор размаха на признаках"
 	@echo "test       — тесты"
 	@echo "docker-up  — поднять админку в docker (нужен запущенный btc-graph)"
 	@echo "ingest-metrics — деривативные метрики Binance USD-M в deriv_metrics"
@@ -105,6 +111,30 @@ validate-holdout:
 # признаках»; критерий заявлен в шапке btcproc/analysis/control.py.
 control-model:
 	$(PY) scripts/control_model.py --all --importance
+
+# Стенд «размах × горизонт × бенчмарк» (ТЗ crypto-graph/docs/tz_range_horizons_19-08-26.md).
+# По умолчанию печатает таблицу R² трёх уровней бенчмарка и вклад сезонности
+# отдельным числом; задачи B и C выбираются через --task. Ничего не пишет ни в
+# БД, ни в конфиг, и НЕ запускает train: замер идёт на барах и на готовой
+# разметке. Критерии заявлены в ТЗ до прогона, методика — в шапке
+# btcproc/analysis/range_model.py.
+measure-range:
+	$(PY) scripts/measure_range_horizons.py --all
+
+# C3: предсказывает ли КОНФИГУРАЦИЯ размах лучше тривиального бенчмарка —
+# на отложенной части, готовыми моделями Ш0 (обеими, то есть на двух зёрнах
+# кластеризации). train не запускается, в БД ничего не пишется. Критерий
+# заявлен в шапке скрипта.
+validate-range:
+	$(PY) scripts/validate_range_holdout.py --all
+
+# Квантильный регрессор размаха НА ПРИЗНАКАХ — то, чем оказался единственный
+# положительный результат раздела 47: эффект живёт в признаках, а не в
+# разметке графа. Учится на 70% истории, проверяется на отложенных 30%,
+# в БД ничего не пишет (модели файлами — только с --save). Критерий из трёх
+# условий заявлен в шапке скрипта.
+range-forecast:
+	$(PY) scripts/fit_range_forecast.py --all
 
 test:
 	$(PY) -m pytest -q

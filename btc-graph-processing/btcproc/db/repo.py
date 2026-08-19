@@ -155,6 +155,52 @@ def save_state_model(run_id: int, model, feature_version: str) -> None:
     )
 
 
+def save_range_model(run_id: int, model, gate, horizon: str,
+                     normalization: str) -> None:
+    """
+    Модель размаха прогона. Сохраняется ВСЕГДА, даже не пройдя гейт.
+
+    «Модели нет» и «модель есть, но не годится» — разные диагнозы, и по
+    отсутствию строки их не различить. Числа непрошедшей модели в кандидата
+    не попадают (это решает `calibrated`), но причина отказа лежит в
+    `metrics.failures` и видна при разборе.
+    """
+    from btcproc.analysis import range_forecast as rf
+
+    bulk_upsert(
+        "range_models",
+        ["run_id", "version", "horizon", "normalization", "calibrated",
+         "train_end", "metrics", "artifact"],
+        [(
+            run_id, rf.ARTIFACT_VERSION, horizon, normalization, bool(gate.passed),
+            model.train_end.to_pydatetime() if model.train_end is not None else None,
+            psycopg2.extras.Json(gate.as_dict()),
+            psycopg2.Binary(rf.dumps(model)),
+        )],
+        conflict_columns=["run_id"],
+    )
+
+
+def load_range_model(run_id: int, require_calibrated: bool = True):
+    """
+    Модель размаха по run_id, или None.
+
+    `require_calibrated` по умолчанию включён: в конвейере брать
+    непрошедшую гейт модель нельзя ни при каких условиях. Выключается только
+    для разбора (админка, скрипты).
+    """
+    from btcproc.analysis import range_forecast as rf
+
+    row = fetch_one(
+        "SELECT artifact, calibrated FROM range_models WHERE run_id = %s", (run_id,)
+    )
+    if not row or row["artifact"] is None:
+        return None
+    if require_calibrated and not row["calibrated"]:
+        return None
+    return rf.loads(bytes(row["artifact"]))
+
+
 def load_state_model(run_id: int):
     """
     Модель по run_id. Монета не спрашивается: run_id уже однозначно её задаёт
@@ -392,6 +438,16 @@ def save_transitions(run_id: int, transitions: pd.DataFrame) -> int:
 # ─── Исходы ─────────────────────────────────────────────────────────────────
 def save_outcomes(outcomes: pd.DataFrame, symbol: str | None = None,
                   horizon: str | None = None) -> int:
+    """
+    Разметка исходов одного горизонта. `horizon` — метка, а не параметр
+    расчёта: он входит в первичный ключ, и строки разных горизонтов лежат
+    рядом, не затирая друг друга.
+
+    Величины размаха (`range_pct`, `rv_fwd`, `range_ratio`) появились
+    2026-08-19 и у старых строк отсутствуют. Читатель обязан трактовать NULL
+    как «не считалось», а не как ноль: нулевой размах — это плоское окно, и
+    отличать его от отсутствия данных здесь принципиально.
+    """
     symbol = symbol or config.data.symbol
     horizon = horizon or config.data.horizon
     rows = [
@@ -399,13 +455,17 @@ def save_outcomes(outcomes: pd.DataFrame, symbol: str | None = None,
             symbol, r.Index.to_pydatetime(), horizon,
             _nan_to_none(r.ret_pct), _nan_to_none(r.mfe_pct), _nan_to_none(r.mae_pct),
             None if r.is_up is None or pd.isna(r.ret_pct) else bool(r.is_up),
+            _nan_to_none(getattr(r, "range_pct", None)),
+            _nan_to_none(getattr(r, "rv_fwd", None)),
+            _nan_to_none(getattr(r, "range_ratio", None)),
             bool(r.valid),
         )
         for r in outcomes.itertuples()
     ]
     return bulk_upsert(
         "outcomes",
-        ["symbol", "ts", "horizon", "ret_pct", "mfe_pct", "mae_pct", "is_up", "valid"],
+        ["symbol", "ts", "horizon", "ret_pct", "mfe_pct", "mae_pct", "is_up",
+         "range_pct", "rv_fwd", "range_ratio", "valid"],
         rows,
         conflict_columns=["symbol", "ts", "horizon"],
     )

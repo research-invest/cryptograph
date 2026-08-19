@@ -58,6 +58,11 @@ def test_bar_states_rows(captured):
     assert second[9] is True and second[10] == "1->2"
 
 
+def _by_name(captured) -> list[dict]:
+    """Строки как словари: позиционные индексы ломались при каждой новой колонке."""
+    return [dict(zip(captured["columns"], row)) for row in captured["rows"]]
+
+
 def test_outcomes_rows(captured):
     index = _index(2)
     outcomes = pd.DataFrame({
@@ -65,16 +70,45 @@ def test_outcomes_rows(captured):
         "mfe_pct": [2.0, np.nan],
         "mae_pct": [-0.5, np.nan],
         "is_up": [True, None],
+        "range_pct": [3.0, np.nan],
+        "rv_fwd": [0.004, np.nan],
+        "range_ratio": [1.25, np.nan],
         "valid": [True, False],
     }, index=index)
 
     repo.save_outcomes(outcomes, "ETHUSDT", "24h")
 
-    good, empty = captured["rows"]
-    assert good[:3] == ("ETHUSDT", index[0].to_pydatetime(), "24h")
-    assert good[3] == 1.5 and good[6] is True and good[7] is True
+    good, empty = _by_name(captured)
+    assert (good["symbol"], good["ts"], good["horizon"]) == (
+        "ETHUSDT", index[0].to_pydatetime(), "24h")
+    assert good["ret_pct"] == 1.5 and good["is_up"] is True and good["valid"] is True
+    assert (good["range_pct"], good["rv_fwd"], good["range_ratio"]) == (3.0, 0.004, 1.25)
     # NaN исход — NULL по всем метрикам и is_up, а не 0 и не False.
-    assert empty[3] is None and empty[6] is None and empty[7] is False
+    assert empty["ret_pct"] is None and empty["is_up"] is None
+    assert empty["valid"] is False
+    assert empty["range_pct"] is None and empty["range_ratio"] is None
+
+
+def test_outcomes_rows_without_range_columns(captured):
+    """
+    Кадр без величин размаха обязан сохраняться, отдавая по ним NULL.
+
+    Так выглядит любой вызывающий код, написанный до 2026-08-19, и так же —
+    чужой кадр в тестах. Падение здесь означало бы, что добавление колонки
+    сломало совместимость на ровном месте; NULL честно означает «не считалось».
+    """
+    index = _index(1)
+    outcomes = pd.DataFrame({
+        "ret_pct": [1.5], "mfe_pct": [2.0], "mae_pct": [-0.5],
+        "is_up": [True], "valid": [True],
+    }, index=index)
+
+    repo.save_outcomes(outcomes, "ETHUSDT", "24h")
+
+    row, = _by_name(captured)
+    assert row["ret_pct"] == 1.5
+    assert row["range_pct"] is None and row["rv_fwd"] is None
+    assert row["range_ratio"] is None
 
 
 def test_events_rows(captured):

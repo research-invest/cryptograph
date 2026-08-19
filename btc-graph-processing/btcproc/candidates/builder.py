@@ -308,12 +308,18 @@ def generate(
     symbol: str | None = None,
     cfg: config.CandidateConfig | None = None,
     progress=None,
+    range_view: pd.DataFrame | None = None,
 ) -> Iterator[dict]:
     """
     Проходит историю снимков в хронологическом порядке и выпускает кандидатов.
 
     transition_rarity — редкость перехода из статистики графа;
-    block_meta       — статистика блока событий (total_rows, row_share, rarity…).
+    block_meta       — статистика блока событий (total_rows, row_share, rarity…);
+    range_view       — прогноз размаха по барам (индекс `ts`, колонки p50/p90/
+                       range_lift/range_regime) или None. Считает его модель
+                       `analysis/range_forecast.py`, а СЮДА он приходит готовым:
+                       генератор кандидатов ничего не вычисляет заново — это тот
+                       же принцип, по которому btc-graph только оценивает.
 
     Генератор, а не список: кандидатов на 8 лет истории — сотни тысяч, держать
     их все в памяти незачем, вызывающий код пишет их пачками.
@@ -354,7 +360,8 @@ def generate(
         if acc is None or not _sample_enough(acc, cfg) or acc.valid == 0:
             continue
 
-        candidate = _assemble(row, acc, scope, transition_rarity, block_meta, symbol, cfg)
+        candidate = _assemble(row, acc, scope, transition_rarity, block_meta, symbol,
+                              cfg, range_view)
         if candidate is not None:
             yield candidate
 
@@ -385,6 +392,7 @@ def _assemble(
     block_meta: dict[str, dict],
     symbol: str,
     cfg: config.CandidateConfig,
+    range_view: pd.DataFrame | None = None,
 ) -> dict | None:
     long_share = acc.long_share
     skew = 2 * long_share - 1
@@ -522,6 +530,25 @@ def _assemble(
         "p80_long_adverse_pct": adverse,
         "long_favorable_adverse_ratio_p70_p80": ratio,
         "short_favorable_adverse_ratio_p70_p80": ratio_short,
+
+        # Размах. Четыре поля, и главные из них — два последних.
+        #
+        # `expected_range_ratio_p50/p90` — квантили размаха за горизонт,
+        # нормированного на ATR14·√H. Абсолютные, и читать их в одиночку
+        # нельзя: «ожидаемый размах 1.4» наполовину означает «сейчас
+        # волатильно и идёт американская сессия» (раздел 47.5: час дня и день
+        # недели в одиночку объясняют 0.055–0.187 дисперсии).
+        #
+        # `range_lift` — отношение к тому же прогнозу по одному лишь
+        # тривиальному бенчмарку (липкая волатильность + время суток), и
+        # только он отвечает на вопрос, на который у системы есть измеренное
+        # право отвечать: ШИРЕ ИЛИ УЖЕ, ЧЕМ СЛЕДУЕТ ИЗ ВРЕМЕНИ И
+        # ВОЛАТИЛЬНОСТИ. Урок 26.4 и 47.10 в чистом виде.
+        #
+        # Все четыре None, если модели нет, она не прошла гейт или бар лежит
+        # ДО конца её обучения. Последнее — не мелочь: на исторических барах
+        # боевая модель даёт in-sample число, то есть не прогноз вовсе.
+        **_range_fields(ts, range_view),
     }
 
     # Служебные поля: в btc-graph не уходят, нужны нам для админки и разбора.
@@ -537,6 +564,35 @@ def _assemble(
         "avg_ret_pct": acc.ret_sum / acc.valid if acc.valid else None,
     }
     return candidate
+
+
+#: Поля размаха и их порядок. Константа, потому что список нужен и сборке,
+#: и тесту совместимости со схемой приёмника.
+RANGE_FIELDS = ("expected_range_ratio_p50", "expected_range_ratio_p90",
+                "range_lift", "range_regime")
+
+
+def _range_fields(ts: pd.Timestamp, range_view: pd.DataFrame | None) -> dict:
+    """
+    Поля размаха для бара или None по всем четырём.
+
+    Отсутствие строки в `range_view` — штатный случай, а не ошибка: так
+    выглядит бар до конца обучения модели, бар без полного набора признаков и
+    любой бар вообще, если модель не заведена. Пустые поля честно означают
+    «система про размах этого бара ничего не говорит».
+    """
+    if range_view is None:
+        return dict.fromkeys(RANGE_FIELDS)
+    try:
+        row = range_view.loc[ts]
+    except KeyError:
+        return dict.fromkeys(RANGE_FIELDS)
+    return {
+        "expected_range_ratio_p50": _as_float(row.get("p50")),
+        "expected_range_ratio_p90": _as_float(row.get("p90")),
+        "range_lift": _as_float(row.get("range_lift")),
+        "range_regime": _as_str_or_none(row.get("range_regime")),
+    }
 
 
 def _as_float(value) -> float | None:
@@ -557,11 +613,12 @@ def _fmt_group(value: float) -> str:
 
 
 def strip_meta(candidate: dict) -> dict:
-    """Кандидат без служебных полей — 39 полей схемы btc-graph.
+    """Кандидат без служебных полей — 43 поля схемы btc-graph.
 
-    Было 37; 2026-08-13 добавились `effective_sample_size` и `sample_scope`.
-    Оба заведены в модели приёмника как Optional с дефолтом None, поэтому
-    старые выгрузки его валидатор проходят по-прежнему.
+    Было 37; 2026-08-13 добавились `effective_sample_size` и `sample_scope`,
+    2026-08-19 — четыре поля размаха (`RANGE_FIELDS`). Все они заведены в
+    модели приёмника как Optional с дефолтом None, поэтому старые выгрузки его
+    валидатор проходят по-прежнему.
     """
     return {k: v for k, v in candidate.items() if not k.startswith("_")}
 

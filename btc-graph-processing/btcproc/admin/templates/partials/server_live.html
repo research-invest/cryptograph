@@ -285,7 +285,17 @@
   <tbody>
   {% for c in containers.rows %}
     <tr>
-      <td>{{ c.name }}<div class="muted" style="font-size:11px">{{ c.image }}</div></td>
+      {# У postgres число в колонке «Память» врёт по сути: в него входит
+         shared_buffers — пул, выделенный при старте и занятый всегда. Ссылка
+         ведёт туда, где это число разобрано, а рядом лежит ответ на
+         следующий вопрос («что базу грузит»). Остальные контейнеры разбирать
+         нечем: своей диагностики они не отдают. #}
+      <td>
+        {% if c.name == pg_container %}
+          <a href="/server/postgres">{{ c.name }}</a>
+        {% else %}{{ c.name }}{% endif %}
+        <div class="muted" style="font-size:11px">{{ c.image }}</div>
+      </td>
       <td>
         {% if c.state == 'running' %}<span class="long">{{ c.status }}</span>
         {% else %}<span class="short">{{ c.status or c.state }}</span>{% endif %}
@@ -300,4 +310,11 @@
   {% endfor %}
   </tbody>
 </table>
+<p class="hint">
+  Память тут — то же, что показывает <code>docker stats</code>: приватная плюс
+  разделяемая. У базы почти всё это — общий пул страниц, занятый с момента
+  старта и не зависящий от нагрузки, поэтому большое число у
+  <code>{{ pg_container }}</code> само по себе ни о чём не говорит.
+  <a href="/server/postgres">Разбор памяти и нагрузки базы →</a>
+</p>
 {% endif %}
