@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from btcproc import config, symbols  # noqa: E402
-from btcproc.db.session import connect, fetch_all  # noqa: E402
+from btcproc.db.session import connect, fetch_all, fetch_one  # noqa: E402
 
 # Таблицы, где run_id — часть данных прогона. Порядок важен: runs удаляется
 # последней, иначе подзапрос «прогоны этой модели» перестанет работать.
@@ -129,67 +129,115 @@ def delete(run_ids: list[int]) -> dict[str, int]:
 # удалял никто и никогда. Теперь live пишет только хвост
 # (`pipeline.live.bar_states_window`), но накопленное надо убрать отдельно:
 # сами строки `runs` при этом остаются, на них ссылаются `candidates.run_id`.
+#
+# **2026-08-20: правило «оставить N последних live-прогонов» заменено на
+# дедупликацию по бару.** Прежнее сносило разметку целыми прогонами, а вместе
+# с ней — ЕДИНСТВЕННУЮ разметку тех баров, которую успел записать только
+# удаляемый live. Между воскресным train и окном уцелевших live оставалась
+# дыра длиной до нескольких суток, и заметить её можно было только глазами:
+# на графике это серые свечи без подсказки (она висит на `group_id`) с
+# маркерами кандидатов поверх — сами кандидаты не удалялись. Замер на боевом
+# контуре после очистки 2026-08-19: 175 баров BTCUSDT без разметки
+# (16.08 03:15 — 17.08 22:45) и 152 кандидата на неразмеченных барах по шести
+# монетам.
+#
+# Раздутость при этом создавали не строки как таковые, а их ПОВТОРЫ: окна
+# соседних live перекрываются, и один бар лежит в таблице десятками копий под
+# разными run_id. Удалять надо ровно копии — тогда покрытие не страдает вовсе,
+# и правило перестаёт зависеть от того, в какой момент недели запустилось
+# обслуживание.
+#
+# Что считается копией. Ключ — пара «модель, бар», а не «прогон»: раскраска
+# графика читает строку с наибольшим run_id В ПРЕДЕЛАХ МОДЕЛИ
+# (`queries.chart_data` через `runs.model_run_scope`), значит остальные строки
+# той же пары не видит никто. Разметка train предпочитается разметке live той
+# же модели: она полная, её всё равно не удаляет никто, и без этого
+# предпочтения на каждом баре истории оставалась бы лишняя live-копия.
+#
+# Корень модели берётся текстом (`params->>'model_run_id'`), а не приведением
+# к числу, — по той же причине, что и в `runs.model_run_scope`: отсутствующий
+# или нечисловой ключ не должен ронять запрос. Чужое значение в худшем случае
+# образует свою группу, то есть строка просто не удалится.
 
-BAR_STATES_KEEP_LIVE = 4  # последние N live-прогонов монеты оставляем целиком
+#: Общая часть запроса: строки разметки монеты, пронумерованные внутри пары
+#: «модель, бар». rn = 1 — та, которую читает админка; всё остальное — копии.
+_RANKED_BAR_STATES = """
+WITH scope AS (
+    SELECT run_id, kind,
+           COALESCE(NULLIF(params->>'model_run_id', ''), run_id::text) AS root
+    FROM runs
+),
+ranked AS (
+    SELECT s.ts, s.run_id,
+           row_number() OVER (
+               PARTITION BY sc.root, s.ts
+               ORDER BY (sc.kind = 'train') DESC, s.run_id DESC
+           ) AS rn
+    FROM bar_states s JOIN scope sc ON sc.run_id = s.run_id
+    WHERE s.symbol = %s
+)
+"""
 
 
-def fat_live_runs(symbol: str, keep_live: int) -> list[dict]:
-    """
-    live-прогоны монеты, чью разметку можно удалить.
-
-    Раскраска графика в админке живёт в train-прогоне (полная история) плюс
-    несколько последних live — их и бережём. Train не трогаем вообще.
-    """
-    rows = fetch_all(
-        """
-        SELECT r.run_id, r.started_at,
-               (SELECT count(*) FROM bar_states s WHERE s.run_id = r.run_id) AS bars
-        FROM runs r
-        WHERE r.kind = 'live' AND r.symbol = %s
-        ORDER BY r.started_at DESC
+def superseded_bar_states(symbol: str) -> dict:
+    """Сколько строк разметки монеты — копии, и сколько останется."""
+    row = fetch_one(
+        _RANKED_BAR_STATES + """
+        SELECT count(*) FILTER (WHERE rn > 1)  AS doomed,
+               count(*) FILTER (WHERE rn = 1)  AS kept,
+               count(DISTINCT run_id) FILTER (WHERE rn > 1) AS runs_touched
+        FROM ranked
         """,
         (symbol,),
     )
-    return [r for r in rows[keep_live:] if r["bars"]]
+    return dict(row) if row else {"doomed": 0, "kept": 0, "runs_touched": 0}
 
 
-def delete_bar_states(run_ids: list[int]) -> int:
-    """Удаляет только разметку, оставляя сами прогоны и их кандидатов."""
-    if not run_ids:
-        return 0
+def delete_bar_states(symbol: str) -> int:
+    """
+    Удаляет копии разметки монеты, оставляя прогоны, кандидатов и покрытие.
+
+    Удаление идёт по первичному ключу `(symbol, ts, run_id)`, а не по `ctid`:
+    ctid уникален в пределах физической таблицы, и привяжись мы к нему —
+    разбиение таблицы на чанки в будущем сделало бы запрос молча неверным.
+    """
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM bar_states WHERE run_id = ANY(%s)", (run_ids,))
+        cur.execute(
+            _RANKED_BAR_STATES + """
+            DELETE FROM bar_states d
+            USING ranked r
+            WHERE d.symbol = %s AND d.ts = r.ts AND d.run_id = r.run_id
+              AND r.rn > 1
+            """,
+            (symbol, symbol),
+        )
         return cur.rowcount
 
 
-def prune_bar_states(targets: list[str], keep_live: int, apply: bool) -> int:
-    total_runs, total_rows = 0, 0
-    doomed: list[int] = []
+def prune_bar_states(targets: list[str], apply: bool) -> int:
+    total_rows, total_kept = 0, 0
+    plan_rows: list[tuple[str, dict]] = []
     for symbol in targets:
-        fat = fat_live_runs(symbol, keep_live)
-        rows = sum(r["bars"] for r in fat)
+        stat = superseded_bar_states(symbol)
+        plan_rows.append((symbol, stat))
+        total_rows += stat["doomed"]
+        total_kept += stat["kept"]
         print(f"\n=== {symbol} ===")
-        print(f"  live-прогонов с разметкой к очистке: {len(fat)}, строк {rows}")
-        if fat:
-            oldest, newest = fat[-1], fat[0]
-            print(f"  прогоны #{oldest['run_id']}..#{newest['run_id']}, "
-                  f"последние {keep_live} live оставлены")
-        doomed.extend(r["run_id"] for r in fat)
-        total_runs += len(fat)
-        total_rows += rows
+        print(f"  копий разметки к удалению: {stat['doomed']} "
+              f"(в {stat['runs_touched']} прогонах), остаётся {stat['kept']} строк")
 
-    if not doomed:
-        print("\nНакопленной разметки live-прогонов нет.")
+    if not total_rows:
+        print("\nПовторов разметки нет.")
         return 0
 
-    print(f"\nВсего: {total_runs} прогонов, ~{total_rows} строк bar_states")
+    print(f"\nВсего: {total_rows} строк-копий, останется {total_kept}")
     if not apply:
         print("Это сухой прогон. Чтобы удалить, добавь --apply")
         return 0
 
-    removed = delete_bar_states(doomed)
+    removed = sum(delete_bar_states(symbol) for symbol, _ in plan_rows)
     print(f"\nУдалено строк bar_states: {removed}")
-    print("Прогоны и их кандидаты не тронуты.")
+    print("Прогоны, кандидаты и покрытие баров разметкой не тронуты.")
     print(f"\nБаза: {config.db.url.rsplit('@', 1)[-1]}")
     return 0
 
@@ -203,13 +251,9 @@ def main() -> int:
                         help="Действительно удалить; без него — только показать")
     parser.add_argument(
         "--bar-states", action="store_true",
-        help="Вместо прогонов чистить накопленную разметку live-прогонов "
-             "(сами прогоны и кандидаты остаются)",
-    )
-    parser.add_argument(
-        "--bar-states-keep", type=int, default=BAR_STATES_KEEP_LIVE,
-        help=f"Сколько последних live-прогонов монеты оставить целиком "
-             f"(по умолчанию {BAR_STATES_KEEP_LIVE})",
+        help="Вместо прогонов чистить ПОВТОРЫ разметки: у каждого бара "
+             "остаётся одна строка на модель (прогоны, кандидаты и покрытие "
+             "баров не трогаются)",
     )
     args = parser.parse_args()
 
@@ -217,7 +261,7 @@ def main() -> int:
     keep_extra = set(args.keep or [])
 
     if args.bar_states:
-        return prune_bar_states(targets, args.bar_states_keep, args.apply)
+        return prune_bar_states(targets, args.apply)
 
     all_doomed: list[int] = []
     for symbol in targets:

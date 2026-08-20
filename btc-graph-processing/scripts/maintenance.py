@@ -12,9 +12,14 @@
 1. **Пропускает всё, если идёт прогон.** Обслуживание не должно соревноваться
    за диск и блокировки с расчётом. Мёртвые прогоны при этом убираются
    (`runs.reap_if_stale`) — иначе один OOM останавливал бы и обслуживание тоже.
-2. **Чистит разметку старых live-прогонов** — та же логика, что у
-   `prune_runs.py --bar-states`: остаются train и N последних live на монету.
-   Кандидаты, граф, статистика и сами прогоны не трогаются.
+2. **Чистит ПОВТОРЫ разметки live-прогонов** — та же логика, что у
+   `prune_runs.py --bar-states`: у каждого бара остаётся одна строка на
+   модель, та самая, которую и читает админка. Кандидаты, граф, статистика,
+   сами прогоны и покрытие баров разметкой не трогаются. До 2026-08-20 здесь
+   удалялись целые прогоны кроме N последних, и вместе с ними пропадала
+   единственная разметка баров между воскресным train и окном уцелевших
+   live — на графике серая полоса без подсказок; разбор в шапке
+   `prune_runs.py`.
 3. **Вакуумит.** `VACUUM ANALYZE` всегда — он дешёвый и не берёт блокировок.
    `VACUUM FULL` — только если раздутость перешла порог: он переписывает
    таблицу целиком под ACCESS EXCLUSIVE, и еженедельно платить этим за
@@ -48,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from btcproc import config, symbols  # noqa: E402
 from btcproc.db import runs as runs_repo  # noqa: E402
 from btcproc.db.session import connect, fetch_one  # noqa: E402
-from prune_runs import BAR_STATES_KEEP_LIVE, delete_bar_states, fat_live_runs  # noqa: E402
+from prune_runs import delete_bar_states, superseded_bar_states  # noqa: E402
 
 # Таблицы, за которыми следим. bar_states — единственная, где бывают массовые
 # удаления; остальные в отчёте ради ранней диагностики роста.
@@ -135,29 +140,29 @@ def vacuum(table: str, full: bool) -> None:
         cur.execute(f"VACUUM ({mode}) {config.db.schema}.{table}")
 
 
-def prune_live_states(keep_live: int, dry_run: bool) -> int:
-    doomed: list[int] = []
+def prune_live_states(dry_run: bool) -> int:
+    doomed: list[str] = []
     rows = 0
     # ВСЕ монеты реестра, включая выключенные: у выключенной новых прогонов
-    # нет, но накопленная разметка старых live никуда не делась — если её
-    # обходить, она останется до повторного включения монеты.
+    # нет, но накопленные повторы разметки никуда не делись — если её
+    # обходить, они останутся до повторного включения монеты.
     for symbol in symbols.tickers():
-        fat = fat_live_runs(symbol, keep_live)
-        if not fat:
+        stat = superseded_bar_states(symbol)
+        if not stat["doomed"]:
             continue
-        symbol_rows = sum(run["bars"] for run in fat)
-        doomed.extend(run["run_id"] for run in fat)
-        rows += symbol_rows
-        print(f"  {symbol}: {len(fat)} live-прогонов, {symbol_rows} строк разметки")
+        doomed.append(symbol)
+        rows += stat["doomed"]
+        print(f"  {symbol}: {stat['doomed']} строк-копий "
+              f"(в {stat['runs_touched']} прогонах), остаётся {stat['kept']}")
 
     if not doomed:
-        print("  разметки старых live-прогонов нет")
+        print("  повторов разметки нет")
         return 0
     if dry_run:
-        print(f"  (сухой прогон) удалили бы {rows} строк из {len(doomed)} прогонов")
+        print(f"  (сухой прогон) удалили бы {rows} строк-копий")
         return 0
-    removed = delete_bar_states(doomed)
-    print(f"  удалено {removed} строк из {len(doomed)} прогонов")
+    removed = sum(delete_bar_states(symbol) for symbol in doomed)
+    print(f"  удалено {removed} строк-копий по {len(doomed)} монетам")
     return removed
 
 
@@ -273,9 +278,6 @@ def main() -> int:
                         help="Ничего не менять, только показать")
     parser.add_argument("--force", action="store_true",
                         help="Работать, даже если идёт прогон")
-    parser.add_argument("--keep-live", type=int, default=BAR_STATES_KEEP_LIVE,
-                        help=f"Сколько последних live на монету оставить "
-                             f"с разметкой (по умолчанию {BAR_STATES_KEEP_LIVE})")
     parser.add_argument("--full", action="store_true",
                         help="VACUUM FULL безусловно, не глядя на пороги")
     args = parser.parse_args()
@@ -294,8 +296,8 @@ def main() -> int:
 
     before = table_stats("bar_states")
 
-    print("\nРазметка старых live-прогонов:")
-    removed = prune_live_states(args.keep_live, args.dry_run)
+    print("\nПовторы разметки live-прогонов:")
+    removed = prune_live_states(args.dry_run)
 
     print("\nЖурнал доставок уведомлений:")
     prune_deliveries(args.dry_run)

@@ -4,6 +4,10 @@
         validate-range range-forecast test \
         docker-up docker-down docker-logs
 
+# Нужен Python 3.10+: код пользуется аннотациями `str | None`, а `python3` на
+# macOS без venv — системный 3.9 из CommandLineTools. Версия проверяется в
+# `btcproc/__init__.py`, иначе падение выглядит как ошибка внутри pydantic.
+# Свой интерпретатор задаётся так: make admin PY=.venv/bin/python
 PY ?= python3
 
 help:

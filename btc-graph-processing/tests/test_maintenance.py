@@ -40,7 +40,7 @@ def _quiet(monkeypatch, maintenance, **over):
     )
     monkeypatch.setattr(
         maintenance, "prune_live_states",
-        lambda keep, dry: calls.__setitem__("pruned", over.get("removed", 0))
+        lambda dry: calls.__setitem__("pruned", over.get("removed", 0))
         or over.get("removed", 0),
     )
     monkeypatch.setattr(
@@ -181,8 +181,8 @@ def test_dead_ratio_handles_empty_table(maintenance):
 
 def test_prune_covers_disabled_symbols(monkeypatch, maintenance):
     """
-    У выключенной монеты новых прогонов нет, но накопленная разметка старых
-    live никуда не делась — уборка обязана обходить весь реестр, а не только
+    У выключенной монеты новых прогонов нет, но накопленные повторы разметки
+    никуда не делись — уборка обязана обходить весь реестр, а не только
     активные монеты.
     """
     seen: list[str] = []
@@ -193,12 +193,38 @@ def test_prune_covers_disabled_symbols(monkeypatch, maintenance):
         ),
     )
     monkeypatch.setattr(
-        maintenance, "fat_live_runs", lambda symbol, keep: seen.append(symbol) or []
+        maintenance, "superseded_bar_states",
+        lambda symbol: seen.append(symbol) or {"doomed": 0, "kept": 0,
+                                               "runs_touched": 0},
     )
 
-    maintenance.prune_live_states(4, dry_run=True)
+    maintenance.prune_live_states(dry_run=True)
 
     assert seen == ["BTCUSDT", "OLDUSDT"], "выключенная монета пропущена"
+
+
+def test_prune_dry_run_never_deletes(monkeypatch, maintenance):
+    """
+    Сухой прогон обязан оставаться сухим и тогда, когда копии нашлись:
+    `--dry-run` в этом скрипте — единственный способ посмотреть на решение
+    до того, как оно применено к боевой базе.
+    """
+    deleted: list[str] = []
+    monkeypatch.setattr(maintenance.symbols, "tickers",
+                        lambda only_enabled=False: ["BTCUSDT"])
+    monkeypatch.setattr(
+        maintenance, "superseded_bar_states",
+        lambda symbol: {"doomed": 500, "kept": 1000, "runs_touched": 7},
+    )
+    monkeypatch.setattr(
+        maintenance, "delete_bar_states",
+        lambda symbol: deleted.append(symbol) or 500,
+    )
+
+    assert maintenance.prune_live_states(dry_run=True) == 0
+    assert deleted == []
+    assert maintenance.prune_live_states(dry_run=False) == 500
+    assert deleted == ["BTCUSDT"]
 
 
 # ── Кэш дневных дампов баров (O6) ────────────────────────────────────────

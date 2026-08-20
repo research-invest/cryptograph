@@ -696,20 +696,28 @@ chart.subscribeCrosshairMove((param) => {
   }
   crosshairSyncing = false;
 
-  if (bar.group_id === null || bar.group_id === undefined) {
-    tooltip.style.display = 'none';
-    return;
-  }
-
   // Одна строка: цвет, номер, имя, переход. Время не дублируем — его и так
   // показывает подпись оси под крестиком.
-  const name = stateNames.get(bar.group_id) || '';
+  //
+  // Бар без разметки подсказку НЕ прячет, а говорит об этом вслух. Раньше
+  // прятал, и получалось единственное состояние интерфейса, которое ничем не
+  // отличается от «мышь не над графиком»: серая свеча молчит, и понять,
+  // сломалось что-то или так и надо, нельзя. Именно так осталась незамеченной
+  // дыра в разметке от уборки базы (журнал 50) — 175 баров BTCUSDT с
+  // маркерами кандидатов поверх и без единой подписи.
   const sep = '<span class="tt-sep">·</span>';
-  tooltip.innerHTML =
-    `<i style="background:${bar.color}"></i><b>${bar.group_id}</b>` +
-    (name ? sep + `<span class="tt-name">${name}</span>` : '') +
-    (bar.transition_id
-      ? sep + `<span class="tt-tr">переход ${bar.transition_id}</span>` : '');
+  if (bar.group_id === null || bar.group_id === undefined) {
+    tooltip.innerHTML =
+      `<i style="background:${bar.color}"></i>` +
+      '<span class="tt-tr">состояние не размечено</span>';
+  } else {
+    const name = stateNames.get(bar.group_id) || '';
+    tooltip.innerHTML =
+      `<i style="background:${bar.color}"></i><b>${bar.group_id}</b>` +
+      (name ? sep + `<span class="tt-name">${name}</span>` : '') +
+      (bar.transition_id
+        ? sep + `<span class="tt-tr">переход ${bar.transition_id}</span>` : '');
+  }
 
   // Держим подсказку в пределах области графика, иначе у правого края
   // она уезжает за границу и обрезается. Ширину меряем по факту: содержимое

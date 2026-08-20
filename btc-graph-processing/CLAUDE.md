@@ -611,7 +611,7 @@ SQLite-файл `<repo>/logs/hostmon.sqlite`, а не в Postgres, — мони�
 | Пересобрать кандидатов текущим кодом на действующей модели | `btcproc/analysis/replay.py` (переобучения нет), выгрузка для калибровки — `scripts/dump_candidates.py` |
 | Завести новый источник сигнала (ончейн, индексы) | `btcproc/features/registry.py` + порядок в `docs/extending_features.md` |
 | Убрать лишние модели состояний из базы | `scripts/prune_runs.py` (по умолчанию сухой прогон) |
-| Недельная уборка базы: разметка старых live + вакуум | `scripts/maintenance.py` (`make maintenance`), стоит в кроне |
+| Недельная уборка базы: повторы разметки live + вакуум | `scripts/maintenance.py` (`make maintenance`), стоит в кроне. Удаляются только КОПИИ строки бара внутри модели — покрытие баров разметкой не страдает; правило «оставить N последних live» сносило единственную разметку хвоста, журнал 50 |
 | Посчитать SMC-величины | `btcproc/features/smc.py`; замер частот и корреляций — `scripts/smc_frequencies.py` |
 | Завести внешний дневной ряд (фандинг, OI) | `btcproc/ingest/external.py` + `external_daily` (таблица общая, не именная под источник) |
 | Посчитать величины Fear & Greed | `btcproc/features/fear_greed.py`; частоты, новизна, автокорреляция — `scripts/fgi_frequencies.py` |
