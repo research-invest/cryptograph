@@ -38,6 +38,16 @@
       <option value="none">не показывать</option>
     </select>
   </label>
+  {# Слой отделён от фильтра по рейтингу намеренно: это разные вопросы.
+     Рейтинг — «насколько кандидат хорош», слой — «сказала это система тогда
+     или домыслила модель потом». Смешивать их в один селектор значило бы
+     предлагать выбор из шести пунктов вместо двух осей по два. #}
+  <label>Слой
+    <select id="layer">
+      <option value="issued" selected>выпущенные</option>
+      <option value="all">+ ретроспективные</option>
+    </select>
+  </label>
   <label>Номера состояний
     <select id="stateLabels">
       <option value="long" selected>на заметных отрезках</option>
@@ -375,6 +385,7 @@ async function load() {
   if (start) params.set('start', start);
   if (end) params.set('end', end);
   if (rating) params.set('rating', rating);
+  params.set('layer', el('layer').value);
 
   const response = await fetch('/api/chart?' + params);
   const data = await response.json();
@@ -419,8 +430,18 @@ async function load() {
   const cut = data.markers_truncated
     ? ' — показаны только последние, сузьте период'
     : '';
+  // И про непоказанный слой — тоже вслух. Ретроспективных кандидатов на
+  // старых барах обычно БОЛЬШЕ, чем выпущенных (каждое переобучение считает
+  // их заново на всей истории), и без этой приписки пустое место читается
+  // как «здесь ничего не было».
+  const counts = data.marker_counts || { issued: 0, retro: 0 };
+  const hidden = el('layer').value === 'all' ? 0 : counts.retro;
+  const extra = hidden
+    ? `, ещё ${hidden} ретроспективных (посчитаны переобучением) — не показаны`
+    : '';
   el('chartInfo').textContent =
-    `${data.bars.length} баров, ${data.markers.length} кандидатов${cut}, ${data.groups.length} состояний в окне`;
+    `${data.bars.length} баров, ${data.markers.length} кандидатов${cut}${extra}, ` +
+    `${data.groups.length} состояний в окне`;
 
   // Показываем правый край в читаемом масштабе, а не всю выборку целиком:
   // остальная история остаётся слева и достаётся перетаскиванием. Кому нужен
@@ -758,7 +779,7 @@ el('fit').addEventListener('click', () => {
   chart.timeScale().fitContent();
   fitPrice();
 });
-['run', 'limit', 'rating', 'stateLabels'].forEach(
+['run', 'limit', 'rating', 'layer', 'stateLabels'].forEach(
   id => el(id).addEventListener('change', load));
 // Признаки меняются без перезагрузки баров: иначе график сбрасывал бы
 // позицию и масштаб на каждое переключение панели.

@@ -319,10 +319,11 @@ def graph_page(request: Request, run: str | None = None, find: str | None = None
 @app.get("/chart", response_class=HTMLResponse)
 def chart_page(request: Request, run: str | None = None, focus: str | None = None):
     # ?focus=<unix-время> — переход «показать этого кандидата на графике».
-    # Прогон в ссылке не нужен и намеренно не передаётся: и раскраска, и
-    # маркеры кандидатов берутся по КОРНЮ модели (model_run_scope), а не по
-    # одному run_id, поэтому свежий train показывает кандидата любого своего
-    # live-прогона.
+    # Прогон в ссылке не нужен и намеренно не передаётся: раскраска берётся по
+    # КОРНЮ модели (model_run_scope), а не по одному run_id, поэтому свежий
+    # train показывает разметку любого своего live-прогона. Маркеры кандидатов
+    # с 2026-08-20 моделью не ограничены вовсе (журнал 51) — кандидат либо был
+    # выпущен на этом баре, либо нет, и переобучение этого не отменяет.
     symbol = current_symbol(request)
     run_id = opt_int(run) or _latest_train_id(symbol)
     return page(request, "chart.html", active="chart", symbol=symbol, run_id=run_id,
@@ -1104,7 +1105,7 @@ def api_graph_context(request: Request, run: str | None = None):
 @app.get("/api/chart")
 def api_chart(request: Request, run: str | None = None, start: str | None = None,
               end: str | None = None, limit: str | None = None,
-              rating: str | None = None):
+              rating: str | None = None, layer: str | None = None):
     symbol = current_symbol(request)
     run_id = opt_int(run) or _latest_train_id(symbol)
     if run_id is None:
@@ -1117,6 +1118,10 @@ def api_chart(request: Request, run: str | None = None, start: str | None = None
             end=opt_str(end),
             limit=min(opt_int(limit) or 1500, 5000),
             rating=opt_str(rating),
+            # Значение из строки запроса не доверяем: слой участвует в SQL
+            # только через сравнение с "all", но проверка здесь делает набор
+            # допустимых значений явным, а не выводимым из ветки ниже.
+            layer="all" if opt_str(layer) == "all" else "issued",
         )
     except queries.SymbolRunMismatch as exc:
         # 422, а не пустой график: несогласованность монеты и прогона иначе

@@ -167,9 +167,47 @@ def run_symbol(run_id: int) -> str | None:
     return row["symbol"] if row else None
 
 
+def _rating_filter(rating: str | None) -> tuple[str, list[Any]]:
+    """
+    Кусок WHERE по рейтингу для маркеров графика.
+
+    Вынесен из `chart_data`, потому что нужен дважды и в двух запросах:
+    одним отбираются сами маркеры, вторым — счётчики по слоям. Разъедься эти
+    два условия, и строка «ещё N не показано» начала бы врать.
+    """
+    if not rating:
+        return "", []
+    values = [r.strip() for r in rating.split(",") if r.strip()]
+    if not values:
+        return "", []
+    return " AND c.rating = ANY(%s)", [values]
+
+
+def _marker_counts(symbol: str, first_ts: Any, last_ts: Any,
+                   rating_sql: str, rating_params: list[Any]) -> dict:
+    """
+    Сколько кандидатов в окне выпущено вживую, а сколько посчитано задним
+    числом переобучением.
+
+    Считается по ВСЕМ моделям: вопрос «что тут было» не про модель. Дубли по
+    одному бару от разных поколений моделей при этом реальны и в счётчик
+    входят — это честнее, чем показать одно число и умолчать, что оно из
+    нескольких нумераций.
+    """
+    row = fetch_one(
+        "SELECT count(*) FILTER (WHERE r.kind = 'live')  AS issued, "
+        "       count(*) FILTER (WHERE r.kind <> 'live') AS retro "
+        "FROM candidates c JOIN runs r ON r.run_id = c.run_id "
+        f"WHERE c.symbol = %s AND c.ts BETWEEN %s AND %s{rating_sql}",
+        [symbol, first_ts, last_ts, *rating_params],
+    )
+    return {"issued": (row or {}).get("issued", 0) or 0,
+            "retro": (row or {}).get("retro", 0) or 0}
+
+
 def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
                end: str | None = None, limit: int = 1500,
-               rating: str | None = None) -> dict:
+               rating: str | None = None, layer: str = "issued") -> dict:
     """
     Свечи с раскраской по состоянию + маркеры кандидатов.
 
@@ -178,6 +216,28 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
 
     symbol и run_id обязаны быть согласованы — иначе раскраски не будет, и
     понять почему по пустому графику невозможно. Проверяем явно.
+
+    **Маркеры кандидатов НЕ ограничены моделью выбранного прогона** (правка
+    2026-08-20, журнал 51). Раскраска — свойство модели, и она обязана быть
+    из одной нумерации. Кандидат — свойство ИСТОРИИ: он либо был выпущен на
+    этом баре, либо нет, и переобучение задним числом этого не меняет.
+
+    До правки маркеры фильтровались тем же `model_run_scope`, что и раскраска,
+    и получалось наоборот: после каждого воскресного `train` со старых баров
+    пропадало всё, что система на них выпускала, а вместо этого показывалось
+    то, что новая модель насчитала на них ретроспективно, — и на дефолтном
+    фильтре «STRONG + MODERATE» не показывалось вообще ничего, потому что
+    недельный `train` идёт с `--no-emit` и рейтинга у его кандидатов нет.
+
+    `layer` разделяет два разных по смыслу слоя:
+
+    * `issued` (по умолчанию) — кандидаты live-прогонов: то, что система
+      сказала в тот момент, на модели, обученной строго до этих баров;
+    * `all` — плюс кандидаты train-прогонов. Это ретроспектива: модель
+      обучена на всей истории, включая будущее размечаемого бара, поэтому
+      её кандидат на историческом баре — воспоминание, а не суждение.
+      Тот же довод, по которому прогноз размаха не даёт чисел на барах
+      своего обучения (инвариант 13а).
     """
     symbol = symbol or config.data.symbol
     owner = run_symbol(run_id)
@@ -245,26 +305,26 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     # rating="none" — маркеры не нужны вовсе: на длинном окне их сотни,
     # и они перекрывают саму раскраску состояний.
     truncated = False
+    counts = {"issued": 0, "retro": 0}
     if rating == "none":
         candidates = []
     else:
-        # Тот же корень модели, что и у раскраски: выбор live-прогона в
-        # селекторе не должен сужать маркеры до одного получасового окна.
-        scope_sql, scope_params = model_run_scope(root)
+        rating_sql, rating_params = _rating_filter(rating)
+        counts = _marker_counts(symbol, first_ts, last_ts, rating_sql, rating_params)
         sql_c = (
-            "SELECT candidate_id, ts, research_side, rating, quality_score, transition_id "
-            "FROM candidates "
-            f"WHERE symbol = %s AND ts BETWEEN %s AND %s AND {scope_sql}"
+            "SELECT c.candidate_id, c.ts, c.research_side, c.rating, c.quality_score, "
+            "       c.transition_id, r.kind AS run_kind "
+            "FROM candidates c JOIN runs r ON r.run_id = c.run_id "
+            f"WHERE c.symbol = %s AND c.ts BETWEEN %s AND %s{rating_sql}"
         )
-        params_c: list[Any] = [symbol, first_ts, last_ts, *scope_params]
-        if rating:
-            sql_c += " AND rating = ANY(%s)"
-            params_c.append([r.strip() for r in rating.split(",") if r.strip()])
+        params_c: list[Any] = [symbol, first_ts, last_ts, *rating_params]
+        if layer != "all":
+            sql_c += " AND r.kind = 'live'"
         # DESC, а не ASC: при сортировке по возрастанию лимит отрезал самые
         # свежие маркеры — на окне в 5000 баров свечи шли до сегодня, а стрелки
         # обрывались двумя неделями раньше, и выглядело это как «кандидатов нет».
         # Берём последние MARKER_LIMIT, лишнюю строку — чтобы знать про обрезку.
-        sql_c += " ORDER BY ts DESC LIMIT %s"
+        sql_c += " ORDER BY c.ts DESC LIMIT %s"
         params_c.append(MARKER_LIMIT + 1)
         rows_c = fetch_all(sql_c, params_c)
         truncated = len(rows_c) > MARKER_LIMIT
@@ -315,12 +375,19 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     markers = []
     for c in candidates:
         quality = "" if c["quality_score"] is None else f" {c['quality_score']:.2f}"
+        # Ретроспективный кандидат обязан выглядеть иначе, а не просто стоять
+        # рядом: путать «система это сказала» и «переобученная модель так
+        # думает про прошлое» нельзя, а стрелка того же вида ровно к этому и
+        # приглашает. Кружок и приглушённый цвет вместо стрелки рейтинга.
+        retro = c["run_kind"] != "live"
         markers.append({
             "time": int(c["ts"].timestamp()),
             "position": "belowBar" if c["research_side"] == "long" else "aboveBar",
-            "color": _rating_color(c["rating"]),
-            "shape": "arrowUp" if c["research_side"] == "long" else "arrowDown",
-            "text": f"{c['rating'] or '—'} {c['research_side']}{quality}",
+            "color": "#64748b" if retro else _rating_color(c["rating"]),
+            "shape": "circle" if retro
+                     else ("arrowUp" if c["research_side"] == "long" else "arrowDown"),
+            "text": (f"ретро {c['research_side']}" if retro
+                     else f"{c['rating'] or '—'} {c['research_side']}{quality}"),
             "id": c["candidate_id"],
         })
 
@@ -332,6 +399,9 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
             for gid in group_ids
         ],
         "markers_truncated": truncated,
+        # Разбивка по слоям — чтобы строка под графиком могла сказать, сколько
+        # кандидатов в окне НЕ показано. Молчание здесь и было исходной бедой.
+        "marker_counts": counts,
         "atom_labels": {atom: naming.label_for_atom(atom) for atom in sorted(seen_atoms)},
         # Список признаков модели едет вместе с барами, а не отдельным
         # запросом: он зависит от прогона, и рассинхрон селектора с
