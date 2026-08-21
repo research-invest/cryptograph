@@ -316,6 +316,30 @@ def graph_page(request: Request, run: str | None = None, find: str | None = None
                 runs=runs_repo.list_runs(20, symbol, kind="train"))
 
 
+@app.get("/states", response_class=HTMLResponse)
+def states_page(request: Request, run: str | None = None):
+    """
+    Полный список состояний модели: цвет, имя, доля, чем выделяется.
+
+    Отдельная страница, а не блок на сводке: состояний у монеты бывает
+    полсотни, и на сводке это вытеснило бы всё остальное. Раньше их не было
+    нигде целиком — сводка показывала десять крупнейших, граф по одному,
+    график раскрашивал бары, — и легенда графика была единственным местом,
+    где цвета перечислялись подряд. Место под графиком она занимала большое,
+    а прочесть по ней было нечего: полсотни чипов подряд.
+
+    `kind="train"` в списке прогонов по той же причине, что у графа:
+    `market_groups` пишет только он, и live-прогон в селекторе означал бы
+    пустую страницу.
+    """
+    symbol = current_symbol(request)
+    run_id = opt_int(run) or _latest_train_id(symbol)
+    return page(request, "states.html", active="states", symbol=symbol,
+                run_id=run_id,
+                states=queries.states_page(run_id) if run_id else [],
+                runs=runs_repo.list_runs(20, symbol, kind="train"))
+
+
 @app.get("/chart", response_class=HTMLResponse)
 def chart_page(request: Request, run: str | None = None, focus: str | None = None):
     # ?focus=<unix-время> — переход «показать этого кандидата на графике».

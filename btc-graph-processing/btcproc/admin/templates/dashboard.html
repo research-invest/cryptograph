@@ -12,7 +12,9 @@
   </div>
   <div class="card">
     <div class="card-label">Состояний</div>
-    <div class="card-value">{{ data.graph.groups or '—' }}</div>
+    <div class="card-value">
+    {% if run_id %}<a href="/states?symbol={{ symbol }}&run={{ run_id }}">{{ data.graph.groups or '—' }} →</a>{% endif %}
+    </div>
     <div class="card-sub">{{ data.graph.transitions or '—' }} переходов</div>
   </div>
   <div class="card">
@@ -99,7 +101,8 @@
     <h2>Крупнейшие состояния</h2>
     <p class="hint" style="margin-top:0">Где рынок проводит больше всего времени.
       Имя выведено из отклонений признаков — номера при каждом обучении разные,
-      имена сравнимы</p>
+      имена сравнимы.
+      {% if run_id %}<a href="/states?symbol={{ symbol }}&run={{ run_id }}">Все состояния модели →</a>{% endif %}</p>
     <table>
       <thead><tr><th>Состояние</th><th>Доля</th><th>Дальше</th><th>Рост</th></tr></thead>
       <tbody>

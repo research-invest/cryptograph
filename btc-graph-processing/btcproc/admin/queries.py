@@ -331,8 +331,16 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
         # lightweight-charts требует маркеры по возрастанию времени.
         candidates = list(reversed(rows_c[:MARKER_LIMIT]))
 
-    group_ids = sorted({b["group_id"] for b in bars if b["group_id"] is not None})
-    palette = {gid: _color(i, len(group_ids)) for i, gid in enumerate(group_ids)}
+    # Палитра — по всем состояниям модели, а не по попавшим в окно: иначе
+    # цвет состояния менялся бы при каждом сдвиге периода (см. state_palette).
+    palette = state_palette(root)
+    window_ids = sorted({b["group_id"] for b in bars if b["group_id"] is not None})
+    # Состояние, которого нет в market_groups, — не норма, но и не повод
+    # оставлять бар без цвета: разметка live могла приехать раньше, чем
+    # досчитался граф. Такие получают оттенки в хвосте палитры.
+    missing = [gid for gid in window_ids if gid not in palette]
+    for offset, gid in enumerate(missing):
+        palette[gid] = _color(len(palette) + offset, len(palette) + len(missing))
     # Имена состояний для легенды: без них «состояние 7» ничего не говорит,
     # а сверяться с таблицей ради каждого цвета никто не будет. Ключ — root,
     # а не run_id: имена, как и сам граф, пишет только train.
@@ -394,9 +402,11 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     return {
         "bars": out_bars,
         "markers": markers,
+        # Состояния ОКНА, а не всей модели: подсказке и подписям на графике
+        # нужны только те, что видны. Полный список — на /states.
         "groups": [
             {"group_id": gid, "color": palette[gid], "name": names.get(gid, "")}
-            for gid in group_ids
+            for gid in window_ids
         ],
         "markers_truncated": truncated,
         # Разбивка по слоям — чтобы строка под графиком могла сказать, сколько
@@ -507,6 +517,31 @@ def indicator_series(run_id: int, symbol: str, name: str,
         # на всей: пустая панель без объяснения читается как поломка.
         "note": "" if points else "нет посчитанных значений в этом окне",
     }
+
+
+def state_palette(run_id: int) -> dict[float, str]:
+    """
+    Цвет каждого состояния МОДЕЛИ — по всем её состояниям сразу, а не по тем,
+    что попали в окно графика.
+
+    Раньше палитра считалась от набора состояний видимого периода, и цвет был
+    свойством ОКНА: сдвинул график на неделю — половина состояний поменяла
+    оттенок, потому что изменился их порядковый номер в отсортированном
+    списке. Заметить это трудно (все цвета «выглядят правильно»), а вреда два:
+    запомнить цвет нельзя, и список состояний на отдельной странице
+    показывал бы не те цвета, что график.
+
+    Ключ — корень модели: `market_groups` пишет только `train`, и у всех его
+    `live`-прогонов состояния те же самые.
+    """
+    root = runs_repo.model_root(run_id)
+    group_ids = [
+        float(r["group_id"]) for r in fetch_all(
+            "SELECT group_id FROM market_groups WHERE run_id = %s ORDER BY group_id",
+            (root,),
+        )
+    ]
+    return {gid: _color(i, len(group_ids)) for i, gid in enumerate(group_ids)}
 
 
 def _color(index: int, total: int) -> str:
@@ -693,6 +728,50 @@ def top_groups(run_id: int, limit: int = 10) -> list[dict]:
         "FROM market_groups WHERE run_id = %s ORDER BY size DESC LIMIT %s",
         (run_id, limit),
     )
+
+
+def states_page(run_id: int) -> list[dict]:
+    """
+    ВСЕ состояния модели — то, чего в интерфейсе не было нигде.
+
+    Сводка показывает десять крупнейших, граф — узлы по одному, график
+    раскрашивает бары. Общего списка «какие вообще состояния есть у этой
+    модели, как они выглядят и чем отличаются» не было, а он и есть первое,
+    что нужно, чтобы читать три остальные страницы.
+
+    Ничего не вычисляется: `market_groups` заполняет `train`, здесь только
+    чтение и цвет из общей палитры (инвариант 19). Цвет обязателен — без него
+    строку списка не сопоставить со свечой на графике.
+    """
+    root = runs_repo.model_root(run_id)
+    palette = state_palette(root)
+    rows = fetch_all(
+        "SELECT group_id, name, size, share, dominant_bias, up_share, "
+        "       avg_ret_pct, avg_vol_pct, top_features "
+        "FROM market_groups WHERE run_id = %s ORDER BY size DESC",
+        (root,),
+    )
+    seen = {name for row in rows for name in (row.get("top_features") or {})}
+    labels = naming.feature_labels(sorted(seen))
+    for row in rows:
+        row["color"] = palette.get(float(row["group_id"]), "#8892a0")
+        # top_features — словарь «признак → отклонение в сигмах». В строку
+        # идут три самых крупных по модулю, с русской формулировкой из того же
+        # словаря, которым названо само состояние: два словаря разъехались бы
+        # молча, и подпись начала бы противоречить имени.
+        features = row.get("top_features") or {}
+        top = sorted(features.items(), key=lambda kv: -abs(kv[1]))[:3]
+        row["top"] = [
+            {
+                "feature": name,
+                "value": value,
+                "title": labels.get(name, {}).get("title", name),
+                "phrase": (labels.get(name, {}).get("high" if value >= 0 else "low")
+                           or ""),
+            }
+            for name, value in top
+        ]
+    return rows
 
 
 def transitions_table(run_id: int, limit: int = 200) -> list[dict]:

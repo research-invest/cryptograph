@@ -345,6 +345,26 @@ nav.pager .muted { opacity: .45; }
 .toolbar .spacer { flex: 1; }
 .osc-group { display: flex; gap: 4px; }
 
+/* ─── Список состояний ──────────────────────────────────────────────────── */
+/* Кружок цвета — единственное, что связывает строку списка со свечой на
+   графике: имя состояния читается, номер живёт одну модель, а цвет виден
+   глазом сразу. Поэтому он идёт первым в строке и совпадает с палитрой
+   графика по построению (queries.state_palette). */
+.state-dot {
+  display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+  margin-right: 6px; vertical-align: -1px;
+}
+.states-table td { vertical-align: top; }
+/* Признаки, которыми состояние выделяется: фразы из того же словаря, что и
+   имя состояния. Каждая в своей плашке — сплошной строкой три формулировки
+   сливаются в одну длинную и нечитаемую. */
+.state-top { display: flex; flex-wrap: wrap; gap: 4px; }
+.state-feature {
+  font-size: 11px; color: var(--muted);
+  background: var(--panel-2, var(--panel)); border: 1px solid var(--line);
+  border-radius: 5px; padding: 1px 6px; white-space: nowrap;
+}
+
 /* ─── Граф ──────────────────────────────────────────────────────────────── */
 /* Высота во весь экран за вычетом шапки и панели: граф из 43 узлов
    в окошке 640px нечитаем. */
@@ -388,8 +408,13 @@ nav.pager .muted { opacity: .45; }
 /* Высоту режет то, что показано под свечами: панель признака и инспектор бара
    занимают место, и без вычета нижний край уезжал бы за окно. Переменную
    выставляет chart.html при включении панели — CSS не знает, включена ли она. */
+/* Высота — запасной вариант на случай, если скрипт не успел отработать:
+   фактическую считает fitChartHeight() от реального положения блока. Константа
+   здесь была единственным механизмом и врала: над графиком форма фильтров и
+   легенда, их высота меняется от ширины окна (поля переносятся), и при 250px
+   низ блока вместе с осью времени уезжал за нижний край окна. */
 .chart {
-  height: calc(100vh - 250px - var(--chart-extra, 0px)); min-height: 300px;
+  height: calc(100vh - 320px); min-height: 260px;
   border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
 }
 /* Панель признака — отдельный график lightweight-charts, синхронизированный
@@ -415,14 +440,35 @@ nav.pager .muted { opacity: .45; }
 /* Инспектор бара: всё, что система знает про бар под курсором. Живёт под
    графиком, а не в подсказке у курсора, по той же причине, по которой
    подсказка однострочная, — длина здесь меняется от бара к бару (атомов
-   бывает от нуля до десятка), и у курсора это прыгало бы. Высота
-   зафиксирована, чтобы не дёргалась разметка страницы. */
+   бывает от нуля до десятка), и у курсора это прыгало бы. */
+/* Высота ФИКСИРОВАНА, а не задана минимумом. `min-height: 42px` держал одну
+   строку, но у бара бывает от нуля до десятка атомов: строк становилось две-три,
+   блок раздувался, и вся разметка под ним прыгала при каждом движении мыши по
+   свечам. С автоподбором высоты графика это стало заметнее вдвое — график ещё и
+   пересчитывал собственную высоту на каждый прыжок.
+
+   Четыре строки: одна на числа бара (время, OHLC, объём, состояние) и три на
+   атомы — в боевых данных десяток атомов на баре укладывается в три строки при
+   типичной ширине окна. Что не влезло, прокручивается внутри блока, а наружу
+   не выпирает. */
 .bar-inspect {
-  min-height: 42px; margin: 6px 0 0; padding: 6px 10px;
+  /* Высота строки — по самому высокому элементу, а это чип атома:
+     18px текста + по 1px внутреннего отступа и рамки с каждой стороны. */
+  --bi-line: 18px;
+  --bi-row: calc(var(--bi-line) + 4px);
+  --bi-gap: 4px;
+  height: calc(var(--bi-row) * 4 + var(--bi-gap) * 3 + 14px);
+  margin: 6px 0 0; padding: 6px 10px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
-  font-size: 11.5px; color: var(--muted);
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px;
+  font-size: 11.5px; line-height: var(--bi-line); color: var(--muted);
+  display: flex; flex-wrap: wrap;
+  align-items: center; align-content: flex-start; gap: var(--bi-gap) 14px;
+  overflow-y: auto; overscroll-behavior: contain;
 }
+/* Строка-подсказка до первого наведения — единственный случай, когда контент
+   заведомо в одну строку. Центрируем её по высоте блока, иначе она висела бы
+   в верхнем углу пустого прямоугольника. */
+.bar-inspect:has(.bi-hint) { align-content: center; }
 .bar-inspect .bi-ts { color: var(--text); font-weight: 600; }
 .bar-inspect .bi-up { color: var(--green); }
 .bar-inspect .bi-down { color: var(--red); }
@@ -440,6 +486,9 @@ nav.pager .muted { opacity: .45; }
    с зажатой кнопкой читается как выделение текста, а не как таскание. */
 .chart.dragging, .chart.dragging canvas { cursor: grabbing; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+/* Строка ошибки под графиком. Пустая не занимает ничего — в отличие от
+   легенды, которая стояла здесь раньше и держала место всегда. */
+.chart-error:not(:empty) { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .chip { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
 .chip i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
 /* Имя состояния в легенде: приглушено, чтобы номер оставался якорем,

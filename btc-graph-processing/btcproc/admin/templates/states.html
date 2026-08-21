@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Состояния {{ symbol }} · crypto-graph{% endblock %}
+
+{% block content %}
+{# Монета в заголовке обязательна: «состояние 7» существует у каждой монеты и
+   означает у каждой свой рынок. Номер прогона — тоже: состояния
+   перенумеровываются при каждом обучении, и список без него читался бы как
+   справочник, который на самом деле живёт ровно одну модель. #}
+<h1>Состояния · {{ symbol }}</h1>
+
+<form class="toolbar" method="get">
+  <label>Прогон
+    <select name="run" onchange="this.form.submit()">
+      {# Список отфильтрован по kind="train" на сервере: market_groups пишет
+         только он, и live-прогон здесь дал бы пустую страницу. #}
+      {% for run in runs %}
+        <option value="{{ run.run_id }}" {{ 'selected' if run.run_id == run_id }}>
+          #{{ run.run_id }} — {{ run.started_at.strftime('%Y-%m-%d %H:%M') }} ({{ run.status }})
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <div class="spacer"></div>
+  <a href="/chart?symbol={{ symbol }}">Посмотреть на графике</a>
+  <a href="/graph?symbol={{ symbol }}&run={{ run_id }}">Посмотреть на графе</a>
+</form>
+
+<p class="hint">
+  Цвет — тот же, которым состояние раскрашено на графике. Он закреплён за
+  состоянием модели целиком, а не за периодом, поэтому список и график
+  сходятся на любом окне.
+  <b>Номера живут ровно одну модель:</b> каждое обучение нумерует состояния
+  заново, и «состояние 7» прошлой недели — другой рынок. Сравнимы имена, а не
+  номера; имя выведено из отклонений признаков, руками не задаётся.
+</p>
+
+<table class="states-table">
+  <thead>
+    <tr>
+      <th>Состояние</th>
+      <th class="num" title="Доля баров истории, размеченных этим состоянием">Доля</th>
+      <th class="num" title="Сколько баров попало в состояние">Баров</th>
+      <th title="Перекос исходов на горизонте 24 часа. Это описание прошлого, а не прогноз">Дальше</th>
+      <th class="num" title="Доля случаев, когда цена через 24 часа была выше">Рост</th>
+      <th class="num" title="Средний ход цены за 24 часа, в процентах">Ход</th>
+      <th class="num" title="Средний размах за 24 часа, в процентах">Размах</th>
+      <th title="Три признака с наибольшим отклонением от среднего, в сигмах">Чем выделяется</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for state in states %}
+    <tr>
+      <td>
+        {# Ссылка ведёт на граф с подсветкой узла — оттуда доступны переходы
+           и фон состояния, которых в таблице нет намеренно: строка должна
+           читаться с одного взгляда. #}
+        <a href="/graph?symbol={{ symbol }}&run={{ run_id }}&find={{ '%g'|format(state.group_id) }}"
+           title="показать на графе">
+          <i class="state-dot" style="background: {{ state.color }}"></i>
+          <b>{{ '%g'|format(state.group_id) }}</b>
+          <span class="cell-name">{{ state.name or 'без имени' }}</span>
+        </a>
+      </td>
+      <td class="num">{{ '%.1f'|format(state.share * 100) }}%</td>
+      <td class="num">{{ '{:,}'.format(state.size).replace(',', ' ') }}</td>
+      <td>
+        {%- if state.dominant_bias == 'long_skew' -%}<span class="long">чаще рост</span>
+        {%- elif state.dominant_bias == 'short_skew' -%}<span class="short">чаще падение</span>
+        {%- else -%}<span class="muted">без перекоса</span>{%- endif -%}
+      </td>
+      <td class="num">{{ '%.1f'|format(state.up_share * 100) if state.up_share is not none else '—' }}%</td>
+      <td class="num">{{ '%+.2f'|format(state.avg_ret_pct) if state.avg_ret_pct is not none else '—' }}</td>
+      <td class="num">{{ '%.2f'|format(state.avg_vol_pct) if state.avg_vol_pct is not none else '—' }}</td>
+      <td class="state-top">
+        {% for item in state.top %}
+          <span class="state-feature" title="{{ item.title }}: {{ '%+.2f'|format(item.value) }} σ">
+            {{ item.phrase or item.title }}
+          </span>
+        {% else %}
+          <span class="muted">—</span>
+        {% endfor %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="muted">У этого прогона нет состояний — граф пишет только train</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if states %}
+  <p class="hint">
+    Всего состояний: <b>{{ states|length }}</b>. Число состояний —
+    характеристика прогона, а не рынка монеты: процедура дробления
+    чувствительна к малым изменениям данных, и «стало больше состояний» само
+    по себе ничего не означает.
+  </p>
+{% endif %}
+{% endblock %}

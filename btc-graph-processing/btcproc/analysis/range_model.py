@@ -103,7 +103,29 @@ SEASONAL_HARMONICS: tuple[int, ...] = (1, 2)
 
 #: Две нормировки цели (A3). Все выводы засчитываются только при совпадении
 #: знака и порядка величины на обеих.
+#:
+#: **Кортеж не расширять.** Три стенда берут его как значение по умолчанию
+#: (`args.norm or list(rm.NORMALIZATIONS)`), и добавленный сюда элемент молча
+#: увеличил бы число их ячеек, а с ним и BH-поправку, — при том что их
+#: критерии заявлены на двух нормировках. Нормировка, нужная одной задаче,
+#: заводится ниже и запрашивается явно.
 NORMALIZATIONS: tuple[str, ...] = ("atr14", "atr_h")
+
+#: Нормировки сверх основных, каждая — под конкретную задачу.
+#:
+#: `rv_h` — знаменатель `realized_vol` по окну горизонта, то есть величина,
+#: посчитанная ПО ЗАКРЫТИЯМ. Нужна задаче A ТЗ по геометрии свечи
+#: (`crypto-graph/docs/tz_candle_geometry_20-08-26.md`, §2.4) и там же
+#: объяснена: цель `range_ratio` делится на ATR, а ATR построен из размахов
+#: баров — из тех же величин, что оценщики Паркинсона и Гармана–Класса. Общая
+#: конструкция между предиктором и знаменателем цели способна дать
+#: ЛОЖНОПОЛОЖИТЕЛЬНЫЙ результат, и обе нормировки A3 от неё не защищают: они
+#: обе range-основанные. `rv_h` конструкцию не разделяет.
+EXTRA_NORMALIZATIONS: tuple[str, ...] = ("rv_h",)
+
+#: Оценщики дисперсии из полного OHLC — задача A ТЗ по геометрии свечи.
+#: Порядок здесь же задаёт порядок колонок `range_estimator_columns`.
+RANGE_ESTIMATORS: tuple[str, ...] = ("p", "gk", "rs")
 
 #: Уровни бенчмарка, от тривиального к основному.
 BENCHMARK_LEVELS: tuple[str, ...] = ("B0", "B1", "B2")
@@ -112,6 +134,11 @@ BENCHMARK_LEVELS: tuple[str, ...] = ("B0", "B1", "B2")
 #: которую здесь зовут с bars_per_day=1). Та же величина, что в
 #: measure_deriv_range.py, ради одинаковой длины блока у задач B и C.
 AUTOCORR_MAX_LAG_BARS = 5000
+
+#: Минимум строк в каждой части разреза 70/30 (`holdout_forward`). Тот же
+#: порядок, что у `holdout.split_bar`: на меньшем блочный бутстрап меряет
+#: собственный шум, а не эффект.
+MIN_HOLDOUT_PART = 1000
 
 
 # ─── Горизонт и цель ────────────────────────────────────────────────────────
@@ -141,6 +168,11 @@ def range_target(base: pd.DataFrame, h_bars: int, normalization: str) -> pd.Seri
       не свойство рынка.
     * `atr_h` — знаменатель ATR по окну, равному горизонту. Числитель и
       знаменатель меряют одну и ту же длину времени.
+    * `rv_h` — знаменатель `realized_vol` по окну горизонта, переведённый в
+      цену. НЕ входит в `NORMALIZATIONS` и запрашивается явно: это контроль
+      задачи A ТЗ по геометрии свечи, где предиктор построен из тех же
+      размахов баров, что и ATR. Единственная из трёх, не разделяющая
+      конструкцию с range-оценщиками.
 
     Расхождение выводов между нормировками — это результат ПРО НОРМИРОВКУ, и
     записывать его надо именно так, а не как результат про рынок.
@@ -149,6 +181,12 @@ def range_target(base: pd.DataFrame, h_bars: int, normalization: str) -> pd.Seri
         atr = ind.atr(base, 14)
     elif normalization == "atr_h":
         atr = ind.atr(base, h_bars)
+    elif normalization == "rv_h":
+        # `realized_vol` — доля, `forward_range_ratio` ждёт величину в цене
+        # (как ATR): умножаем на закрытие того же бара. Никакого сдвига здесь
+        # нет и быть не должно — знаменатель обязан быть известен на баре t.
+        rv = ind.realized_vol(base["close"], h_bars)
+        atr = rv.where(rv > 0) * base["close"]
     else:
         raise ValueError(f"неизвестная нормировка {normalization!r}")
     return forward_range_ratio(base, atr, h_bars)
@@ -180,6 +218,84 @@ def har_columns(close: pd.Series) -> pd.DataFrame:
         rv = ind.realized_vol(close, window)
         columns[f"log_rv_{window}"] = np.log(rv.where(rv > 0))
     return pd.DataFrame(columns, index=close.index)
+
+
+def range_estimators(base: pd.DataFrame) -> pd.DataFrame:
+    """
+    Три оценщика дисперсии ОДНОГО бара из полного OHLC — задача A ТЗ
+    `crypto-graph/docs/tz_candle_geometry_20-08-26.md`.
+
+        Паркинсон       σ²_P  = (1 / (4·ln2)) · (ln(H/L))²
+        Гарман–Класс    σ²_GK = 0.5·(ln(H/L))² − (2·ln2 − 1)·(ln(C/O))²
+        Роджерс–Сатчелл σ²_RS = ln(H/C)·ln(H/O) + ln(L/C)·ln(L/O)
+
+    Все три безразмерны и масштабно инвариантны по построению: умножение всех
+    цен на константу не меняет ни одного отношения под логарифмом.
+
+    **Почему их три, а не один.** Паркинсон видит только размах и завышает
+    оценку на трендовом баре — снос внутри бара он засчитывает как
+    волатильность. Гарман–Класс добавляет тело, но от сноса не свободен.
+    Роджерс–Сатчелл от сноса не зависит вовсе, и он же наименее избыточен к
+    HAR-RV по разведке перед прогоном (R² на `har_columns` 0.93–0.98 против
+    0.97–0.99 у Паркинсона).
+
+    **Yang–Zhang не считается сознательно** (§1.6 ТЗ). Его овернайт-компонента
+    построена на разрыве `open[t]` против `close[t−1]`, а у 15-минутных баров
+    круглосуточной биржи разрыв — это один тик: медиана
+    `|open − close[-1]| / (high − low)` по пяти монетам Binance 0.0006–0.046
+    при p90 ≤ 0.17 (замер 2026-08-21). Компонента вырождается в шум округления.
+
+    **Ни один из трёх не считается для HYPEUSDT** — точнее, считать их можно,
+    но толковать нельзя: `ingest/bybit.py` строит `open` как `close.shift(1)`,
+    то есть `ln(C/O)` там равен полной close-to-close доходности бара, и GK с
+    RS меряют на этой монете другую величину. Ответственность вызывающего:
+    модуль не знает символа и молча посчитает что угодно.
+
+    Вырожденный бар (`high == low`) даёт ноль у всех трёх, и это ПРАВИЛЬНОЕ
+    значение, а не пропуск: нулевой размах — максимальное сжатие. NaN здесь
+    выбросил бы строку из окна усреднения и сдвинул агрегат (тот же довод,
+    что у `range_exp` в `features/builder.py`, аудит B8).
+    """
+    high, low = base["high"], base["low"]
+    open_, close = base["open"], base["close"]
+    hl = np.log(high / low)
+    co = np.log(close / open_)
+    ho, lo = np.log(high / open_), np.log(low / open_)
+    hc, lc = np.log(high / close), np.log(low / close)
+    return pd.DataFrame(
+        {
+            "p": hl ** 2 / (4.0 * math.log(2.0)),
+            "gk": 0.5 * hl ** 2 - (2.0 * math.log(2.0) - 1.0) * co ** 2,
+            "rs": hc * ho + lc * lo,
+        },
+        index=base.index,
+    )
+
+
+def range_estimator_columns(base: pd.DataFrame,
+                            windows: tuple[int, ...] = HAR_WINDOWS) -> pd.DataFrame:
+    """
+    Колонки бенчмарка из range-оценщиков: среднее σ² по окну, затем логарифм.
+
+    Шесть… точнее, `len(RANGE_ESTIMATORS) × len(windows)` колонок вида
+    `log_p_96`, `log_gk_672`, `log_rs_2880`. Устроены буква в букву как
+    `har_columns` и живут рядом с ними намеренно: разведи их по модулям — и
+    разъедется дисциплина логарифмирования, из-за которой одна ветка отдаёт
+    NaN, а другая −inf.
+
+    Усреднение ДО логарифма, а не после: среднее логарифмов — это среднее
+    геометрическое дисперсий, оно занижено на всплесках, а HAR по построению
+    моделирует среднее арифметическое. Неположительное среднее (плоское окно
+    на неликвидном участке ранней истории) уходит в NaN — строка без
+    волатильности это отсутствие наблюдения, а не −inf.
+    """
+    estimators = range_estimators(base)
+    columns: dict[str, pd.Series] = {}
+    for name in RANGE_ESTIMATORS:
+        for window in windows:
+            mean = estimators[name].rolling(window, min_periods=window).mean()
+            columns[f"log_{name}_{window}"] = np.log(mean.where(mean > 0))
+    return pd.DataFrame(columns, index=base.index)
 
 
 def seasonal_columns(index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -367,6 +483,47 @@ def walk_forward(n: int, target: np.ndarray, ts: np.ndarray, gap: int, folds: in
 
 
 # ─── Модели ─────────────────────────────────────────────────────────────────
+def holdout_forward(n: int, target: np.ndarray, ts: np.ndarray, gap: int,
+                    predict, frac: float = 0.7) -> FoldPredictions:
+    """
+    Один разрез вместо walk-forward: учим на первых `frac` истории, проверяем
+    на остатке, между ними — зазор в горизонт.
+
+    Зачем рядом с `walk_forward`, а не вместо него. Walk-forward отвечает на
+    вопрос «работает ли модель в среднем по истории» и усредняет пять эпох;
+    разрез 70/30 отвечает на другой — «работает ли она на данных, которых не
+    видел ни один этап подгонки», — и это единственная проверка, которую в
+    проекте признают решающей (раздел 26, `holdout.split_bar`). Задача A ТЗ по
+    геометрии свечи требует именно её.
+
+    Возвращается тот же `FoldPredictions` с одним фолдом, поэтому `compare`,
+    `Gain` и блочный бутстрап работают без изменений — приращение считается
+    той же арифметикой, что и в остальных задачах модуля (инвариант 11).
+
+    Зазор обязателен и здесь: метка бара `t` считается по барам `t+1…t+gap`,
+    и без пропуска последние строки обучения видят начало проверочного окна.
+    """
+    if gap <= 0:
+        raise ValueError("зазор должен быть положительным и равным горизонту замера")
+    cut = int(n * frac)
+    train, test = slice(0, cut), slice(cut + gap, n)
+    if train.stop < MIN_HOLDOUT_PART or test.stop - test.start < MIN_HOLDOUT_PART:
+        raise ValueError(
+            f"разрез {frac} на {n} строках при зазоре {gap} даёт слишком "
+            f"короткую часть ({train.stop} / {test.stop - test.start})"
+        )
+    predicted = np.asarray(predict(train, test), dtype=float)
+    actual = target[test]
+    if len(predicted) != len(actual):
+        raise ValueError("прогноз и факт разной длины — ошибка в predict")
+    return FoldPredictions(
+        ts=ts[test], actual=actual, predicted=predicted,
+        train_mean=np.full(len(actual), float(target[train].mean())),
+        fold=np.ones(len(actual), dtype=int),
+        n_train=[train.stop - train.start],
+    )
+
+
 def ols_predictor(columns: np.ndarray, target: np.ndarray):
     """
     Обычный МНК со свободным членом; пустая матрица колонок даёт прогноз-константу.

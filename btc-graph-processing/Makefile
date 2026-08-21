@@ -1,7 +1,7 @@
 .PHONY: help setup install init-db ingest ingest-all ingest-metrics train train-all train-fast \
         live live-all status admin hostmon hostmon-once hostmon-test-telegram \
         maintenance validate-holdout control-model measure-range \
-        validate-range range-forecast test \
+        validate-range range-forecast measure-candle test \
         docker-up docker-down docker-logs
 
 # Нужен Python 3.10+: код пользуется аннотациями `str | None`, а `python3` на
@@ -32,6 +32,7 @@ help:
 	@echo "measure-range — стенд «размах × горизонт × бенчмарк»"
 	@echo "validate-range — размах на отложенной части: конфигурация против бенчмарка"
 	@echo "range-forecast — квантильный регрессор размаха на признаках"
+	@echo "measure-candle — range-оценщики дисперсии сверх бенчмарка размаха"
 	@echo "test       — тесты"
 	@echo "docker-up  — поднять админку в docker (нужен запущенный btc-graph)"
 	@echo "ingest-metrics — деривативные метрики Binance USD-M в deriv_metrics"
@@ -139,6 +140,15 @@ validate-range:
 # условий заявлен в шапке скрипта.
 range-forecast:
 	$(PY) scripts/fit_range_forecast.py --all
+
+# Задача A ТЗ по геометрии свечи: добавляют ли оценщики дисперсии из полного
+# OHLC (Паркинсон, Гарман–Класс, Роджерс–Сатчелл) что-нибудь к HAR-RV на
+# закрытиях плюс сезонность. Отложенная часть 70/30, три горизонта, три
+# нормировки — третья (`rv_h`) обязательна и считается по закрытиям: без неё
+# предиктор делил бы конструкцию со знаменателем цели.
+# HYPEUSDT исключена по данным, а не по результату (синтетический `open`).
+measure-candle:
+	$(PY) scripts/measure_candle_range.py --all
 
 test:
 	$(PY) -m pytest -q

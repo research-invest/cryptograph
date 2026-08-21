@@ -316,7 +316,7 @@ signature и контекстные визуально: первые входя�
 нет, и одинаковыми в интерфейсе они выглядеть не должны (инвариант 3).
 Обоснования — `docs/development_log.md`, раздел 28.
 
-**Раскраска ограничена моделью, маркеры кандидатов — нет** (раздел 51).
+**Раскраска ограничена моделью, маркеры кандидатов — нет** (раздел 52).
 `group_id` — нумерация конкретного обучения, поэтому цвет свечи берётся строго
 по `model_run_scope`. Кандидат же либо был выпущен на этом баре, либо не был, и
 переобучение задним числом этого не меняет; фильтр по модели давал здесь
@@ -333,7 +333,8 @@ signature и контекстные визуально: первые входя�
 запрос), `db/activity.py` — состояние самой базы (активные запросы для
 страницы «Сервер», снятие зависшего бэкенда), `auth.py` — сессии, rate-limit,
 allowlist.
-Страниц восемь: сводка, граф, график, кандидаты, прогоны, **сервер**
+Страниц девять: сводка, граф, график, **состояния** (полный список состояний
+модели с цветами палитры графика — журнал 54), кандидаты, прогоны, **сервер**
 (нагрузка хоста, прогоны и живой срез запросов PostgreSQL — журнал 44),
 уведомления и `/help` — шпаргалка для оператора. Она выжимка из
 `docs/operator_guide.md` и не заменяет его: процедуры (заведение монеты,
@@ -632,8 +633,11 @@ SQLite-файл `<repo>/logs/hostmon.sqlite`, а не в Postgres, — мони�
 | Завести деривативные метрики (ОИ, long/short ratio, тейкеры) | `btcproc/ingest/metrics.py` + `deriv_metrics` (таблица помонетная, отдельная команда `ingest-metrics`) |
 | Посчитать величины деривативов | `btcproc/features/deriv.py`; частоты, новизна, B4, автокорреляция — `scripts/deriv_frequencies.py` |
 | Проверить гейт R деривативов (приращение R² сверх `rv`, не «сильнее rv») | `scripts/measure_deriv_range.py`, методика — `btcproc/analysis/range_lift.py:partial_r2_gain`. **Бенчмарк `rv` неполон — в нём нет часа дня; см. следующую строку** |
-| Предсказать РАЗМАХ по признакам (квантили, `range_lift`, режим) | `btcproc/analysis/range_forecast.py`. В конвейере с 2026-08-19: учится в `train` за флагом `RANGE_FORECAST_ENABLED`, хранится в `range_models`, применяется в `live` (разделы 48 и 49). Отдельный прогон замера — `make range-forecast` |
+| Предсказать РАЗМАХ по признакам (квантили, `range_lift`, режим) | `btcproc/analysis/range_forecast.py`. В конвейере с 2026-08-19: учится в `train` за флагом `RANGE_FORECAST_ENABLED`, хранится в `range_models`, применяется в `live` (разделы 49 и 50). Отдельный прогон замера — `make range-forecast` |
 | Проверить, предсказывает ли КОНФИГУРАЦИЯ размах лучше тривиального бенчмарка | `scripts/validate_range_holdout.py` (`make validate-range`) — на отложенной части, готовыми моделями Ш0, без `train`. Ответ на 2026-08-19: нет, проигрывает во всех 36 ячейках (раздел 47.10) |
+| Проверить range-оценщики дисперсии из OHLC (Паркинсон, Гарман–Класс, Роджерс–Сатчелл) | `scripts/measure_candle_range.py` (`make measure-candle`), колонки — `analysis/range_model.range_estimator_columns`. Ответ на 2026-08-21: не добавляют, 2 ячейки из 45 (раздел 53) |
+| Проверить величину на ОТЛОЖЕННОЙ части одним разрезом, а не walk-forward | `analysis/range_model.holdout_forward` — 70/30 с зазором, возвращает тот же `FoldPredictions`, что `walk_forward` |
+| Посчитать поперечные величины (ранг внутри корзины, бета, дисперсия корзины) | `btcproc/analysis/cross_section.py`; гейты данных, новизны и частот — `scripts/cross_section_frequencies.py`, замеры — `scripts/measure_cross_section.py` |
 | Мерить что угодно ПРОТИВ РАЗМАХА честно (три горизонта, две нормировки, out-of-sample) | `scripts/measure_range_horizons.py` (`make measure-range`), методика — `btcproc/analysis/range_model.py`. Бенчмарк B2 = HAR-RV + сезонность; без часа дня бенчмарк бенчмарком не является (раздел 47) |
 | Проверить гейт G на НЕПРЕРЫВНОЙ цели (не только бинарной на кандидатах) | `scripts/measure_deriv_gradation.py`, методика — `btcproc/analysis/gradation.py` (обобщённый Cochran–Armitage) |
 | Изменить правила сборки кандидата | `btcproc/candidates/builder.py` |
@@ -650,3 +654,4 @@ SQLite-файл `<repo>/logs/hostmon.sqlite`, а не в Postgres, — мони�
 | Поменять память Postgres (`shared_buffers` и прочее) | `command` сервиса postgres в `btc-graph/docker-compose.yml` — **не** `ALTER SYSTEM`, инвариант 20 |
 | Добавить метрику хоста на страницу «Сервер» | `btcproc/hostmon/collect.py` + `SCHEMA` в `store.py` + `series` + `templates/server.html` |
 | Поправить панели графика (объём, признак, инспектор бара) | `btcproc/admin/templates/chart.html` + `queries.chart_data` / `indicator_series` |
+| Поменять цвета состояний | `queries.state_palette` — одна палитра на модель, её берут и график, и список состояний. По окну графика цвет не считать: он перестанет быть узнаваемым |

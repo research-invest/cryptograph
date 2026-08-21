@@ -96,6 +96,11 @@
   <div class="legend-group">
     <b>Цвет свечи = состояние рынка</b>
     <span class="legend-item">переход виден как смена цвета</span>
+    {# Список цветов раньше лежал под графиком целиком. Полсотни чипов подряд
+       читать невозможно, поэтому здесь ссылка, а список — отдельной
+       страницей, где рядом с цветом есть доля, перекос и чем состояние
+       выделяется. #}
+    <span class="legend-item"><a href="/states?symbol={{ symbol }}&run={{ run_id }}">все состояния модели</a></span>
   </div>
   <div class="legend-group">
     <b>Стрелка = кандидат</b>
@@ -124,7 +129,13 @@
 <div id="barInspect" class="bar-inspect">
   <span class="bi-hint">наведи курсор на бар — здесь появятся его цифры и события</span>
 </div>
-<div id="legend" class="legend"></div>
+{# Раньше здесь лежала легенда цветов: полсотни чипов «цвет + номер + имя»
+   подряд. Прочесть по ней было нечего — глазом состояние ищут на самом
+   графике, а не в списке из пятидесяти оттенков, — а место она занимала
+   больше, чем инспектор бара. Полный список состояний с теми же цветами и
+   числами живёт на /states; здесь остался только вывод ошибки запроса,
+   которому нужно место под графиком. #}
+<div id="chartError" class="chart-error"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -282,6 +293,56 @@ function fitPrice() {
   requestAnimationFrame(() => scale.applyOptions({ autoScale: false }));
 }
 
+// Высота графика считается от ФАКТИЧЕСКОГО положения блока, а не константой в
+// CSS. Константа врала, и врала молча: над графиком форма фильтров и легенда,
+// их высота зависит и от ширины окна (поля переносятся на вторую строку), и от
+// состава кнопок, — а при `100vh - 250px` низ блока вместе с осью времени
+// уезжал за нижний край окна, и шкала времени становилась не видна без
+// прокрутки. Под графиком та же арифметика: панель признака, инспектор бара и
+// нижняя легенда занимают место ровно тогда, когда показаны.
+//
+// `autoSize: true` у обоих графиков подхватывает новую высоту контейнера сам,
+// поэтому пересоздавать или дёргать resize() библиотеки не нужно.
+const CHART_MIN_HEIGHT = 260;
+
+function fitChartHeight() {
+  const box = el('chart');
+  if (!box) return;
+  const top = box.getBoundingClientRect().top;
+  // Всё, что живёт ПОД графиком и претендует на ту же высоту. Скрытые блоки
+  // (панель признака без выбранных линий) дают нулевой offsetParent и в сумму
+  // не попадают — именно это раньше делала переменная --chart-extra, только
+  // фиксированным числом и лишь для одного из трёх блоков.
+  const below = ['indicator-pane', 'barInspect', 'chartError'].reduce((sum, id) => {
+    const node = el(id);
+    if (!node || !node.offsetParent) return sum;
+    const style = window.getComputedStyle(node);
+    return sum + node.getBoundingClientRect().height
+      + parseFloat(style.marginTop || 0) + parseFloat(style.marginBottom || 0);
+  }, 0);
+  // Нижний зазор: график не должен упираться в край окна вплотную.
+  const height = Math.max(CHART_MIN_HEIGHT,
+                          Math.round(window.innerHeight - top - below - 12));
+  const next = height + 'px';
+  if (box.style.height !== next) box.style.height = next;
+}
+
+window.addEventListener('resize', fitChartHeight);
+
+// Блоки под графиком меняют высоту сами по себе: инспектор бара растёт со
+// второй строки, когда у бара много атомов, а нижняя легенда — когда в окне
+// много состояний. Без наблюдателя график после такого снова вылезал бы за
+// нижний край. Рекурсии здесь нет: высота графика на высоту этих блоков не
+// влияет, а `fitChartHeight` не трогает стиль, когда число не изменилось.
+if (window.ResizeObserver) {
+  const observer = new ResizeObserver(() => fitChartHeight());
+  ['indicator-pane', 'barInspect', 'chartError'].forEach((id) => {
+    const node = el(id);
+    if (node) observer.observe(node);
+  });
+  document.querySelectorAll('.legend-box, form').forEach((node) => observer.observe(node));
+}
+
 // Курсор-ладонь во время перетаскивания: без него непонятно, тащится график
 // или выделяется страница. Сама библиотека курсор не меняет.
 (function () {
@@ -392,7 +453,7 @@ async function load() {
   if (!response.ok) {
     // 422 = монета и прогон не согласованы. Без явного сообщения это выглядит
     // как «граф ничего не нашёл»: LEFT JOIN просто не совпадает по symbol.
-    el('legend').innerHTML =
+    el('chartError').innerHTML =
       `<span class="chip warn">${data.detail || 'ошибка запроса'}</span>`;
     series.setData([]);
     series.setMarkers([]);
@@ -418,13 +479,7 @@ async function load() {
   marks.sort((a, b) => a.time - b.time);
   series.setMarkers(marks);
 
-  // Имя состояния в легенде: «состояние 7» само по себе ничего не значит,
-  // а сверяться с таблицей ради каждого цвета никто не станет.
-  el('legend').innerHTML = data.groups.map(g =>
-    `<span class="chip" title="состояние ${g.group_id}${g.name ? ': ' + g.name : ''}">` +
-    `<i style="background:${g.color}"></i>${g.group_id}` +
-    `${g.name ? ' <span class="chip-name">(' + g.name + ')</span>' : ''}</span>`
-  ).join('');
+  el('chartError').innerHTML = '';
   // Про обрезку маркеров нужно сказать вслух: иначе «кандидата нет на графике»
   // неотличимо от «кандидат не выпущен».
   const cut = data.markers_truncated
@@ -533,7 +588,7 @@ async function syncIndicators() {
     pane.classList.remove('on');
     // Панель занимает место под графиком — вернуть его нужно ровно тогда,
     // когда панель скрыта, иначе свечи останутся сплюснутыми.
-    document.documentElement.style.setProperty('--chart-extra', '0px');
+    fitChartHeight();
     renderIndicatorLegend();
     return;
   }
@@ -541,7 +596,7 @@ async function syncIndicators() {
   await Promise.all([...wanted].map(loadOneIndicator));
 
   pane.classList.add('on');
-  document.documentElement.style.setProperty('--chart-extra', '190px');
+  fitChartHeight();
   const range = chart.timeScale().getVisibleLogicalRange();
   if (range) subChart.timeScale().setVisibleLogicalRange(range);
   renderIndicatorLegend();
@@ -891,6 +946,7 @@ function focusAt(time) {
   showBar(bars[idx]);
 }
 
+fitChartHeight();
 load().then(() => { if (FOCUS) focusAt(FOCUS); });
 </script>
 {% endblock %}

@@ -158,5 +158,6 @@
       "Bash(docker rmi *)",
       "Bash(./02_configure.sh --reset-db*)"
     ]
-  }
+  },
+  "outputStyle": "Concise"
 }

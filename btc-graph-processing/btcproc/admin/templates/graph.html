@@ -63,6 +63,9 @@
   <label><input type="checkbox" id="hideIsolated" checked> скрывать без связей</label>
 
   <div class="spacer"></div>
+  {# Граф показывает связи, но не даёт прочесть состояния подряд: узлы
+     подписаны номерами, а имя и доля видны только по клику. Список — рядом. #}
+  <a href="/states?symbol={{ symbol }}&run={{ run_id }}">Список состояний</a>
   <button id="fit" type="button">Уместить</button>
   <button id="reload" type="button" class="primary">Обновить</button>
 </form>
