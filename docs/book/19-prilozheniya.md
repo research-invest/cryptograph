@@ -349,9 +349,19 @@ $$\text{IC}(t) = \operatorname{corr}_{\text{Sp}}(x_i(t), y_i(t))_{i \in B_t}$$
 
 ### Уведомления и мониторинг
 
-`NOTIFY_ENABLED`, `NOTIFY_MAX_CANDIDATE_AGE_MIN` (180),
-`HOSTMON_ALERT_*`, `ADMIN_PG_SLOW_SECONDS`, `ADMIN_MAX_CONCURRENT_RUNS`,
+`NOTIFY_ENABLED`, `NOTIFY_MAX_CANDIDATE_AGE_MIN` (180), `NOTIFY_WORKERS`,
+`NOTIFY_TIMEOUT`, `NOTIFY_QUEUE_SIZE`, `NOTIFY_FLUSH_SECONDS`,
+`NOTIFY_RETENTION_DAYS`; `HOSTMON_ALERT_*` (пороги, cooldown, гистерезис,
+выдержка), `HOSTMON_INTERVAL_SECONDS`, `HOSTMON_KEEP_DAYS`, `HOSTMON_DB`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; `ADMIN_*` (порт, пароль, сессии,
+rate-limit, allowlist, `ADMIN_PG_SLOW_SECONDS`, `ADMIN_MAX_CONCURRENT_RUNS`),
 `RUN_STALE_AFTER_MINUTES` (120).
+
+> Таблицы выше **выборочные**: полный список — `btcproc/config.py`, 102
+> переменные окружения, каждая с комментарием о смысле значения по умолчанию.
+> Сюда вынесено то, что меняет результат расчёта; пороги детекторов SMC
+> (`SMC_SWING_*`, `SMC_FVG_MIN_ATR` и ещё девять), параметры Fear & Greed и
+> настройки админки остаются в коде.
 
 ---
 

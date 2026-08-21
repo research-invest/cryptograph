@@ -17,7 +17,7 @@ flowchart LR
     C --> N4
     C --> RD
     subgraph PG["PostgreSQL :5432"]
-        P1["schema processing<br/>20 таблиц генератора<br/>сырьё, признаки, модели"]
+        P1["schema processing<br/>19 таблиц генератора<br/>сырьё, признаки, модели"]
         P2["schema public<br/>candidates (upsert)<br/>+ pgvector(32)"]
         P3["candidate_events<br/>hypertable, retention 90d"]
         P4["2 continuous aggregate"]

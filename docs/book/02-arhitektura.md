@@ -281,7 +281,7 @@ status: dict[str, bool | None] = {"db": None, "graph": None, "redis": None}
 
 Разделение схем — не косметика: таблицы `public.candidates` и
 `public.candidate_events` принадлежат приёмнику, в них пишет только его
-pipeline. Схема `processing` — 20 таблиц генератора, создаётся идемпотентным
+pipeline. Схема `processing` — 19 таблиц генератора, создаётся идемпотентным
 `schema.sql` при каждом `make init-db`.
 
 ### Память PostgreSQL задаётся в compose, а не тюнером
@@ -339,7 +339,7 @@ FGI_ENABLED=true SMC_ENABLED=true python3 -m pytest
 
 Полная схема — приложение 19.5, здесь карта.
 
-**Схема `processing` (генератор), 20 таблиц:**
+**Схема `processing` (генератор), 19 таблиц:**
 
 | Группа | Таблицы |
 |---|---|
@@ -350,14 +350,17 @@ FGI_ENABLED=true SMC_ENABLED=true python3 -m pytest
 | Выход | `candidates` |
 | Служебное | `runs`, `notification_rules`, `notification_deliveries` |
 
-**Схема `public` (приёмник), 2 таблицы + 2 агрегата:**
+**Схема `public` (приёмник), 3 таблицы + 2 агрегата:**
 
 | Объект | Тип | Содержимое |
 |---|---|---|
 | `candidates` | обычная, upsert | последняя оценка каждого кандидата + вектор pgvector(32) |
 | `candidate_events` | hypertable, append-only, retention 90 дней | лог всех оценок во времени |
+| `market_events` | hypertable | создана миграцией 001 и **кодом не используется** |
 | `hourly_candidate_stats` | continuous aggregate | почасовая статистика по направлению и рейтингу |
 | `daily_group_stats` | continuous aggregate | дневная статистика по состояниям |
+
+Плюс служебная `alembic_version`.
 
 Ключевое различие в устройстве ключей:
 
@@ -365,10 +368,17 @@ FGI_ENABLED=true SMC_ENABLED=true python3 -m pytest
 processing.bar_states     PK (symbol, ts, run_id)
 processing.features       PK (symbol, ts, version)
 processing.outcomes       PK (symbol, ts, horizon)
-processing.market_groups  PK (run_id, group_id)   ← symbol не нужен: run_id задаёт монету
-public.candidates         PK (candidate_id)        ← symbol внутри id
+processing.bar_events     PK (symbol, ts)
+processing.market_groups  PK (run_id, group_id)     ← symbol не нужен: run_id задаёт монету
+processing.candidates     PK (candidate_id)          ← symbol внутри id
+public.candidates         PK (symbol, candidate_id)  ← symbol вынесен в ключ явно
 Neo4j MarketGroup         ключ (symbol, group_id)
 ```
+
+Обратите внимание на две таблицы `candidates`. У генератора ключ — один
+`candidate_id` (символ уже внутри хэша). У приёмника символ вынесен в ключ
+отдельной колонкой: по нему идут все его выборки и группировки, и полагаться на
+то, что он «где-то внутри идентификатора», там нельзя.
 
 `market_groups`, `transitions`, `state_models`, `event_blocks` не имеют колонки
 `symbol` — и это не упущение. **Один прогон = одна монета**, поэтому `run_id`

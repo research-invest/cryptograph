@@ -249,10 +249,10 @@ continuous aggregate TimescaleDB не поддерживает: агрегаты
 |---|---|---|---|---|---|
 | BTCUSDT | Binance | 2017-08 | 315 422 | 51 | BTCUSDT@4 |
 | ETHUSDT | Binance | 2017-08 | 315 234 | 35 | ETHUSDT@3 |
-| SOLUSDT | Binance | 2020-08 | 211 249 | 55 | SOLUSDT@2 |
-| AAVEUSDT | Binance | 2020-10 | 204 499 | 24 | low-liquidity |
-| TAOUSDT | Binance | 2024-04 | 82 768 | 44 | low-liquidity |
-| HYPEUSDT | **Bybit** | 2025-07 | 38 147 | 42 | young |
+| SOLUSDT | Binance | 2020-08 | 211 249 | 55 | SOLUSDT@3 |
+| AAVEUSDT | Binance | 2020-10 | 204 499 | 24 | AAVEUSDT@1 (low-liquidity) |
+| TAOUSDT | Binance | 2024-04 | 82 768 | 44 | TAOUSDT@1 (low-liquidity) |
+| HYPEUSDT | **Bybit** | 2025-07 | 38 147 | 42 | HYPEUSDT@3 (young) |
 
 Наблюдения, которые стоит держать в голове.
 
