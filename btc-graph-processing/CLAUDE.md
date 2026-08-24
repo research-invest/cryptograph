@@ -30,11 +30,12 @@ make fetch-external         # внешние дневные ряды (Fear & Gre
 make hostmon                # монитор нагрузки хоста (в проде — systemd btcproc-hostmon)
 make hostmon-test-telegram  # проверить канал уведомлений о нагрузке
 make ingest-metrics         # деривативные метрики Binance USD-M в deriv_metrics
+make ingest-depth           # снимок стакана в depth_snapshots (в кроне раз в минуту)
 ```
 
-`fetch-external` и `ingest-metrics` стоят особняком: это команды, ходящие в
-чужой (для `ingest-metrics` — в другой каталог того же Binance) API, и в
-`train`/`live` их нет намеренно — сетевой поход не должен ронять или
+`fetch-external`, `ingest-metrics` и `ingest-depth` стоят особняком: это
+команды, ходящие в чужой (для `ingest-metrics` — в другой каталог того же
+Binance) API, и в `train`/`live` их нет намеренно — сетевой поход не должен ронять или
 замедлять регулярный прогон. Прогоны только читают таблицы. Отсюда
 следствие, которое легко проглядеть: если включить `FGI_ENABLED=true` или
 `DERIV_ENABLED=true`, не заведя соответствующую команду в крон, ряд
@@ -636,6 +637,12 @@ SQLite-файл `<repo>/logs/hostmon.sqlite`, а не в Postgres, — мони�
 | Предсказать РАЗМАХ по признакам (квантили, `range_lift`, режим) | `btcproc/analysis/range_forecast.py`. В конвейере с 2026-08-19: учится в `train` за флагом `RANGE_FORECAST_ENABLED`, хранится в `range_models`, применяется в `live` (разделы 49 и 50). Отдельный прогон замера — `make range-forecast` |
 | Проверить, предсказывает ли КОНФИГУРАЦИЯ размах лучше тривиального бенчмарка | `scripts/validate_range_holdout.py` (`make validate-range`) — на отложенной части, готовыми моделями Ш0, без `train`. Ответ на 2026-08-19: нет, проигрывает во всех 36 ячейках (раздел 47.10) |
 | Проверить range-оценщики дисперсии из OHLC (Паркинсон, Гарман–Класс, Роджерс–Сатчелл) | `scripts/measure_candle_range.py` (`make measure-candle`), колонки — `analysis/range_model.range_estimator_columns`. Ответ на 2026-08-21: не добавляют, 2 ячейки из 45 (раздел 53) |
+| Проверить, сколько «находок» даёт САМА процедура на пустых данных | `scripts/surrogate_range.py` (`make surrogate-range`), суррогаты — `analysis/surrogate.py`. Прогон всего конвейера на данных, где предсказывать нечего. Ответ на 2026-08-24 и что он изменил в чтении раздела 49 — раздел 56 |
+| Понять, есть ли ХОТЬ ОДНА значимая конфигурация после поправки на множественность | `scripts/measure_configs.py` (`make measure-configs`), методика — `analysis/configs.py`. Ответ на 2026-08-24: 7 ключей на пять монет, и 99.3–99.8% ключей вообще не набирают выборки (раздел 57) |
+| Проверить граф как МОДЕЛЬ ДИНАМИКИ (а не предсказатель цены) | `scripts/measure_markov.py` (`make measure-markov`), методика — `analysis/markov.py`: плато implied timescales, тест Чепмена — Колмогорова, порядок цепи, независимый контроль BOCPD. Ответ на 2026-08-24: разметка не марковская (раздел 58) |
+| Проверить гипотезу «рынок меняется каждый квартал» без переобучения | `scripts/measure_drift.py` (`make measure-drift`), методика — `analysis/drift.py` (W₁ против случайных пар окон). Ответ на 2026-08-24: квартал не выделяется (раздел 59) |
+| Проверить АСИММЕТРИЮ ПУТИ (а не знак на горизонте) | `scripts/measure_path.py` (`make measure-path`), методика — `analysis/path.py`: тройной барьер против нулёвки, сохраняющей сезонность. Ответ на 2026-08-24: общей асимметрии нет (раздел 60) |
+| Копить снимки стакана | `btcproc/ingest/depth.py` + `depth_snapshots`, команда `ingest-depth` в кроне раз в минуту. Признаков из этих данных НЕ заводится до отдельного ТЗ — таблица заведена раньше решения о полезности намеренно (раздел 61) |
 | Проверить величину на ОТЛОЖЕННОЙ части одним разрезом, а не walk-forward | `analysis/range_model.holdout_forward` — 70/30 с зазором, возвращает тот же `FoldPredictions`, что `walk_forward` |
 | Посчитать поперечные величины (ранг внутри корзины, бета, дисперсия корзины) | `btcproc/analysis/cross_section.py`; гейты данных, новизны и частот — `scripts/cross_section_frequencies.py`, замеры — `scripts/measure_cross_section.py` |
 | Мерить что угодно ПРОТИВ РАЗМАХА честно (три горизонта, две нормировки, out-of-sample) | `scripts/measure_range_horizons.py` (`make measure-range`), методика — `btcproc/analysis/range_model.py`. Бенчмарк B2 = HAR-RV + сезонность; без часа дня бенчмарк бенчмарком не является (раздел 47) |

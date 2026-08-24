@@ -269,6 +269,41 @@ $$\text{xs\_fwd\_ret}_i = r_i - \frac{1}{|B|}\sum_{j\in B} r_j$$
 
 $$\text{IC}(t) = \operatorname{corr}_{\text{Sp}}(x_i(t), y_i(t))_{i \in B_t}$$
 
+### Динамика графа (глава 3.3а)
+
+Характерное время процесса из собственного значения матрицы переходов при
+лаге $\tau$:
+
+$$t_i(\tau) = -\frac{\tau}{\ln \lambda_i(\tau)}$$
+
+Условие Чепмена — Колмогорова, которое проверяется:
+
+$$T(k\tau) \approx T(\tau)^k \quad\Longleftrightarrow\quad
+\lambda_i(k\tau) \approx \lambda_i(\tau)^k$$
+
+Глубина памяти цепи — условная взаимная информация:
+
+$$I(S_{t+1}; S_{t-1} \mid S_t) = \sum_{s} P(S_t{=}s)
+\sum_{a,b} P(a,b \mid s)\ln\frac{P(a,b\mid s)}{P(a\mid s)P(b\mid s)}$$
+
+### Дрейф и путь (главы 9.4а, 12.12а)
+
+Расстояние Вассерштейна первого порядка между одномерными распределениями:
+
+$$W_1(F,G) = \int_0^1 \left|F^{-1}(p) - G^{-1}(p)\right| dp$$
+
+Тройной барьер: метка бара $t$ — какой из уровней достигнут первым при
+$s \in (t, t+H]$,
+
+$$U_t = C_t e^{+k\sigma_t},\qquad D_t = C_t e^{-k\sigma_t},
+\qquad \sigma_t = \text{ATR}_{14}(t)/C_t$$
+
+Аналитический якорь для процесса без сноса — вероятность достичь $+a$ раньше
+$-b$ **не зависит от волатильности**:
+
+$$P(\text{вверх раньше}) = \frac{b}{a+b}
+\ \xrightarrow{\ a=b\ }\ \tfrac12$$
+
 ---
 
 ## 19.5. Параметры конфигурации
@@ -418,6 +453,7 @@ make admin            # админка на 127.0.0.1:8100
 make test
 make fetch-external   # Fear & Greed → external_daily
 make ingest-metrics   # деривативы → deriv_metrics
+make ingest-depth     # снимки стакана → depth_snapshots (в кроне раз в минуту)
 make maintenance      # уборка + вакуум
 make hostmon          # монитор машины
 ```
@@ -435,6 +471,11 @@ make measure-range      # что угодно против размаха
 make validate-range     # конфигурация против размаха
 make range-forecast     # квантильный регрессор
 make measure-candle     # range-оценщики дисперсии
+make surrogate-range    # сколько находок даёт сама процедура на пустых данных
+make measure-configs    # FDR по всем конфигурациям
+make measure-markov     # граф как модель динамики: плато, CK, порядок, BOCPD
+make measure-drift      # выделяется ли последний квартал
+make measure-path       # асимметрия пути против сезонной нулёвки
 ```
 
 ### Приёмник

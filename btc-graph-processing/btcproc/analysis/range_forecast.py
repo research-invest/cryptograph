@@ -69,6 +69,7 @@ import numpy as np
 import pandas as pd
 
 from btcproc.analysis import range_model as rm
+from btcproc.features import indicators as ind
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,48 @@ MAX_COVERAGE_ERROR = 0.05
 ARTIFACT_VERSION = "rf1"
 
 
-def input_matrix(base: pd.DataFrame, features: pd.DataFrame
+def denominator_column(base: pd.DataFrame, horizon: str, normalization: str,
+                       base_minutes: int) -> pd.DataFrame:
+    """
+    Логарифм ЗНАМЕНАТЕЛЯ цели, известного на баре `t`, — диагностическая
+    колонка, а не часть модели.
+
+    Зачем она понадобилась (2026-08-24, суррогатный прогон задачи S). Цель —
+    `log(range_ratio) = log(будущий размах) − log(знаменатель)`, и знаменатель
+    известен УЖЕ на баре `t`. При нормировке `atr14` это окно в 14 баров, а
+    самое короткое окно бенчмарка B2 — 96. Значит модель, видящая 32 признака
+    (среди них `atr_rank` и прочие короткие), знает вычитаемое лучше
+    бенчмарка — и приращение R² частично меряет ЭТО, а не способность
+    предсказывать будущее.
+
+    На суррогате, где будущее непредсказуемо в принципе, механизм виден в
+    чистом виде: ΔR² = +0.21 при `atr14` и +0.013 при `atr_h`, где окно
+    знаменателя совпадает с горизонтом.
+
+    Колонка добавляется в бенчмарк ТОЛЬКО диагностическим флагом. Она не
+    входит ни в боевую модель, ни в штатный замер: её задача — ответить,
+    сколько от измеренного приращения остаётся, когда информационная
+    асимметрия убрана, а не улучшить прогноз.
+    """
+    h_bars = rm.horizon_bars(horizon, base_minutes)
+    if normalization == "atr14":
+        denominator = ind.atr(base, 14)
+    elif normalization == "atr_h":
+        denominator = ind.atr(base, h_bars)
+    elif normalization == "rv_h":
+        rv = ind.realized_vol(base["close"], h_bars)
+        denominator = rv.where(rv > 0) * base["close"]
+    else:
+        raise ValueError(f"неизвестная нормировка {normalization!r}")
+    # В долях цены, как и всё остальное: уровень цены за девять лет меняется
+    # на два порядка, и колонка в абсолютных долларах была бы прежде всего
+    # календарём.
+    scaled = (denominator / base["close"]).where(lambda x: x > 0)
+    return pd.DataFrame({"log_denominator": np.log(scaled)}, index=base.index)
+
+
+def input_matrix(base: pd.DataFrame, features: pd.DataFrame,
+                 extra_benchmark: pd.DataFrame | None = None
                  ) -> tuple[pd.DataFrame, list[str]]:
     """
     Матрица «B2 + признаки» БЕЗ цели, для предсказания.
@@ -107,16 +149,22 @@ def input_matrix(base: pd.DataFrame, features: pd.DataFrame
     ровно у последних баров истории. Предсказывать надо именно на них:
     воспользуйся `live` обучающей матрицей, он молча получил бы пустой прогноз
     на свежем баре и заполненный на баре суточной давности.
+
+    `extra_benchmark` — диагностическая добавка к колонкам бенчмарка
+    (`denominator_column`). По умолчанию None, то есть поведение боевого
+    контура и всех замеров до 2026-08-24 не меняется ни на бит.
     """
-    benchmark = pd.concat(
-        [rm.har_columns(base["close"]), rm.seasonal_columns(base.index)], axis=1
-    )
+    parts = [rm.har_columns(base["close"]), rm.seasonal_columns(base.index)]
+    if extra_benchmark is not None:
+        parts.append(extra_benchmark.reindex(base.index))
+    benchmark = pd.concat(parts, axis=1)
     frame = pd.concat([benchmark, features.reindex(base.index)], axis=1).dropna()
     return frame, list(benchmark.columns)
 
 
 def design_matrix(base: pd.DataFrame, features: pd.DataFrame, horizon: str,
-                  normalization: str, base_minutes: int
+                  normalization: str, base_minutes: int,
+                  augment_benchmark: bool = False
                   ) -> tuple[pd.DataFrame, pd.Series, list[str]]:
     """
     Матрица «B2 + признаки», цель `log(range_ratio)` и список колонок бенчмарка.
@@ -128,7 +176,9 @@ def design_matrix(base: pd.DataFrame, features: pd.DataFrame, horizon: str,
     """
     h_bars = rm.horizon_bars(horizon, base_minutes)
     target = rm.log_target(rm.range_target(base, h_bars, normalization))
-    inputs, benchmark_names = input_matrix(base, features)
+    extra = (denominator_column(base, horizon, normalization, base_minutes)
+             if augment_benchmark else None)
+    inputs, benchmark_names = input_matrix(base, features, extra)
     frame = pd.concat([target.rename("_target"), inputs], axis=1).dropna()
     columns = [c for c in frame.columns if c != "_target"]
     return frame[columns], frame["_target"], benchmark_names

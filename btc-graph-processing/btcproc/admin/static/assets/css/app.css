@@ -598,3 +598,10 @@ nav.pager .muted { opacity: .45; }
 .window-btn.on {
   background: var(--accent-soft); border-color: var(--accent); color: var(--text);
 }
+
+/* Режим размаха. Расширение — амбер, как и MODERATE: это «обрати внимание»,
+   а не «хорошо». Сжатие и норма приглушены: у них нет новости. */
+.tag.expanded { background: color-mix(in srgb, var(--amber) 15%, transparent);
+                border-color: var(--amber); color: var(--amber); }
+.tag.compressed { border-color: var(--line); color: var(--muted); }
+.tag.normal { color: var(--muted); }

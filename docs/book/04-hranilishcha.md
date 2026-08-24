@@ -17,7 +17,7 @@ flowchart LR
     C --> N4
     C --> RD
     subgraph PG["PostgreSQL :5432"]
-        P1["schema processing<br/>19 таблиц генератора<br/>сырьё, признаки, модели"]
+        P1["schema processing<br/>20 таблиц генератора<br/>сырьё, признаки, модели"]
         P2["schema public<br/>candidates (upsert)<br/>+ pgvector(32)"]
         P3["candidate_events<br/>hypertable, retention 90d"]
         P4["2 continuous aggregate"]
@@ -55,6 +55,11 @@ flowchart LR
 запросы аналитические, целостность важна.
 
 Две особенности реализации стоит знать.
+
+> Двадцатая таблица, `depth_snapshots`, появилась 2026-08-24 и стоит особняком:
+> её не читают ни `train`, ни `live`, и никаких величин из неё пока не
+> считается. Она копится впрок, потому что историю стакана невозможно
+> докупить — обоснование в главе 17.6.
 
 ### Генератор работает без ORM
 

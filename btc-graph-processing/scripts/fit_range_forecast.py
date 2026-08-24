@@ -102,7 +102,8 @@ def prepare(symbol: str, end: str):
 def run_cell(symbol: str, base: pd.DataFrame, features: pd.DataFrame,
              horizon: str, normalization: str, seed: int, args) -> dict | None:
     frame, target, benchmark_names = rf.design_matrix(
-        base, features, horizon, normalization, config.data.base_minutes
+        base, features, horizon, normalization, config.data.base_minutes,
+        augment_benchmark=getattr(args, "augment_benchmark", False),
     )
     if len(frame) < 20000:
         print(f"  [{symbol} {horizon} {normalization} зерно {seed}] "
@@ -301,6 +302,12 @@ def main() -> int:
     parser.add_argument("--end", default=FROZEN_END)
     parser.add_argument("--train-frac", type=float, default=0.7)
     parser.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT)
+    parser.add_argument(
+        "--augment-benchmark", action="store_true",
+        help="ДИАГНОСТИКА (2026-08-24): добавить в бенчмарк логарифм "
+             "знаменателя цели. Отвечает, сколько от приращения R² остаётся, "
+             "когда бенчмарк знает про короткое окно нормировки столько же, "
+             "сколько модель. Штатный замер идёт БЕЗ флага.")
     parser.add_argument("--save", action="store_true",
                         help="сложить обученные модели в DATA_DIR/range_forecast/")
     parser.add_argument("--dump", help="сложить ячейки в JSON (для общего отчёта)")

@@ -2,6 +2,8 @@
         live live-all status admin hostmon hostmon-once hostmon-test-telegram \
         maintenance validate-holdout control-model measure-range \
         validate-range range-forecast measure-candle test \
+        ingest-depth surrogate-range measure-configs measure-markov \
+        measure-drift measure-path \
         docker-up docker-down docker-logs
 
 # Нужен Python 3.10+: код пользуется аннотациями `str | None`, а `python3` на
@@ -36,6 +38,12 @@ help:
 	@echo "test       — тесты"
 	@echo "docker-up  — поднять админку в docker (нужен запущенный btc-graph)"
 	@echo "ingest-metrics — деривативные метрики Binance USD-M в deriv_metrics"
+	@echo "ingest-depth — снимок стакана (в кроне раз в минуту)"
+	@echo "surrogate-range — сколько находок даёт сама процедура на пустых данных"
+	@echo "measure-configs — FDR по всем конфигурациям: есть ли хоть одна значимая"
+	@echo "measure-markov — граф как марковская модель (плато, CK, порядок, BOCPD)"
+	@echo "measure-drift — правда ли рынок меняется поквартально"
+	@echo "measure-path — асимметрия пути против сезонной нулёвки"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -149,6 +157,44 @@ range-forecast:
 # HYPEUSDT исключена по данным, а не по результату (синтетический `open`).
 measure-candle:
 	$(PY) scripts/measure_candle_range.py --all
+
+# Стакан. Отдельно от train/live по тому же принципу, что fetch-external:
+# сетевой поход в чужой API не должен ронять расчёт. В кроне — раз в минуту.
+# Копится ДО того, как решено, зачем нужен: истории у стакана нет и не будет,
+# докачать её нельзя никогда (ТЗ ../docs/tz_wave_a_24-08-26.md, задача E).
+ingest-depth:
+	$(PY) -m btcproc.cli ingest-depth --all
+
+# ── Волна A (ТЗ ../docs/tz_wave_a_24-08-26.md) ──────────────────────────────
+# Суррогатный прогон ВСЕГО конвейера размаха: сколько «находок» уровня раздела
+# 49 порождает сама процедура на данных, где предсказывать нечего. Единственная
+# работа проекта, способная опровергнуть его единственный положительный
+# вердикт. Критерий и MDE — в шапке скрипта.
+surrogate-range:
+	$(PY) scripts/surrogate_range.py --symbol BTCUSDT --replicas 20 --method both
+
+# Сколько ключей (transition_id, event_block_id) отличаются от базовой ставки
+# монеты значимо ПОСЛЕ поправки на множественность. Предсказание записано до
+# прогона. Ничего не переобучает и в БД не пишет.
+measure-configs:
+	$(PY) scripts/measure_configs.py --all
+
+# Граф в той роли, в которой он построен: марковская модель динамики. Плато
+# implied timescales, тест Чепмена — Колмогорова, порядок цепи и независимый
+# контроль BOCPD — одним заходом.
+measure-markov:
+	$(PY) scripts/measure_markov.py --all
+
+# Гипотеза «рынок меняется каждый квартал» в проверяемой форме: выделяется ли
+# последний квартал СИЛЬНЕЕ, чем два случайных куска той же длины.
+measure-drift:
+	$(PY) scripts/measure_drift.py --all
+
+# Асимметрия пути: тройной барьер против нулёвки, сохраняющей сезонность.
+# Меряет не знак на горизонте (он закрыт разделом 26), а порядок достижения
+# барьеров — величину, к которой знак не сводится.
+measure-path:
+	$(PY) scripts/measure_path.py --all
 
 test:
 	$(PY) -m pytest -q

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Кандидат {{ row.candidate_id }}{% endblock %}
+{% set p = row.payload %}
 
 {% block content %}
 <h1>Кандидат <code>{{ row.candidate_id }}</code> · {{ row.symbol }}</h1>
@@ -9,6 +10,38 @@
   переход <code>{{ row.transition_id }}</code> ·
   блок <code>{{ row.event_block_id }}</code>
 </p>
+
+{# Размах — единственная величина проекта, прошедшая критерий на отложенной
+   части (журнал генератора 49–50). Стоит ВЫШЕ оценки намеренно: оценка
+   говорит о направлении, а про направление измерено, что система его не
+   предсказывает (журнал 26 и 31). #}
+<section class="cards">
+  <div class="card">
+    <div class="card-label">Ожидаемый размах</div>
+    {% if p.range_lift is not none %}
+      <div class="card-value">×{{ '%.2f'|format(p.range_lift) }}</div>
+      <div class="card-sub">
+        <span class="tag {{ p.range_regime or 'normal' }}">{{ p.range_regime or 'normal' }}</span>
+        относительно часа дня и недавней волатильности
+      </div>
+    {% else %}
+      <div class="card-value muted">—</div>
+      <div class="card-sub">кандидат из train либо у монеты нет калиброванной
+        модели размаха: числа на исторических барах были бы запоминанием,
+        а не прогнозом</div>
+    {% endif %}
+  </div>
+  {% if p.range_lift is not none %}
+  <div class="card">
+    <div class="card-label">Квантили range_ratio</div>
+    <div class="card-value">{{ '%.2f'|format(p.expected_range_ratio_p50) }}
+      <span class="muted">/ {{ '%.2f'|format(p.expected_range_ratio_p90) }}</span></div>
+    <div class="card-sub">p50 / p90. Абсолютные числа наполовину объясняются
+      часом дня и недавней волатильностью — читать вместе с относительным
+      слева, а не вместо него</div>
+  </div>
+  {% endif %}
+</section>
 
 {% if row.evaluation %}
 <section class="cards">

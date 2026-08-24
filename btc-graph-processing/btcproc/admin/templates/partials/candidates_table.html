@@ -1,16 +1,18 @@
+{% from "partials/range.html" import range_cell, range_legend %}
 <p class="muted">
   Найдено {{ data.total }} · страница {{ data.page }} из {{ data.pages }} ·
   <span class="tag strong">STRONG</span> ≥ 0.75 ·
   <span class="tag moderate">MODERATE</span> ≥ 0.55 ·
   <span class="tag weak">WEAK</span> ниже — пороги quality_score в btc-graph
 </p>
+<p class="muted">Размах: {{ range_legend() }}</p>
 
 <div class="scroll-y">
 <table>
   <thead>
     <tr>
       <th>Время</th><th>Переход</th><th>Блок событий</th><th>Сторона</th>
-      <th>research</th><th>Выборка</th><th>quality</th><th>Рейтинг</th>
+      <th>research</th><th>Выборка</th><th>Размах</th><th>quality</th><th>Рейтинг</th>
       <th>Флаги</th><th>Статус</th>
     </tr>
   </thead>
@@ -23,6 +25,7 @@
       <td class="{{ row.research_side }}">{{ row.research_side }}</td>
       <td class="num">{{ '%.3f'|format(row.research_score) }}</td>
       <td class="num">{{ row.sample_size }}</td>
+      <td>{{ range_cell(row) }}</td>
       <td class="num">{{ '%.3f'|format(row.quality_score) if row.quality_score is not none else '—' }}</td>
       <td>{% if row.rating %}<span class="tag {{ row.rating|lower }}">{{ row.rating }}</span>{% else %}—{% endif %}</td>
       <td class="flags">{{ (row.warning_flags or [])|join(', ') or '—' }}</td>
@@ -37,7 +40,7 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="10" class="muted">Ничего не найдено</td></tr>
+    <tr><td colspan="11" class="muted">Ничего не найдено</td></tr>
   {% endfor %}
   </tbody>
 </table>

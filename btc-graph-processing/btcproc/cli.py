@@ -525,6 +525,48 @@ def ingest_metrics(
         raise typer.Exit(code=1)
 
 
+@app.command("ingest-depth")
+def ingest_depth(
+    symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно указать несколько раз"),
+    all_symbols: bool = typer.Option(False, "--all", help="Все активные монеты реестра"),
+    show: bool = typer.Option(False, "--show", help="Не снимать, а показать накопленное"),
+) -> None:
+    """
+    Снять снимок стакана по монетам и положить в depth_snapshots.
+
+    Ставится в крон раз в минуту, отдельно от train/live — как fetch-external
+    и ingest-metrics. Обоснование, почему таблица заведена до того, как решено,
+    зачем она нужна: у стакана нет истории и не будет, докачать её нельзя
+    никогда, поэтому решение о накоплении принимается раньше решения о
+    полезности (ТЗ crypto-graph/docs/tz_wave_a_24-08-26.md, задача E).
+
+    Признаков, атомов и гейтов из этих данных не заводится, и прогоны таблицу
+    не читают, — до отдельного ТЗ, которое станет возможным примерно через год.
+    """
+    from btcproc.ingest import depth
+
+    if show:
+        rows = depth.coverage()
+        if not rows:
+            typer.echo("Снимков стакана ещё нет.")
+            return
+        typer.echo(f"{'монета':<10} {'снимков':>9} {'первый':>20} {'последний':>20}")
+        for row in rows:
+            typer.echo(
+                f"{row['symbol']:<10} {row['n']:>9} "
+                f"{row['first_ts']:%Y-%m-%d %H:%M:%S} {row['last_ts']:%Y-%m-%d %H:%M:%S}"
+            )
+        return
+
+    saved = depth.collect(symbol, all_symbols)
+    typer.echo(f"Снимков сохранено: {saved}")
+    if saved == 0:
+        # Ноль — это не «нечего снимать», а «ни одна монета не ответила».
+        # Крон обязан узнать об этом кодом возврата, иначе ряд будет рваться
+        # молча ровно там, где его непрерывность и есть весь смысл.
+        raise typer.Exit(code=1)
+
+
 @app.command("fit-range")
 def fit_range(
     symbol: list[str] = typer.Option(None, "--symbol", help="Тикер; можно указать несколько раз"),

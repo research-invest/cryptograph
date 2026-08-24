@@ -564,6 +564,22 @@ def _rating_color(rating: str | None) -> str:
     )
 
 
+#: Поля размаха в выдаче списков кандидатов.
+#:
+#: Живут в `payload`, а не отдельными колонками, и вытаскиваются здесь, потому
+#: что показывать их надо в таблице, а разворачивать JSONB на каждой строке в
+#: шаблоне — это ещё и молчаливое «нет ключа» вместо честного NULL.
+#:
+#: Наружу идёт `range_lift`, а не абсолютные квантили: правило корневого
+#: CLAUDE.md. `expected_range_ratio_*` наполовину объясняются часом дня и
+#: недавней волатильностью, то есть в таблице выглядели бы содержательными,
+#: не будучи таковыми. Абсолютные числа остаются в карточке, с оговоркой.
+RANGE_COLUMNS = (
+    "(payload->>'range_lift')::float8 AS range_lift, "
+    "payload->>'range_regime' AS range_regime"
+)
+
+
 def candidates_page(
     run_id: int | None = None,
     symbol: str | None = None,
@@ -606,7 +622,7 @@ def candidates_page(
     rows = fetch_all(
         "SELECT candidate_id, symbol, ts, transition_id, event_block_id, research_side, "
         "research_score, sample_size, quality_score, rating, warning_flags, "
-        "emitted_at, emit_error FROM candidates"
+        "emitted_at, emit_error, " + RANGE_COLUMNS + " FROM candidates"
         + clause
         + " ORDER BY ts DESC, quality_score DESC NULLS LAST LIMIT %s OFFSET %s",
         params + [per_page, offset],
@@ -645,7 +661,7 @@ def recent_highlights(hours: int = 24, limit: int = 50) -> list[dict]:
     return fetch_all(
         "SELECT candidate_id, symbol, run_id, ts, transition_id, event_block_id, "
         "research_side, research_score, sample_size, quality_score, rating, "
-        "warning_flags, emitted_at FROM candidates "
+        "warning_flags, emitted_at, " + RANGE_COLUMNS + " FROM candidates "
         "WHERE rating = ANY(%s) AND ts >= now() - make_interval(hours => %s) "
         "ORDER BY ts DESC, quality_score DESC NULLS LAST LIMIT %s",
         (list(HIGHLIGHT_RATINGS), hours, limit),

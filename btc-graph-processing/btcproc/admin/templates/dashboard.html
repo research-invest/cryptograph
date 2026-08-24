@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Сводка · crypto-graph{% endblock %}
+{% from "partials/range.html" import range_cell, range_legend %}
 
 {% block content %}
 <h1>Сводка · {{ symbol }}</h1>
@@ -166,7 +167,7 @@
   <thead>
     <tr>
       <th>Время (UTC)</th><th>Монета</th><th>Рейтинг</th><th>Сторона</th>
-      <th>quality</th><th>Переход</th><th>Выборка</th><th>Флаги</th><th></th>
+      <th>quality</th><th>Размах</th><th>Переход</th><th>Выборка</th><th>Флаги</th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -179,13 +180,14 @@
       <td><span class="tag {{ row.rating|lower }}">{{ row.rating }}</span></td>
       <td class="{{ row.research_side }}">{{ row.research_side }}</td>
       <td class="num">{{ '%.3f'|format(row.quality_score) if row.quality_score is not none else '—' }}</td>
+      <td>{{ range_cell(row) }}</td>
       <td><code>{{ row.transition_id }}</code></td>
       <td class="num">{{ row.sample_size }}</td>
       <td class="flags">{{ (row.warning_flags or [])|join(', ') or '—' }}</td>
       <td><a href="/candidates/{{ row.candidate_id }}" onclick="event.stopPropagation()">карточка</a></td>
     </tr>
   {% else %}
-    <tr><td colspan="9" class="muted">
+    <tr><td colspan="10" class="muted">
       За последние {{ highlight_hours }} ч ни одной монете не выпало STRONG или MODERATE.
       Это обычное состояние, а не поломка.
     </td></tr>
