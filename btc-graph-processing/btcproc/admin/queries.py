@@ -386,16 +386,24 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
         # Ретроспективный кандидат обязан выглядеть иначе, а не просто стоять
         # рядом: путать «система это сказала» и «переобученная модель так
         # думает про прошлое» нельзя, а стрелка того же вида ровно к этому и
-        # приглашает. Кружок и приглушённый цвет вместо стрелки рейтинга.
+        # приглашает. Разделяет их ФОРМА (кружок против стрелки) и слово
+        # «ретро» в подписи.
+        #
+        # А вот цвет и рейтинг ретроспективные получают те же, что выпущенные.
+        # Раньше они красились одним серым, и MODERATE 0.56 на графике был
+        # неотличим от WEAK — то есть график противоречил карточке кандидата,
+        # где рейтинг стоял. Оценка у ретро есть не всегда (train в кроне идёт
+        # с --no-emit, и такие кандидаты в btc-graph не уезжали): пустой
+        # рейтинг _rating_color отдаёт тем же серым, что и раньше.
         retro = c["run_kind"] != "live"
+        prefix = "ретро " if retro else ""
         markers.append({
             "time": int(c["ts"].timestamp()),
             "position": "belowBar" if c["research_side"] == "long" else "aboveBar",
-            "color": "#64748b" if retro else _rating_color(c["rating"]),
+            "color": _rating_color(c["rating"]),
             "shape": "circle" if retro
                      else ("arrowUp" if c["research_side"] == "long" else "arrowDown"),
-            "text": (f"ретро {c['research_side']}" if retro
-                     else f"{c['rating'] or '—'} {c['research_side']}{quality}"),
+            "text": f"{prefix}{c['rating'] or '—'} {c['research_side']}{quality}",
             "id": c["candidate_id"],
         })
 
