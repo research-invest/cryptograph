@@ -200,6 +200,35 @@ const chart = LightweightCharts.createChart(el('chart'), Object.assign({
 }, chartTheme()));
 const series = chart.addCandlestickSeries();
 
+// Точность шкалы цены — по данным выборки, а не по дефолту библиотеки.
+// Дефолт lightweight-charts — два знака и шаг 0.01: на монете за доли цента
+// (PUMPUSDT торгуется около 0.003) вся шкала превращается в столбик «0.00»,
+// а свечи ложатся в одну линию. Считаем по МИНИМУМУ выборки, а не по средней:
+// схлопывается всегда низ шкалы.
+let pricePrecision = 2;
+
+function pricePrecisionFor(bars) {
+  let low = Infinity;
+  for (const b of bars) {
+    if (b.low !== null && b.low !== undefined && b.low > 0 && b.low < low) low = b.low;
+  }
+  if (!isFinite(low)) return 2;
+  if (low >= 10) return 2;
+  if (low >= 1) return 3;
+  if (low >= 0.1) return 4;
+  if (low >= 0.01) return 5;
+  if (low >= 0.0001) return 6;
+  return 8;
+}
+
+function applyPricePrecision(bars) {
+  pricePrecision = pricePrecisionFor(bars);
+  series.applyOptions({
+    priceFormat: { type: 'price', precision: pricePrecision,
+                   minMove: Math.pow(10, -pricePrecision) },
+  });
+}
+
 // Гистограмма объёма — оверлей поверх той же области, а не отдельный график:
 // пустой priceScaleId заводит собственную невидимую шкалу, и объём живёт в
 // своих единицах, не растягивая шкалу цены. Порядок вызовов важен ровно
@@ -461,6 +490,9 @@ async function load() {
     for (const e of activeIndicators.values()) e.series.setData([]);
     return;
   }
+  // Формат цены — до setData: иначе первый кадр рисуется старой точностью,
+  // и при переключении монеты шкала мигает «0.00».
+  applyPricePrecision(data.bars);
   series.setData(data.bars);
   volumeSeries.setData(volumeData(data.bars));
 
@@ -664,7 +696,10 @@ function renderIndicatorLegend() {
 // у монеты за десятые доллара два знака съели бы всё движение.
 function fmtPrice(value) {
   if (value === null || value === undefined) return '—';
-  const digits = Math.abs(value) >= 1000 ? 1 : Math.abs(value) >= 10 ? 2 : 5;
+  // Та же точность, что у шкалы: строка инспектора и ось обязаны показывать
+  // одно и то же число. Фиксированные пять знаков округляли цену PUMPUSDT
+  // (0.0034) до 0,003 — на глаз это выглядело как стоящий рынок.
+  const digits = Math.abs(value) >= 1000 ? 1 : Math.max(2, pricePrecision);
   return value.toLocaleString('ru-RU', { maximumFractionDigits: digits });
 }
 
