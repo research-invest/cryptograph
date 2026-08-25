@@ -1147,7 +1147,7 @@ $DERIV_CRON $REMOTE_DIR/bin/btcproc ingest-metrics --all >> $REMOTE_DIR/logs/ing
 \$MARK   1440 строк в сутки. Вывод копится в переменную и сбрасывается в файл
 \$MARK   лишь при ненулевом коде возврата — а он ненулевой ровно тогда, когда
 \$MARK   не ответила ни одна монета, то есть когда ряд рвётся.
-$DEPTH_CRON out=\$($REMOTE_DIR/bin/btcproc ingest-depth --all 2>&1) || echo "\$(date -Is) \$out" >> $REMOTE_DIR/logs/ingest-depth.log
+$DEPTH_CRON out=\\\$($REMOTE_DIR/bin/btcproc ingest-depth --all 2>&1) || echo "\\\$(date -Is) \\\$out" >> $REMOTE_DIR/logs/ingest-depth.log
 \$MARK — ежедневная сводка: покрытие истории, отставание, очередь отправки
 17 6 * * * $REMOTE_DIR/bin/btcproc status >> $REMOTE_DIR/logs/status.log 2>&1
 \$MARK — недельная уборка базы: разметка старых live-прогонов + вакуум.

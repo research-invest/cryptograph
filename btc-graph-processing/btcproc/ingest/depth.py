@@ -46,7 +46,13 @@ from btcproc.db.session import bulk_upsert
 
 logger = logging.getLogger(__name__)
 
-BINANCE_URL = "https://api.binance.com/api/v3/depth"
+#: Адрес берётся из того же `BINANCE_REST_URL`, что и klines, а не пишется
+#: здесь: `api.binance.com` отвечает 451 из ряда юрисдикций (боевой VPS —
+#: как раз такая), и на нём переменная переопределена на публичное зеркало
+#: `data-api.binance.vision`. Хардкод означал бы пустую таблицу стакана без
+#: единой ошибки в расчёте — крон пишет в лог только сбой, а копится ряд,
+#: который потом невозможно докупить.
+BINANCE_URL = config.data.binance_rest_url.rsplit("/", 1)[0] + "/depth"
 BYBIT_URL = "https://api.bybit.com/v5/market/orderbook"
 
 #: Сколько уровней с каждой стороны. Двадцать — потолок дешёвого лимита
