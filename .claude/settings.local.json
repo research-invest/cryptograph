@@ -131,7 +131,8 @@
       "Bash(ssh -o BatchMode=yes vps@162.248.225.60 'rm -f /tmp/vps_check.py && echo \"временный файл убран\"')",
       "Bash(python3 -c ' *)",
       "Bash(python3 -)",
-      "Bash(cat)"
+      "Bash(cat)",
+      "Bash(docker network *)"
     ],
     "deny": [
       "Bash(rm -rf /)",
