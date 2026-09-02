@@ -196,6 +196,37 @@ def current_symbol(request: Request) -> str:
         logger.warning("Неизвестная монета в ?symbol=%r — беру дефолт", raw)
         return config.data.symbol
 
+# Площадка монеты → префикс биржи в тикере TradingView. Ключи — те же, что
+# в `symbols.VENUES`: неизвестная площадка означала бы ссылку в пустой график,
+# поэтому такую монету оставляем без ссылки вовсе.
+TV_EXCHANGES: dict[str, str] = {
+    "binance_spot": "BINANCE",
+    "bybit_spot": "BYBIT",
+}
+
+
+def tradingview_url(symbol: str) -> str | None:
+    """
+    Ссылка на тот же инструмент в TradingView, на базовом таймфрейме проекта.
+
+    Внешний график нужен для того, чего у нас нет: стакан, свои разметки,
+    сравнение с другими инструментами. Тикер собирается из площадки монеты
+    (`SymbolSpec.venue`) — у HYPEUSDT это Bybit, и биржа зашитая константой
+    увела бы на несуществующую пару.
+    """
+    try:
+        spec = symbols.get(symbol)
+    except symbols.UnknownSymbolError:
+        return None
+    exchange = TV_EXCHANGES.get(spec.venue)
+    if not exchange:
+        logger.warning("Нет биржи TradingView для площадки %r", spec.venue)
+        return None
+    minutes = config.TIMEFRAME_MINUTES.get(config.data.base_tf, 60)
+    interval = "1D" if minutes >= 1440 else str(minutes)
+    query = urlencode({"symbol": f"{exchange}:{spec.ticker}", "interval": interval})
+    return f"https://www.tradingview.com/chart/?{query}"
+
 
 def page(request: Request, name: str, **context) -> HTMLResponse:
     context.setdefault("user", auth.current_user(request))
@@ -207,6 +238,7 @@ def page(request: Request, name: str, **context) -> HTMLResponse:
     # Хвост для ссылок между страницами: без него переход на соседнюю
     # вкладку молча сбрасывал бы выбранную монету на дефолтную.
     context.setdefault("symbol_qs", f"symbol={symbol}")
+    context.setdefault("tv_url", tradingview_url(symbol))
     return templates.TemplateResponse(request, name, context)
 
 

@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ValidationError
 
 from src.agent.pipeline import run_pipeline, run_batch_pipeline
+from src.api.public import router as public_router
 from src.config import profiles as profiles_config
 from src.filters.candidate_filter import detect_conflicts
 from src.models.candidate import CandidateEvaluation
@@ -95,6 +96,14 @@ class BatchInput(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "version": app.version}
+
+
+# Публичное API чтения (`/api/v1/*`) — единственная часть, закрытая ключом из
+# API_KEYS. Оно только читает сохранённые оценки: ни LLM, ни записи, ни правки
+# конфигурации там нет, поэтому утёкший ключ стоит трафика, а не денег и не
+# данных. Всё остальное в этом файле по-прежнему рассчитано на петлю и прокси
+# перед ней — см. «Известные ограничения» в CLAUDE.md.
+app.include_router(public_router)
 
 
 # ─── Evaluate ─────────────────────────────────────────────────────────────────

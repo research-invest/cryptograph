@@ -66,6 +66,14 @@
   {# Граф показывает связи, но не даёт прочесть состояния подряд: узлы
      подписаны номерами, а имя и доля видны только по клику. Список — рядом. #}
   <a href="/states?symbol={{ symbol }}&run={{ run_id }}">Список состояний</a>
+  {# Тот же инструмент в TradingView — для того, чего здесь нет: свои разметки,
+     стакан, сравнение с другими парами. Биржа берётся из площадки монеты, а не
+     зашита: HYPEUSDT торгуется на Bybit. Новая вкладка обязательна — граф
+     тяжёлый, а возврат по «назад» перерисовал бы его с нуля. #}
+  {% if tv_url %}
+    <a href="{{ tv_url }}" target="_blank" rel="noopener noreferrer"
+       title="Открыть {{ symbol }} в TradingView (новая вкладка)">TradingView ↗</a>
+  {% endif %}
   <button id="fit" type="button">Уместить</button>
   <button id="reload" type="button" class="primary">Обновить</button>
 </form>

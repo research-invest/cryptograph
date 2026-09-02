@@ -256,3 +256,56 @@ def list_symbols(session: Session) -> list[str]:
         .all()
     )
     return [row[0] for row in rows if row[0]]
+
+
+def list_candidates(
+    session: Session,
+    symbol: str | None = None,
+    ratings: list[str] | None = None,
+    direction: str | None = None,
+    min_quality_score: float | None = None,
+    since=None,
+    order: str = "recent",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[CandidateRecord], int]:
+    """
+    Выборка сохранённых оценок с фильтрами. Возвращает (строки, всего).
+
+    `symbol=None` — по всем монетам сразу; осмысленно только вместе с
+    `quality_score_baseline`, поэтому сортировка по качеству в этом случае
+    идёт именно по нему (профильные score разных монет не сравнимы, и
+    «топ по score» смешанной выдачи означал бы «топ монеты с самой щедрой
+    калибровкой»).
+
+    `order`: `recent` — по времени оценки вниз, `score` — по качеству вниз.
+    Общее число считается тем же фильтром до пагинации: клиенту нужен признак
+    «есть ли ещё», а не только текущая страница.
+    """
+    query = session.query(CandidateRecord)
+    if symbol:
+        query = query.filter(CandidateRecord.symbol == symbol)
+    if ratings:
+        query = query.filter(CandidateRecord.rating.in_(ratings))
+    if direction:
+        query = query.filter(CandidateRecord.direction == direction)
+    if min_quality_score is not None:
+        query = query.filter(CandidateRecord.quality_score >= min_quality_score)
+    if since is not None:
+        query = query.filter(CandidateRecord.evaluated_at >= since)
+
+    total = query.count()
+
+    if order == "score":
+        score_column = (
+            CandidateRecord.quality_score if symbol
+            else CandidateRecord.quality_score_baseline
+        )
+        query = query.order_by(
+            score_column.desc().nullslast(), CandidateRecord.evaluated_at.desc()
+        )
+    else:
+        query = query.order_by(CandidateRecord.evaluated_at.desc())
+
+    rows = query.offset(offset).limit(limit).all()
+    return rows, total

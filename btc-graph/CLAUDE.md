@@ -120,6 +120,14 @@ Neo4j (`MarketGroup {symbol, group_id}` ← `TRANSITION`); Redis (кэш оце�
   То же в `graph_repo` и `redis_cache`.
 - **HTTP-коды: только через `_fail(exc, context)` в `src/api/routes.py`** — `ValidationError` /
   `ValueError` / `TypeError` → 422, всё остальное → 500 с логом traceback.
+- **Ключ закрывает только `/api/v1/*`, и граница держится файлом, а не дисциплиной.** Роутер
+  `src/api/public.py` объявлен с `dependencies=[Depends(require_api_key)]`, поэтому новая ручка
+  либо лежит там и закрыта, либо лежит в `routes.py` и открыта — забыть декоратор негде. Там же
+  инвариант: пустой `API_KEYS` — это **503**, а не «пускать всех» (`test_empty_api_keys_...`).
+  В `/api/v1/*` нет ни LLM, ни записи, ни правок конфигурации: утёкший ключ стоит трафика.
+- **Публичное API отдаёт сохранённые числа, а не пересчитывает их** по текущему профилю — иначе
+  клиент получит оценку, которой в истории не было. `win_rate` и `favorable_adverse_ratio` —
+  единственные считаемые поля, и считаются они `win_rate_for` / `fa_ratio_for` из `raw_payload`.
 - **Ленивые импорты — намеренные.** БД/граф/Redis импортируются внутри функций (`routes.py`,
   `pipeline._persist`), чтобы API поднимался при лежащем Postgres; `llm_node` (а с ним `anthropic`)
   импортируется только при `use_llm=True`.
@@ -168,8 +176,12 @@ Neo4j (`MarketGroup {symbol, group_id}` ← `TRANSITION`); Redis (кэш оце�
 `test_dedup_does_not_leak_between_symbols` в `test_pipeline.py` (совпавший `configuration_hash` не
 отдаёт ETH оценку BTC — самый тихий из возможных багов).
 
+`tests/test_public_api.py` — единственные тесты HTTP-слоя: репозиторий и сессия подменяются
+заглушками через `monkeypatch.setitem(sys.modules, ...)`, поэтому PostgreSQL им не нужен.
+Проверяются ключ (в том числе 503 на пустом `API_KEYS`) и форма выдачи.
+
 Непокрыто (нужен живой стек): репозитории PostgreSQL, Cypher-запросы, SQL к continuous aggregates,
-HTTP-роуты, Celery-задачи.
+остальные HTTP-роуты, Celery-задачи.
 
 ## Документация
 
@@ -185,14 +197,22 @@ HTTP-роуты, Celery-задачи.
 - `docs/step_01..03_*.md` — история построения слоёв.
 - `docs/step_04_multi_symbol.md` — мультимонетность: дизайн профилей, инвентаризация мест с BTC,
   процедура калибровки новой монеты.
+- `docs/public_api.md` — публичное API чтения `/api/v1/*`: ключ, фильтры, форма ответа,
+  выкладка наружу через nginx.
 
 ## Известные ограничения
 
-API без аутентификации и rate-limit (`use_llm=true` тратит токены Anthropic по анонимному запросу) —
-допустимо только локально. По той же причине `POST /config/reload` закрыт за `ENABLE_CONFIG_RELOAD=false`:
-ручка меняет поведение скоринга на лету. Таблица `market_events` создана миграцией, но кодом не
-используется. Кандидат — исследовательская идея, а не торговый сигнал: нет entry timing, стопов,
-размера позиции.
+**Внутренние ручки** (`/evaluate/*`, `/queue/*`, `/stats/*`, `/config/*`) — без аутентификации и
+rate-limit (`use_llm=true` тратит токены Anthropic по анонимному запросу), допустимы только за
+петлёй. По той же причине `POST /config/reload` закрыт за `ENABLE_CONFIG_RELOAD=false`:
+ручка меняет поведение скоринга на лету. Наружу выставляется **только префикс `/api/v1/`**
+(`location /api/v1/` в nginx, не `location /`).
+
+**Публичное API чтения** (`/api/v1/*`, `src/api/public.py`) закрыто ключом из `API_KEYS` и делает
+только `SELECT`. Rate-limit'а нет и там — если понадобится, ставится в nginx.
+
+Таблица `market_events` создана миграцией, но кодом не используется. Кандидат — исследовательская
+идея, а не торговый сигнал: нет entry timing, стопов, размера позиции.
 
 Миграция `004_multi_symbol` пересоздаёт оба continuous aggregate (ALTER для них TimescaleDB не
 поддерживает) — **агрегаты старше retention 90 дней теряются безвозвратно**. Дамп снимать до запуска,
