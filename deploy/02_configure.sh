@@ -236,6 +236,25 @@ server {
     proxy_read_timeout 120s;
     client_max_body_size 4m;
 
+    # Публичное API чтения btc-graph (порт 8000). Наружу отдан РОВНО этот
+    # префикс, и это не перестраховка: на 8000 рядом живут /evaluate/*
+    # (тратят токены Anthropic по анонимному запросу), /queue/enqueue (запись)
+    # и /config/* — ни одна из них ключа не спрашивает. Отдать `location /`
+    # на 8000 означало бы выставить наружу их все.
+    #
+    # Сам /api/v1 закрыт ключом из API_KEYS в btc-graph/.env; пустой список
+    # там даёт 503, а не открытый доступ. Rate-limit'а нет ни в приложении,
+    # ни здесь — если понадобится, его место тут (limit_req_zone).
+    location /api/v1/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Connection "";
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8100;
         proxy_http_version 1.1;

@@ -155,17 +155,28 @@ curl -H "X-API-Key: $KEY" \
 проверку не нужно. Наружу отдаётся **только префикс `/api/v1/`**, через тот же
 nginx, что стоит перед админкой btcproc:
 
+**Сделано 2026-09-02**, руками добавлять не нужно: блок лежит в шаблоне
+конфига в `deploy/02_configure.sh` (шаг nginx) и применён на боевой машине.
+Адрес API — `https://crypto-graph.selll.ru/api/v1/`.
+
 ```nginx
 location /api/v1/ {
     proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
     proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
 }
 ```
 
 Именно `location /api/v1/`, а не `location /`: за `/` поедут `/evaluate/*`
 (токены Anthropic по анонимному запросу), `/queue/enqueue` (запись) и
-`/config/*`. Ни одна из них ключа не спрашивает.
+`/config/*`. Ни одна из них ключа не спрашивает. Проверять надо обе стороны
+разом — что `/api/v1/ping` отвечает 401 без ключа и 200 с ключом, и что
+`/evaluate/json` снаружи на 8000 НЕ попадает (сейчас он уходит в `location /`,
+то есть на админку, и та отдаёт 303 на логин).
 
 Чего в API **нет** и о чём стоит знать заранее:
 

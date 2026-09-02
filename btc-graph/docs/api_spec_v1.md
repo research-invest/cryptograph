@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| Базовый URL | `https://<host>` (боевой контур), `http://localhost:8000` (локально) |
+| Базовый URL | `https://crypto-graph.selll.ru` (боевой контур), `http://localhost:8000` (локально) |
 | Префикс | `/api/v1` |
 | Формат | JSON, UTF-8 |
 | Аутентификация | ключ в заголовке, см. §2 |
@@ -290,7 +290,7 @@ Authorization: Bearer <ключ>
 ## 5. Примеры
 
 ```bash
-BASE=https://<host>
+BASE=https://crypto-graph.selll.ru
 KEY=<ключ>
 
 # проверка связи
