@@ -237,17 +237,19 @@ def list_symbols():
     except Exception as exc:  # база — единственная зависимость этой ручки
         raise HTTPException(status_code=500, detail=f"Ошибка чтения списка монет: {exc}")
 
-    known = {p["symbol"]: p for p in profiles_config.list_profiles()}
-    return {
-        "symbols": [
-            {
-                "symbol": symbol,
-                "has_profile": symbol in known,
-                "scoring_profile": known.get(symbol, {}).get("name"),
-            }
-            for symbol in stored
-        ]
-    }
+    # Метка калибровки берётся у эффективного профиля, а не из реестра: в
+    # реестре лежит `_default`, и монета без своего YAML получила бы «профиль
+    # есть» по совпадению ключа. `is_known_symbol` — единственный канонический
+    # ответ на вопрос «эта монета откалибрована».
+    result = []
+    for symbol in stored:
+        profile = profiles_config.get_profile(symbol)
+        result.append({
+            "symbol": symbol,
+            "has_profile": profiles_config.is_known_symbol(symbol),
+            "scoring_profile": profile.name,
+        })
+    return {"symbols": result}
 
 
 @router.get("/candidates", response_model=CandidatePage)

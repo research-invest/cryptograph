@@ -258,7 +258,16 @@ def test_range_block_is_passed_through(client, stub_db):
     assert item["range"]["regime"] == "wide"
 
 
-def test_symbols_marks_coins_without_profile(client, stub_db):
+def test_symbols_reports_the_calibration_label(client, stub_db):
+    """
+    Метка калибровки обязана быть непустой у известной монеты.
+
+    Первая версия брала её из реестра по ключу `name`, которого там нет, и
+    отдавала `null` по всем монетам — на тестах это не падало, потому что поле
+    просто проверялось на присутствие.
+    """
     body = client.get("/api/v1/symbols", headers={"X-API-Key": KEY}).json()
-    assert body["symbols"][0]["symbol"] == "BTCUSDT"
-    assert "has_profile" in body["symbols"][0]
+    row = body["symbols"][0]
+    assert row["symbol"] == "BTCUSDT"
+    assert row["has_profile"] is True
+    assert row["scoring_profile"]
