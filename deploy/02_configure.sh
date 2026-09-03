@@ -94,6 +94,13 @@ DEPTH_CRON="${DEPTH_CRON:-* * * * *}"
 # месяце. data-api.binance.vision — публичный эндпоинт Binance с тем же
 # /api/v3/klines, работает и оттуда, и из России.
 BINANCE_REST_URL="${BINANCE_REST_URL:-https://data-api.binance.vision/api/v3/klines}"
+# То же затруднение у Bybit, но зеркала ему не помогают: api.bybit.com,
+# api.bytick.com и api.bybit.nl блокируют по адресу, а не по домену. Обход —
+# прокси к котировкам TradingView (проект tv-quotes-api). Без ключа монеты
+# Bybit живут на тиковых архивах и отстают до суток; ключ выдаёт
+# `deploy/02_configure.sh` того проекта, здесь он только прописывается.
+TVQ_URL="${TVQ_URL:-https://api.selll.ru}"
+TVQ_API_KEY="${TVQ_API_KEY:-}"
 
 # ─── nginx перед админкой ────────────────────────────────────────────────────
 # Домен должен уже резолвиться в адрес этого сервера: без этого не пройдёт
@@ -539,6 +546,17 @@ fi
 if [[ -f btc-graph-processing/.env && "$FORCE_ENV" != "1" ]]; then
     echo "  btc-graph-processing/.env уже есть — не трогаю"
     grep -E '^ADMIN_(USER|PASSWORD)=' btc-graph-processing/.env > "$REMOTE_DIR/logs/.admin_creds"
+    # Кроме новых настроек: файл не перезаписывается, но настройка, которой в
+    # нём нет, молча означала бы «источник выключен» — и монеты Bybit
+    # продолжали бы отставать на сутки после выкатки, которая это чинит.
+    # Существующее значение не трогается: ключ мог быть вписан вручную.
+    for pair in "TVQ_URL=$TVQ_URL" "TVQ_API_KEY=$TVQ_API_KEY" "TVQ_TIMEOUT=45"; do
+        name="\${pair%%=*}"
+        grep -qE "^\${name}=" btc-graph-processing/.env || {
+            printf '%s\n' "\$pair" >> btc-graph-processing/.env
+            echo "  .env: добавлен \$name"
+        }
+    done
 else
     ADMIN_PASS="\$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
     ADMIN_KEY="\$(openssl rand -hex 32)"
@@ -581,6 +599,12 @@ DATA_DIR=./data
 # адреса live не работал бы вовсе, а train падал бы на последнем месяце.
 # data-api.binance.vision — тот же публичный /api/v3/klines, без ключей.
 BINANCE_REST_URL=$BINANCE_REST_URL
+# Хвост баров с Bybit. REST биржи отсюда закрыт (403 на всех доменах), и
+# tv-quotes-api — единственный способ не отставать на сутки. Пустой ключ
+# выключает источник: загрузчик тогда живёт на тиковых архивах, как раньше.
+TVQ_URL=$TVQ_URL
+TVQ_API_KEY=$TVQ_API_KEY
+TVQ_TIMEOUT=45
 
 # ─── Источники сигнала ──────────────────────────────────────────────────────
 # У каждого источника ДВА флага, и это не дублирование. Контекстные атомы

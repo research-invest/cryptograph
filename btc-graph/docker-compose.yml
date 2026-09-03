@@ -41,6 +41,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # Без restart-политики ребут машины убивает базы навсегда: слой приложения
+    # (api, celery, flower) поднимается сам и рапортует /health: ok, потому что
+    # здоровье проверяется без БД, а админка и крон падают на Connection refused.
+    # Ровно это случилось 2026-09-03 после перезагрузки VPS.
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -55,6 +60,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   neo4j:
     image: neo4j:5
@@ -74,6 +80,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
 
   api:
     build: .

@@ -237,6 +237,10 @@ def test_geoblocked_rest_does_not_break_the_run(monkeypatch):
             calls["rest"] += 1
             return FakeResponse()
 
+    # Источник хвоста выключается явно: на боевом контуре TVQ_API_KEY задан
+    # в .env, а дефолты config читаются на импорте — иначе офлайновый тест
+    # ушёл бы в сеть ровно там, где проверяет обратное.
+    monkeypatch.setattr(bybit, "_sync_tv_tail", lambda *a, **kw: None)
     monkeypatch.setattr(bybit, "_sync_daily_tail", fake_daily)
     monkeypatch.setattr(bybit.bars, "last_ts", lambda *a, **kw: pd.Timestamp("2026-08-01", tz="UTC"))
     monkeypatch.setattr(bybit.httpx, "Client", FakeClient)

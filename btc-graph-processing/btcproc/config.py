@@ -133,6 +133,20 @@ class DataConfig:
     bybit_rest_url: str = _env(
         "BYBIT_REST_URL", "https://api.bybit.com/v5/market/kline"
     )
+    # Обход той самой геоблокировки: свой прокси к котировкам TradingView
+    # (проект tv-quotes-api, спецификация — его docs/API.md). Он живёт на
+    # машине, которую Bybit не блокирует, и отдаёт те же бары: сверка 313
+    # общих 15m-баров HYPEUSDT с нашими, собранными из тиковых архивов, дала
+    # расхождение 0.0000% по OHLC и объёму — конвенция открытия бара у
+    # TradingView совпадает с биржевой.
+    #
+    # Пустой ключ означает «источник выключен», и это не авария: загрузчик
+    # Bybit тогда работает как раньше — архивы плюс REST, если тот доступен.
+    # Умолчание пустое намеренно, чтобы установка без доступа к прокси не
+    # начала молча ходить в чужой сервис.
+    tvq_url: str = _env("TVQ_URL", "https://api.selll.ru")
+    tvq_api_key: str = _env("TVQ_API_KEY")
+    tvq_timeout: float = _env_float("TVQ_TIMEOUT", 45.0)
 
     @property
     def base_minutes(self) -> int:

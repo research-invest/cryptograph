@@ -329,6 +329,63 @@ def _sync_daily_tail(symbol: str, tf: str, client: httpx.Client, progress=None) 
     return rows
 
 
+def _sync_tv_tail(symbol: str, tf: str, start_ms: int) -> int | None:
+    """
+    Хвост через tv-quotes-api. `None` — источник не сработал, пробуй REST.
+
+    Отличать «источник выключен или отказал» от «баров не было» обязательно:
+    и то и другое даёт ноль сохранённых строк, но в первом случае за хвостом
+    надо идти дальше, а во втором — незачем. Поэтому ноль возвращается числом,
+    а неудача — `None`.
+
+    Длина запроса считается от последнего сохранённого бара с запасом в один:
+    у источника нет параметра «с момента», он умеет только N последних.
+    Лишнее отсекается по `start_ms` уже здесь — upsert перезаписал бы те же
+    значения теми же, но зря гонял бы их через сеть и базу.
+    """
+    from btcproc.ingest import tvquotes
+
+    if not tvquotes.enabled():
+        return None
+    try:
+        venue = _venue_of(symbol)
+        needed = (
+            int(datetime.now(timezone.utc).timestamp() * 1000) - start_ms
+        ) // (_minutes(tf) * 60_000) + 2
+        if needed <= 0:
+            return 0
+        if needed > tvquotes.MAX_BARS:
+            # Отставание глубже, чем источник умеет отдать за раз. Дотягивать
+            # его пачками бессмысленно: такую дыру закрывают архивы, которые
+            # к тому же принесут полный набор полей.
+            logger.info(
+                "Отставание %s больше %s баров — хвост оставлен архивам",
+                symbol, tvquotes.MAX_BARS,
+            )
+            return None
+        frame = tvquotes.fetch_bars(symbol, tf, venue, needed)
+    except tvquotes.TvQuotesError as exc:
+        logger.warning("tv-quotes-api не отдал хвост %s: %s", symbol, exc)
+        return None
+
+    if frame.empty:
+        return 0
+    frame = frame[frame["ts"] >= pd.Timestamp(start_ms, unit="ms", tz="UTC")]
+    if frame.empty:
+        return 0
+    return bars.store_bars(frame)
+
+
+def _venue_of(symbol: str) -> str:
+    """Площадка монеты; вне реестра — та, чей это загрузчик."""
+    from btcproc import symbols
+
+    try:
+        return symbols.get(symbol).venue
+    except symbols.UnknownSymbolError:
+        return "bybit_spot"
+
+
 def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches: int = 20) -> int:
     """
     Добирает свежие бары, начиная с последнего сохранённого.
@@ -336,17 +393,25 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
     Два источника, и порядок между ними важен:
 
     1. **Дневные тиковые архивы** за уже закрытые сутки — полный набор полей.
-    2. **REST kline** за незакрытые сутки, которых в архивах ещё нет. Здесь
+    2. **Готовые бары** за незакрытые сутки, которых в архивах ещё нет. Здесь
        `trades` и `taker_buy_base` неизвестны, и это единственное место, где
        они остаются пустыми.
 
     Пустоту закрывает следующий же запуск: архив за эти сутки выйдет и
     перезапишет бары точными значениями (upsert по `(symbol, tf, ts)`).
-    Поэтому REST берётся строго после архивов и только за то, что позже них, —
-    иначе приблизительные бары затирали бы точные.
+    Поэтому второй источник берётся строго после архивов и только за то, что
+    позже них, — иначе приблизительные бары затирали бы точные.
 
     Признаки такую дыру переживают: `taker_bias` усредняется скользящим окном
     в сутки и NaN в нём пропускаются, атомы доминирования на NaN дают False.
+
+    **Готовых баров два поставщика, и выбор между ними — про доступность, а
+    не про качество.** Оба отдают одно и то же (сверка 313 общих баров дала
+    0.0000% расхождения), но REST Bybit закрыт для американских адресов
+    целиком, вместе с зеркалами. Поэтому первым идёт tv-quotes-api, если он
+    настроен: с боевого VPS работает только он. Его отказ не окончателен —
+    следом пробуется REST, и лишь когда молчат оба, монета остаётся на
+    архивах с отставанием до суток.
     """
     symbol = (symbol or config.data.symbol).upper()
     tf = tf or config.data.base_tf
@@ -366,6 +431,10 @@ def sync_recent(symbol: str | None = None, tf: str | None = None, limit_batches:
         start_ms = int(pd.Timestamp(fallback, tz="UTC").timestamp() * 1000)
     else:
         start_ms = int(last.timestamp() * 1000) + 1
+
+    added = _sync_tv_tail(symbol, tf, start_ms)
+    if added is not None:
+        return rows + added
 
     interval = _REST_INTERVAL.get(tf)
     if interval is None:
