@@ -476,6 +476,217 @@ def chart_freshness(symbol: str) -> dict:
     }
 
 
+#: Потолок окна страницы «все инструменты». Она про «что происходит прямо
+#: сейчас», а не про историю — за историей идут на /chart, где есть прогон,
+#: раскраска состояний и кандидаты. Трое суток базового ТФ — это уже под три
+#: сотни свечей в плитке высотой в две сотни пикселей, дальше расти незачем.
+OVERVIEW_MAX_HOURS = 72
+
+
+def overview_charts(tickers: Sequence[str], hours: int = 12) -> dict:
+    """
+    Свечи всех монет за последние `hours` часов — по одной серии на монету.
+
+    Отдельный запрос, а не N вызовов `chart_data`: там на каждую монету идёт
+    поиск модели, LATERAL по разметке, палитра состояний и маркеры кандидатов,
+    и семь таких запросов ради обзорной страницы — это семь раз то, чего она
+    не показывает. Здесь только OHLC одним походом в базу.
+
+    Раскраски состояниями тут нет намеренно: цвет состояния осмыслен лишь в
+    паре (монета, модель), и одинаковый оттенок в соседних плитках означал бы
+    разные рынки. Свечи красятся ростом и падением — тем единственным, что
+    между монетами сравнимо.
+
+    Окно считается от ПОСЛЕДНЕГО бара в базе, а не от текущего времени: монеты
+    отстают по-разному (у HYPEUSDT хвост приезжает через прокси), и общий срез
+    «now() − 12ч» показал бы отставшую монету полупустой плиткой, хотя данные
+    у неё есть — просто они старше. Отставание видно отдельной подписью.
+    """
+    hours = max(1, min(int(hours), OVERVIEW_MAX_HOURS))
+    tickers = [t for t in tickers if t]
+    if not tickers:
+        return {"tf": config.data.base_tf, "hours": hours, "symbols": []}
+
+    rows = fetch_all(
+        # Окно на монету: DISTINCT-подзапросом взять максимум ts у каждой и
+        # отсчитать от него. Один общий `max(ts)` по всем монетам не годится
+        # ровно по причине из докстринга.
+        "WITH last AS ("
+        "  SELECT symbol, max(ts) AS ts FROM ohlcv "
+        "  WHERE symbol = ANY(%s) AND tf = %s GROUP BY symbol"
+        ") "
+        "SELECT o.symbol, o.ts, o.open, o.high, o.low, o.close, l.ts AS last_ts "
+        "FROM ohlcv o JOIN last l ON l.symbol = o.symbol "
+        "WHERE o.tf = %s AND o.ts > l.ts - make_interval(hours => %s) "
+        "ORDER BY o.symbol, o.ts ASC",
+        [list(tickers), config.data.base_tf, config.data.base_tf, hours],
+    )
+
+    by_symbol: dict[str, list[dict]] = {t: [] for t in tickers}
+    last_ts: dict[str, Any] = {}
+    for r in rows:
+        by_symbol.setdefault(r["symbol"], []).append({
+            "time": int(r["ts"].timestamp()),
+            "open": r["open"], "high": r["high"],
+            "low": r["low"], "close": r["close"],
+        })
+        last_ts[r["symbol"]] = r["last_ts"]
+
+    out = []
+    for ticker in tickers:
+        bars = by_symbol.get(ticker, [])
+        first_close = bars[0]["open"] if bars else None
+        last_close = bars[-1]["close"] if bars else None
+        change = None
+        if first_close and last_close is not None:
+            change = (last_close / first_close - 1) * 100
+        out.append({
+            "symbol": ticker,
+            "bars": bars,
+            "last": last_close,
+            "change_pct": change,
+            # Отставание монеты, а не время последнего бара: страница про
+            # «сейчас», и цифра «данные на два часа старше» здесь важнее даты.
+            "lag_minutes": _lag_minutes(last_ts.get(ticker)),
+        })
+    return {"tf": config.data.base_tf, "hours": hours, "symbols": out}
+
+
+def overview_states(tickers: Sequence[str], hours: int = 12) -> dict:
+    """
+    Раскраска плиток страницы «все инструменты»: состояние на каждом баре окна.
+
+    Отдельным запросом от `overview_charts`, а не полем в нём, по той же
+    причине, по которой панель признака на /chart живёт отдельным эндпоинтом:
+    свечи должны появиться сразу, а разметка — доехать следом. Если модели у
+    монеты ещё нет (новая монета до первого `train`), плитка остаётся
+    обычными свечами вместо того, чтобы задерживать всю страницу.
+
+    Палитра — помонетная и по ВСЕЙ модели, а не по окну: `state_palette`
+    закрепляет цвет за состоянием модели целиком, поэтому оттенок на плитке и
+    оттенок на /chart той же монеты совпадают. Между монетами цвета не
+    сравнимы по построению — состояния обучаются на каждую монету отдельно,
+    и это сказано на самой странице.
+
+    Кандидаты приезжают тем же ответом и теми же правилами, что на /chart:
+    только ВЫПУЩЕННЫЕ (прогоны `live`) и только STRONG с MODERATE. Слой
+    ретроспективы на обзорной странице не показывается вовсе — там его нечем
+    отличить: на /chart он отделён формой маркера и словом «ретро» в подписи,
+    а здесь подписей нет, и кружок рядом со стрелкой читался бы как ещё один
+    выпущенный кандидат. Кандидаты не ограничены моделью прогона по той же
+    причине, что и там: кандидат — свойство истории, а не модели (раздел 51).
+    """
+    hours = max(1, min(int(hours), OVERVIEW_MAX_HOURS))
+    out: dict[str, dict] = {}
+    for ticker in tickers:
+        root = _model_root_for_symbol(ticker)
+        if root is None:
+            continue
+        # Окно то же, что у баров: от последнего бара монеты назад. Считаем его
+        # прямо в SQL, чтобы не гонять список времён из первого запроса.
+        scope_sql, scope_params = model_run_scope(root, alias="b")
+        rows = fetch_all(
+            "WITH last AS ("
+            "  SELECT max(ts) AS ts FROM ohlcv WHERE symbol = %s AND tf = %s"
+            ") "
+            "SELECT o.ts, s.group_id, s.is_transition "
+            "FROM ohlcv o, last l "
+            "LEFT JOIN LATERAL ("
+            "  SELECT b.group_id, b.is_transition FROM bar_states b "
+            f"  WHERE b.symbol = %s AND b.ts = o.ts AND {scope_sql} "
+            "  ORDER BY b.run_id DESC LIMIT 1"
+            ") s ON true "
+            "WHERE o.symbol = %s AND o.tf = %s "
+            "  AND o.ts > l.ts - make_interval(hours => %s) "
+            "ORDER BY o.ts ASC",
+            [ticker, config.data.base_tf, ticker, *scope_params,
+             ticker, config.data.base_tf, hours],
+        )
+        palette = state_palette(root)
+        names = {
+            float(r["group_id"]): r["name"] or ""
+            for r in fetch_all(
+                "SELECT group_id, name FROM market_groups WHERE run_id = %s", (root,)
+            )
+        }
+        # Состояние, которого нет в market_groups, встречается штатно: разметка
+        # live могла приехать раньше, чем досчитался граф. Такой бар остаётся
+        # без цвета, а не получает случайный оттенок — на плитке размером с
+        # ладонь чужой цвет неотличим от настоящего.
+        bars = [
+            {"time": int(r["ts"].timestamp()),
+             "group_id": r["group_id"],
+             "color": palette.get(r["group_id"]),
+             "is_transition": bool(r["is_transition"])}
+            for r in rows if r["group_id"] is not None
+        ]
+        out[ticker] = {
+            "run_id": root,
+            "bars": bars,
+            "candidates": _overview_candidates(ticker, hours),
+            # Списком пар, а не словарём: ключ там — float, и в JSON он
+            # становится строкой «26.0», тогда как то же число из `bars`
+            # приезжает как 26. Словарь молча перестал бы находиться —
+            # подпись состояния оставалась бы пустой без единой ошибки.
+            "names": [{"group_id": gid, "name": name} for gid, name in sorted(names.items())],
+        }
+    return {"hours": hours, "symbols": out}
+
+
+#: Рейтинги, которые видно на обзорной странице. Те же, что в фильтре /chart
+#: по умолчанию: WEAK там сотни, и на плитке они закрывают саму раскраску.
+OVERVIEW_RATINGS = ("STRONG", "MODERATE")
+
+
+def _overview_candidates(symbol: str, hours: int) -> list[dict]:
+    """Выпущенные кандидаты монеты в окне — стрелками на плитке."""
+    rows = fetch_all(
+        "WITH last AS ("
+        "  SELECT max(ts) AS ts FROM ohlcv WHERE symbol = %s AND tf = %s"
+        ") "
+        "SELECT c.candidate_id, c.ts, c.research_side, c.rating, c.quality_score "
+        "FROM candidates c JOIN runs r ON r.run_id = c.run_id, last l "
+        "WHERE c.symbol = %s AND r.kind = 'live' AND c.rating = ANY(%s) "
+        "  AND c.ts > l.ts - make_interval(hours => %s) "
+        "ORDER BY c.ts ASC",
+        [symbol, config.data.base_tf, symbol, list(OVERVIEW_RATINGS), hours],
+    )
+    return [
+        {
+            "time": int(r["ts"].timestamp()),
+            "position": "belowBar" if r["research_side"] == "long" else "aboveBar",
+            "color": _rating_color(r["rating"]),
+            "shape": "arrowUp" if r["research_side"] == "long" else "arrowDown",
+            "rating": r["rating"],
+            "side": r["research_side"],
+            "score": r["quality_score"],
+            "id": r["candidate_id"],
+        }
+        for r in rows
+    ]
+
+
+def _model_root_for_symbol(symbol: str) -> int | None:
+    """
+    Корень модели монеты: последний завершённый `train`, иначе идущий.
+
+    Тот же выбор, что делает страница /chart по умолчанию, — иначе плитка и
+    полный график той же монеты красились бы разными поколениями модели, и
+    цвета между ними не совпадали бы без единой видимой причины.
+    """
+    run = (runs_repo.latest_completed_run("train", symbol)
+           or runs_repo.active_run("train", symbol))
+    return runs_repo.model_root(int(run["run_id"])) if run else None
+
+
+def _lag_minutes(ts: Any) -> int | None:
+    """Насколько последний бар монеты отстал от текущего момента, в минутах."""
+    if ts is None:
+        return None
+    now = pd.Timestamp.now(tz=getattr(ts, "tzinfo", None) or "UTC")
+    return max(0, int((now - pd.Timestamp(ts)).total_seconds() // 60))
+
+
 def _feature_version(root: int) -> str | None:
     """Набор признаков, которым обучена модель прогона."""
     row = fetch_one("SELECT feature_ver FROM state_models WHERE run_id = %s", (root,))

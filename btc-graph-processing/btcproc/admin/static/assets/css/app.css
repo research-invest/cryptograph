@@ -180,6 +180,45 @@ h4 { font-size: 11px; margin: 12px 0 3px; color: var(--muted);
 .topbar nav { display: flex; gap: 14px; flex: 1; }
 .topbar nav a { color: var(--muted); padding: 3px 0; border-bottom: 2px solid transparent; }
 .topbar nav a.on { color: var(--text); border-bottom-color: var(--accent); }
+
+/* Пункт шапки с подменю: ссылка + треугольник. inline-flex, а не блок, чтобы
+   пункт вёл себя в ряду навигации ровно как соседние ссылки. */
+.nav-group { position: relative; display: inline-flex; align-items: center; gap: 3px; }
+.nav-group.on > a { color: var(--text); }
+.nav-caret {
+  background: none; border: none; padding: 0 2px; cursor: pointer;
+  color: var(--muted); font-size: 10px; line-height: 1;
+}
+.nav-caret:hover, .nav-group.on .nav-caret { color: var(--text); }
+/* Меню висит поверх страницы, а не раздвигает шапку: sticky-шапка имеет
+   z-index 20, поэтому здесь нужен свой, иначе выпадающий список уезжал бы
+   под содержимое страницы. */
+/* [hidden] сам по себе выставляет display:none, но ЛЮБОЙ display в правиле
+   его перебивает — а он здесь нужен. Поэтому скрытие задаётся явно. */
+.nav-menu[hidden] { display: none; }
+/* Наведения достаточно, чтобы меню раскрылось: пункт один, и требовать
+   ради него прицельного попадания в треугольник незачем. Селектор из двух
+   классов перебивает `.nav-menu[hidden]` по специфичности, поэтому работает
+   и до первого клика. Клик при этом остаётся: с клавиатуры и с тачскрина
+   навести курсор нельзя. */
+.nav-group:hover .nav-menu, .nav-group:focus-within .nav-menu { display: flex; }
+/* Мостик от пункта шапки до меню: между ними 6px зазора, и без него
+   меню закрывалось бы ровно в момент движения мыши к его пункту. */
+.nav-group::after {
+  content: ''; position: absolute; top: 100%; left: 0; right: -20px; height: 10px;
+}
+.nav-menu {
+  position: absolute; top: calc(100% + 6px); left: -8px; z-index: 30;
+  display: flex; flex-direction: column; min-width: 168px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  box-shadow: var(--shadow); padding: 4px;
+}
+.topbar nav .nav-menu a {
+  padding: 5px 8px; border-radius: 5px; border-bottom: none; white-space: nowrap;
+}
+.topbar nav .nav-menu a:hover { background: var(--bg); color: var(--text); }
+.topbar nav .nav-menu a.on { color: var(--text); }
+
 .user { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 10px; }
 
 .theme-toggle {
@@ -605,3 +644,58 @@ nav.pager .muted { opacity: .45; }
                 border-color: var(--amber); color: var(--amber); }
 .tag.compressed { border-color: var(--line); color: var(--muted); }
 .tag.normal { color: var(--muted); }
+
+
+/* ─── Все инструменты ───────────────────────────────────────────────────── */
+/* Сетка плиток «монета + свечи». auto-fill с минимумом в 520px: на широком
+   мониторе получается две-три колонки, на ноутбуке две, на узком окне одна —
+   без брейкпоинтов, которые пришлось бы держать в согласии со списком монет
+   (он меняется чаще, чем вёрстка). Минимум крупный намеренно: плитка должна
+   читаться как график, а не как спарклайн. Высоту рядов подгоняет страница —
+   см. --tile-h ниже. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 8px; }
+.tile {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px 8px; display: flex; flex-direction: column; gap: 4px;
+}
+/* Заголовок обязан оставаться В ОДНУ строку: высота ряда считается по первой
+   плитке, и длинное имя состояния, перенёсшее строку у одной из них, сдвинуло
+   бы её график вниз ровно на эту строку. Что не влезло — режется многоточием
+   у имени состояния, единственного элемента переменной длины. */
+.tile-head {
+  display: flex; align-items: baseline; gap: 8px; font-size: 12.5px;
+  flex-wrap: nowrap; white-space: nowrap; overflow: hidden;
+}
+/* Название монеты ведёт на её полный график: обзорная плитка показывает
+   движение, а разметку состояниями и кандидатов — только /chart. */
+.tile-head .sym { font-weight: 600; font-size: 13.5px; color: inherit; text-decoration: none; }
+.tile-head .sym:hover { color: var(--accent); }
+.tile-head .price { color: var(--text); font-variant-numeric: tabular-nums; }
+.tile-head .chg { font-variant-numeric: tabular-nums; }
+/* Имя состояния под курсором. Цвет ставится скриптом — тот же, что у свечи,
+   иначе связь подписи с цветом на графике пришлось бы искать глазами.
+   Обрезается многоточием: имена состояний бывают в половину плитки. */
+.tile-head .state {
+  font-size: 11.5px; flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+/* Кандидат под курсором — рядом с состоянием, своим цветом (STRONG зелёный,
+   MODERATE янтарный): у стрелок на плитке подписей нет, места нет. */
+.tile-head .cand { font-size: 11.5px; flex: none; font-weight: 600; }
+.tile-head .sym, .tile-head .price, .tile-head .chg, .tile-head .lag { flex: none; }
+.tile-head .lag { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+/* Отставание больше двух часов — не косметика: у монеты либо не отработал
+   live, либо не доехал хвост баров, и молча показывать её наравне с
+   остальными нельзя. */
+.tile-head .lag.stale { color: var(--amber); }
+/* Высоту задаёт страница переменной --tile-h: она делит свободную высоту окна
+   на число рядов сетки, чтобы графики занимали экран целиком, а не оставляли
+   под собой пустоту. Число здесь — запасной путь на случай, если скрипт не
+   успел отработать. */
+.tile-box { height: var(--tile-h, 220px); }
+.tile-empty[hidden] { display: none; }
+.tile-empty {
+  height: var(--tile-h, 220px); display: grid; place-items: center;
+  color: var(--muted); font-size: 12px;
+  border: 1px dashed var(--line); border-radius: 6px;
+}

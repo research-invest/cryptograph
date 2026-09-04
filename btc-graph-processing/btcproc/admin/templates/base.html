@@ -58,7 +58,19 @@
   <nav>
     <a href="/?{{ symbol_qs }}" class="{{ 'on' if active == 'dashboard' }}">Сводка</a>
     <a href="/graph?{{ symbol_qs }}" class="{{ 'on' if active == 'graph' }}">Граф состояний</a>
-    <a href="/chart?{{ symbol_qs }}" class="{{ 'on' if active == 'chart' }}">График</a>
+    {# «График» — ссылка и одновременно вход в подменю. Треугольник вынесен в
+       отдельную кнопку намеренно: клик по самому слову обязан вести на график
+       выбранной монеты, как и раньше, — пункт меню, открывающийся вместо
+       перехода, ломал бы привычный путь ради одной редкой страницы. #}
+    <span class="nav-group{{ ' on' if active in ('chart', 'charts') }}">
+      <a href="/chart?{{ symbol_qs }}" class="{{ 'on' if active == 'chart' }}">График</a>
+      <button type="button" class="nav-caret" id="chartMenuBtn"
+              aria-haspopup="true" aria-expanded="false" aria-controls="chartMenu"
+              title="Ещё графики">▾</button>
+      <span class="nav-menu" id="chartMenu" hidden>
+        <a href="/charts" class="{{ 'on' if active == 'charts' }}">Все инструменты</a>
+      </span>
+    </span>
     <a href="/candidates?{{ symbol_qs }}" class="{{ 'on' if active == 'candidates' }}">Кандидаты</a>
     <a href="/runs" class="{{ 'on' if active == 'runs' }}">Прогоны</a>
     {# Сервер без ?symbol=: страница про машину целиком, монета к ней отношения
@@ -111,6 +123,29 @@
   picker.addEventListener('change', function () {
     window.location.search = '?symbol=' + encodeURIComponent(picker.value);
   });
+})();
+
+// Подменю «График» в шапке. Открывается только треугольником; сама ссылка
+// «График» остаётся обычной ссылкой и в обработчик не попадает.
+(function () {
+  var btn = document.getElementById('chartMenuBtn');
+  var menu = document.getElementById('chartMenu');
+  if (!btn || !menu) return;
+  function setOpen(open) {
+    menu.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  btn.addEventListener('click', function (event) {
+    event.stopPropagation();   // иначе слушатель на document закроет меню сразу
+    setOpen(menu.hidden);
+  });
+  // Клик мимо и Esc закрывают: меню из одного пункта не должно требовать
+  // повторного попадания в тот же треугольник.
+  document.addEventListener('click', function () { setOpen(false); });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') setOpen(false);
+  });
+  menu.addEventListener('click', function (event) { event.stopPropagation(); });
 })();
 
 // Читалка CSS-переменных: единственный источник цветов для Cytoscape и чарта.

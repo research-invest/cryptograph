@@ -205,6 +205,13 @@ TV_EXCHANGES: dict[str, str] = {
 }
 
 
+#: Окна страницы «все инструменты». Часы, а не дни: страница отвечает на
+#: вопрос «что происходит прямо сейчас», и всё, что длиннее суток, читается
+#: уже по одной монете на /chart.
+CHARTS_WINDOWS: tuple[int, ...] = (4, 8, 12, 24, 48)
+CHARTS_DEFAULT_HOURS = 12
+
+
 def tradingview_url(symbol: str) -> str | None:
     """
     Ссылка на тот же инструмент в TradingView, на базовом таймфрейме проекта.
@@ -385,6 +392,25 @@ def chart_page(request: Request, run: str | None = None, focus: str | None = Non
     return page(request, "chart.html", active="chart", symbol=symbol, run_id=run_id,
                 focus=opt_int(focus),
                 runs=runs_repo.list_runs(20, symbol))
+
+
+@app.get("/charts", response_class=HTMLResponse)
+def charts_all_page(request: Request, hours: str | None = None):
+    """
+    Все инструменты одним экраном: свечи каждой монеты за последние часы.
+
+    Отдельная страница, а не режим `/chart`: там смысл — разметка одной монеты
+    моделью её прогона (состояния, кандидаты, признаки), и всё это по
+    построению помонетно. Здесь смысл ровно обратный — сравнить движение
+    инструментов между собой, — поэтому ни прогона, ни фильтров тут нет.
+
+    Монета из шапки не участвует: страница показывает все включённые сразу.
+    """
+    window = opt_int(hours) or CHARTS_DEFAULT_HOURS
+    window = max(1, min(window, queries.OVERVIEW_MAX_HOURS))
+    return page(request, "charts_all.html", active="charts", hours=window,
+                windows=CHARTS_WINDOWS,
+                tickers=symbols.tickers(only_enabled=True))
 
 
 @app.get("/candidates", response_class=HTMLResponse)
@@ -1214,6 +1240,31 @@ def api_chart_freshness(request: Request):
     тогда, когда приехало. Обоснование — докстринг `queries.chart_freshness`.
     """
     return queries.chart_freshness(current_symbol(request))
+
+
+@app.get("/api/charts/overview")
+def api_charts_overview(hours: str | None = None):
+    """
+    Свечи всех включённых монет за окно — одним ответом.
+
+    Один запрос на страницу, а не по запросу на плитку: монет семь, и семь
+    параллельных походов в ту же таблицу дали бы ровно тот же ответ дороже,
+    зато с разъезжающимся временем среза между плитками.
+    """
+    return queries.overview_charts(symbols.tickers(only_enabled=True),
+                                   hours=opt_int(hours) or CHARTS_DEFAULT_HOURS)
+
+
+@app.get("/api/charts/overview/states")
+def api_charts_overview_states(hours: str | None = None):
+    """
+    Раскраска плиток состояниями — вторым запросом после свечей.
+
+    Так же, как панель признака на /chart: свечи появляются сразу, разметка
+    доезжает следом и не задерживает страницу, когда у монеты ещё нет модели.
+    """
+    return queries.overview_states(symbols.tickers(only_enabled=True),
+                                   hours=opt_int(hours) or CHARTS_DEFAULT_HOURS)
 
 
 @app.get("/api/runs/{run_id}")

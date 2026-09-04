@@ -1,0 +1,430 @@
+{% extends "base.html" %}
+{% block title %}Все инструменты · crypto-graph{% endblock %}
+{% block main_class %}wide{% endblock %}
+
+{% block head %}
+<script src="/static/assets/js/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+
+{% block content %}
+{# Обзор рынка: свечи всех включённых монет разом, за короткое окно. Ни
+   прогона, ни раскраски состояниями, ни кандидатов здесь нет намеренно —
+   всё это помонетно и живёт на /chart. Здесь один вопрос: что происходит
+   прямо сейчас и где именно движение. #}
+<h1>Все инструменты</h1>
+<form class="toolbar" onsubmit="return false;">
+  <label>Окно
+    <select id="hours">
+      {% for value in windows %}
+        <option value="{{ value }}" {{ 'selected' if value == hours }}>{{ value }} ч</option>
+      {% endfor %}
+    </select>
+  </label>
+  <span class="muted" id="overviewInfo"></span>
+  <div class="spacer"></div>
+  <button id="reload" type="button" class="primary">Обновить</button>
+</form>
+{# Одна строка, а не абзац: место здесь отнимается у самих графиков.
+   Оговорка про несравнимость цветов между монетами обязательна — она ровно
+   то, что легко прочитать неверно, глядя на семь плиток разом. #}
+<p class="hint">Цвет свечи — состояние рынка, как на графике монеты; смена
+цвета = переход. Цвета <b>своей</b> модели у каждой монеты: одинаковый оттенок
+в соседних плитках — разные состояния. Имя состояния под курсором — в
+заголовке плитки, весь список — на странице монеты. Стрелка = выпущенный
+кандидат: снизу long, сверху short, зелёная STRONG, янтарная MODERATE;
+кружок с номером — смена состояния.</p>
+
+<div class="tiles" id="tiles"></div>
+<div id="chartsError" class="chart-error"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const el = (id) => document.getElementById(id);
+
+// Список монет приезжает с сервера сразу: плитки нужно нарисовать до данных,
+// иначе при медленном запросе страница секунду выглядит пустой.
+const TICKERS = {{ tickers | tojson }};
+
+function tileTheme() {
+  return {
+    layout: { background: { color: cssVar('--chart-bg') }, textColor: cssVar('--chart-text') },
+    grid: { vertLines: { color: cssVar('--chart-grid') }, horzLines: { color: cssVar('--chart-grid') } },
+    rightPriceScale: { borderColor: cssVar('--chart-border'), minimumWidth: 64 },
+    timeScale: { borderColor: cssVar('--chart-border'), timeVisible: true },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: cssVar('--chart-cross'), labelBackgroundColor: cssVar('--chart-cross') },
+      horzLine: { color: cssVar('--chart-cross'), labelBackgroundColor: cssVar('--chart-cross') },
+    },
+  };
+}
+
+function candleColors() {
+  const up = cssVar('--green');
+  const down = cssVar('--red');
+  return {
+    upColor: up, downColor: down,
+    borderUpColor: up, borderDownColor: down,
+    wickUpColor: up, wickDownColor: down,
+  };
+}
+
+// Точность шкалы — по минимуму выборки, как на /chart: дефолтные два знака
+// превращают шкалу PUMPUSDT (цена около 0.003) в столбик «0.00».
+function pricePrecisionFor(bars) {
+  let low = Infinity;
+  for (const b of bars) if (b.low > 0 && b.low < low) low = b.low;
+  if (!isFinite(low)) return 2;
+  if (low >= 10) return 2;
+  if (low >= 1) return 3;
+  if (low >= 0.1) return 4;
+  if (low >= 0.01) return 5;
+  if (low >= 0.0001) return 6;
+  return 8;
+}
+
+// Плитка на монету: заголовок с ценой и изменением + свой график. Создаётся
+// один раз, дальше переиспользуется — пересоздание на каждое обновление
+// сбрасывало бы масштаб и мигало бы фоном.
+const tiles = new Map();   // symbol -> { chart, series, price, chg, lag, box, empty }
+
+function buildTile(symbol) {
+  const card = document.createElement('div');
+  card.className = 'tile';
+  card.innerHTML =
+    '<div class="tile-head">' +
+      '<a class="sym" href="/chart?symbol=' + encodeURIComponent(symbol) + '"' +
+      ' title="Открыть график ' + symbol + ' с разметкой состояний">' + symbol + '</a>' +
+      '<span class="price"></span><span class="chg"></span>' +
+      // Имя состояния — там же, где цена: отдельной легенды на плитку нет и
+      // быть не может, состояний у модели полсотни.
+      '<span class="state"></span><span class="cand"></span>' +
+      '<span class="lag"></span>' +
+    '</div>' +
+    '<div class="tile-box"></div>' +
+    '<div class="tile-empty" hidden>нет баров в этом окне</div>';
+  el('tiles').appendChild(card);
+
+  const box = card.querySelector('.tile-box');
+  const chart = LightweightCharts.createChart(box, Object.assign({
+    autoSize: true,
+    // Плитка — картинка, а не рабочий инструмент: масштаб и перетаскивание
+    // сознательно оставлены только по горизонтали, вертикаль автомасштабом.
+    // Кому нужен разбор бара — идёт на /chart по названию монеты.
+    handleScroll: { pressedMouseMove: true, mouseWheel: true, horzTouchDrag: true },
+    handleScale: { axisPressedMouseMove: { time: true, price: false },
+                   mouseWheel: true, pinch: true },
+    timeScale: { rightOffset: 2 },
+  }, tileTheme()));
+  const series = chart.addCandlestickSeries(candleColors());
+
+  const tile = {
+    chart, series, box, symbol,
+    price: card.querySelector('.price'),
+    chg: card.querySelector('.chg'),
+    state: card.querySelector('.state'),
+    cand: card.querySelector('.cand'),
+    lag: card.querySelector('.lag'),
+    empty: card.querySelector('.tile-empty'),
+    // Бары и разметка хранятся раздельно: они приезжают двумя запросами и
+    // обновляются независимо, а склеиваются в paint().
+    bars: [],
+    states: new Map(),   // time -> { color, group_id }
+    candidates: new Map(),   // time -> кандидат, выпущенный на этом баре
+    names: new Map(),   // group_id -> имя состояния
+    runId: null,
+  };
+
+  // Имя состояния под курсором. Подпись, а не подсказка у курсора: на плитке
+  // размером с ладонь всплывающее окно закрыло бы сам график.
+  chart.subscribeCrosshairMove((param) => {
+    showState(tile, param && param.time ? param.time : null);
+  });
+  tiles.set(symbol, tile);
+  return tile;
+}
+
+// Строка состояния в заголовке. Без времени под курсором показываем последний
+// бар: пустая строка читалась бы как «разметки нет».
+function showState(tile, time) {
+  const at = time === null ? (tile.bars.length ? tile.bars[tile.bars.length - 1].time : null) : time;
+  const state = at === null ? null : tile.states.get(at);
+  if (!state) {
+    // Бар без разметки — штатный случай для хвоста свежее последнего прогона.
+    tile.state.textContent = '';
+    tile.state.style.color = '';
+    return;
+  }
+  const name = tile.names.get(state.group_id) || '';
+  tile.state.textContent = '#' + state.group_id + (name ? ' ' + name : '');
+  tile.state.style.color = state.color || '';
+
+  // Кандидат на этом баре дописывается отдельным элементом своим цветом:
+  // подписей у маркеров на плитке нет — места нет, — и прочитать «STRONG или
+  // MODERATE» иначе можно только по оттенку стрелки.
+  const candidate = at === null ? null : tile.candidates.get(at);
+  if (candidate) {
+    const score = candidate.score === null || candidate.score === undefined
+      ? '' : ' ' + candidate.score.toFixed(2);
+    tile.cand.textContent = candidate.rating + ' ' + candidate.side + score;
+    tile.cand.style.color = candidate.color;
+  } else {
+    tile.cand.textContent = '';
+  }
+}
+
+TICKERS.forEach(buildTile);
+
+// ─── Высота плиток ──────────────────────────────────────────────────────────
+// Смысл страницы — увидеть все инструменты разом, не прокручивая, поэтому
+// высота ряда считается от окна, а не задана константой. Константа врала бы
+// вдвойне: и от числа монет (их семь сегодня и восемь завтра), и от ширины
+// окна — колонок в сетке от одной до трёх, и рядов при семи монетах бывает
+// от трёх до семи.
+//
+// Число колонок берём у самого CSS Grid (gridTemplateColumns после раскладки —
+// это список фактических ширин), а не считаем сами по минимальной ширине:
+// повторять здесь арифметику auto-fill значило бы держать два места в согласии
+// вручную.
+const TILE_MIN_HEIGHT = 150;   // ниже свечи уже не читаются
+const TILE_GAP_BOTTOM = 12;    // чтобы нижний ряд не упирался в край окна
+
+function layoutTiles() {
+  const grid = el('tiles');
+  if (!grid || !grid.children.length) return;
+  const style = getComputedStyle(grid);
+  const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length || 1;
+  const rows = Math.ceil(grid.children.length / columns);
+  const gap = parseFloat(style.rowGap) || 0;
+  // Оправа плитки — заголовок, отступы и рамка — МЕРЯЕТСЯ, а не задаётся
+  // числом: константа разъехалась бы с CSS молча, и последний ряд уезжал бы
+  // за нижний край окна ровно на разницу. Это та же ошибка, из-за которой на
+  // /chart высота графика считается от фактического положения блока.
+  const first = grid.children[0];
+  const box = first.querySelector('.tile-box, .tile-empty');
+  const chrome = Math.max(0, first.getBoundingClientRect().height
+                             - box.getBoundingClientRect().height);
+  const free = window.innerHeight - grid.getBoundingClientRect().top - TILE_GAP_BOTTOM;
+  const height = (free - gap * (rows - 1)) / rows - chrome;
+  document.documentElement.style.setProperty(
+    '--tile-h', Math.max(TILE_MIN_HEIGHT, Math.floor(height)) + 'px');
+}
+
+// autoSize у графиков подхватывает новую высоту контейнера сам, поэтому
+// пересоздавать их не нужно — достаточно поменять переменную.
+window.addEventListener('resize', layoutTiles);
+
+function fmtPrice(value, precision) {
+  return value === null || value === undefined ? '—' : value.toFixed(precision);
+}
+
+function fmtLag(minutes) {
+  if (minutes === null || minutes === undefined) return '';
+  if (minutes < 60) return 'данные ' + minutes + ' мин назад';
+  return 'данные ' + Math.floor(minutes / 60) + ' ч назад';
+}
+
+// Свечи + разметка. Цвет бара — состояние модели монеты; бар, который модель
+// ещё не разметила (хвост свежее последнего прогона), остаётся обычным
+// зелёным или красным, а не красится чужим цветом: на плитке подмену цвета
+// заметить невозможно.
+// Сколько подписей состояний ставить на плитку. На /chart их сорок на полторы
+// тысячи баров; здесь баров полсотни, а места вчетверо меньше — больше пяти
+// номеров превращают верх графика в сплошную строку.
+const LABELS_TARGET = 5;
+
+// Номера состояний — на первом баре каждого отрезка, то есть ровно там, где
+// состояние сменилось. Подписываются САМЫЕ ДЛИННЫЕ отрезки окна: короткие
+// стоят вплотную и сливаются в строку, а длинный отрезок — это и есть то, в
+// чём рынок держался.
+function stateMarkers(tile, taken) {
+  if (!tile.bars.length || !tile.states.size) return [];
+  const runs = [];
+  tile.bars.forEach((bar, i) => {
+    const state = tile.states.get(bar.time);
+    if (!state) return;
+    const prev = runs[runs.length - 1];
+    if (prev && prev.group_id === state.group_id && prev.end === i - 1) prev.end = i;
+    else runs.push({ group_id: state.group_id, color: state.color, start: i, end: i, time: bar.time });
+  });
+  // Ровно LABELS_TARGET штук, а не «все длиннее порога»: порог по длине даёт
+  // больше подписей, чем задумано, когда несколько отрезков одинаковой длины
+  // делят последнее место, — на полусотне баров таких совпадений много.
+  // Порядок по времени восстанавливаем следом: маркеры обязаны идти по
+  // возрастанию, этого требует библиотека.
+  const longest = runs
+    .slice()
+    .sort((a, b) => (b.end - b.start) - (a.end - a.start))
+    .slice(0, LABELS_TARGET);
+  return longest
+    .sort((a, b) => a.time - b.time)
+    .map((r) => {
+      // Сторона свободная: стрелка кандидата на том же баре важнее подписи.
+      const position = !taken.has(r.time + '|aboveBar') ? 'aboveBar'
+        : !taken.has(r.time + '|belowBar') ? 'belowBar' : null;
+      if (position === null) return null;
+      return { time: r.time, position, color: r.color, shape: 'circle',
+               text: String(r.group_id) };
+    })
+    .filter(Boolean);
+}
+
+function paint(tile) {
+  const painted = tile.bars.map((bar) => {
+    const state = tile.states.get(bar.time);
+    if (!state || !state.color) return bar;
+    return Object.assign({}, bar, {
+      color: state.color, borderColor: state.color, wickColor: state.color,
+    });
+  });
+  tile.series.setData(painted);
+
+  // Маркеры одним списком и обязательно по возрастанию времени — этого
+  // требует сама библиотека. Стрелки кандидатов кладём первыми: они занимают
+  // сторону бара, а подпись состояния уступает.
+  const marks = Array.from(tile.candidates.values())
+    .map(c => ({ time: c.time, position: c.position, color: c.color, shape: c.shape }));
+  const taken = new Set(marks.map(m => m.time + '|' + m.position));
+  marks.push(...stateMarkers(tile, taken));
+  marks.sort((a, b) => a.time - b.time);
+  tile.series.setMarkers(marks);
+  // Вписываем окно заново: раскраска приезжает вторым запросом, и без этого
+  // плитка иногда оставалась на масштабе, снятом до её появления.
+  tile.chart.timeScale().fitContent();
+  showState(tile, null);
+}
+
+function renderTile(item) {
+  const tile = tiles.get(item.symbol) || buildTile(item.symbol);
+  const bars = item.bars || [];
+  const precision = pricePrecisionFor(bars);
+  tile.series.applyOptions({
+    priceFormat: { type: 'price', precision, minMove: Math.pow(10, -precision) },
+  });
+  tile.bars = bars;
+  paint(tile);
+  tile.chart.timeScale().fitContent();
+
+  tile.price.textContent = fmtPrice(item.last, precision);
+  const change = item.change_pct;
+  tile.chg.textContent = change === null || change === undefined
+    ? '' : (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
+  tile.chg.className = 'chg ' + (change > 0 ? 'up' : change < 0 ? 'down' : 'muted');
+  tile.lag.textContent = fmtLag(item.lag_minutes);
+  // Порог отставания — два базовых бара плюс запас: live ходит раз в полчаса,
+  // и «45 минут назад» это норма, а «три часа назад» уже нет.
+  tile.lag.className = 'lag' + (item.lag_minutes > 120 ? ' stale' : '');
+  // Пустое окно бывает штатно у только что заведённой монеты и не штатно —
+  // у отставшей. Молчать про это нельзя: пустой прямоугольник читается как
+  // сбой страницы.
+  tile.empty.hidden = bars.length > 0;
+  tile.box.style.display = bars.length > 0 ? '' : 'none';
+}
+
+async function load() {
+  const hours = el('hours').value;
+  let data;
+  try {
+    const response = await fetch('/api/charts/overview?' + new URLSearchParams({ hours }));
+    data = await response.json();
+    if (!response.ok) throw new Error(data.detail || ('ошибка запроса ' + response.status));
+  } catch (err) {
+    el('chartsError').innerHTML = '<span class="chip warn">' + err.message + '</span>';
+    return;
+  }
+  el('chartsError').innerHTML = '';
+  (data.symbols || []).forEach(renderTile);
+  layoutTiles();
+  const shown = (data.symbols || []).filter(s => (s.bars || []).length).length;
+  el('overviewInfo').textContent =
+    shown + ' из ' + (data.symbols || []).length + ' монет, таймфрейм ' + data.tf +
+    ', окно ' + data.hours + ' ч от последнего бара каждой монеты';
+  await loadStates(hours);
+}
+
+// Разметка состояниями — вторым запросом, уже по нарисованным свечам. Так
+// плитки появляются сразу, а не ждут поиска модели каждой монеты; и монета
+// без модели (новая, до первого train) не задерживает остальных.
+async function loadStates(hours) {
+  let data;
+  try {
+    const response = await fetch('/api/charts/overview/states?' + new URLSearchParams({ hours }));
+    data = await response.json();
+    if (!response.ok) throw new Error(data.detail || ('ошибка запроса ' + response.status));
+  } catch (err) {
+    // Свечи уже нарисованы — страница остаётся рабочей и без раскраски.
+    // Молчать при этом нельзя: серые свечи неотличимы от «состояний нет».
+    el('chartsError').innerHTML =
+      '<span class="chip warn">разметка состояниями не загрузилась: ' + err.message + '</span>';
+    return;
+  }
+  for (const [symbol, item] of Object.entries(data.symbols || {})) {
+    const tile = tiles.get(symbol);
+    if (!tile) continue;
+    tile.states = new Map((item.bars || []).map(b => [b.time, b]));
+    tile.names = new Map((item.names || []).map(n => [n.group_id, n.name]));
+    tile.candidates = new Map((item.candidates || []).map(c => [c.time, c]));
+    tile.runId = item.run_id;
+    paint(tile);
+  }
+  // Имя состояния в заголовке появилось только сейчас — высота оправы плитки
+  // могла измениться, и высоту рядов надо пересчитать по ней, а не по той,
+  // что была до разметки.
+  layoutTiles();
+}
+
+el('reload').addEventListener('click', load);
+el('hours').addEventListener('change', () => {
+  // Окно уезжает в адрес, чтобы обновление страницы и ссылка коллеге
+  // открывали то же, что видно на экране.
+  const params = new URLSearchParams(window.location.search);
+  params.set('hours', el('hours').value);
+  history.replaceState(null, '', '?' + params);
+  load();
+});
+
+// Тема живёт в опциях библиотеки, а не в CSS: перекрашиваем все плитки разом.
+window.addEventListener('btcproc:theme', () => {
+  for (const tile of tiles.values()) {
+    tile.chart.applyOptions(tileTheme());
+    tile.series.applyOptions(candleColors());
+  }
+});
+
+// ─── Автообновление ─────────────────────────────────────────────────────────
+// Ритм тот же, что у /chart: крон поднимает live в :00 и :30, бары приезжают
+// минутами позже. Отметки свежести здесь не спрашиваем — она помонетная, а
+// страница показывает все монеты сразу, и ждать самую медленную значило бы
+// держать всю страницу на её скорости. Вместо этого просыпаемся через фору
+// после отметки часов и грузим — запрос дешёвый, одна выборка OHLC.
+const TICK_MINUTES = 30;
+const GRACE_MS = 3 * 60 * 1000;
+
+function msUntilNextTick() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setMinutes(now.getMinutes() + (TICK_MINUTES - now.getMinutes() % TICK_MINUTES), 0, 0);
+  const delay = next - now;
+  return (delay > 0 ? delay : TICK_MINUTES * 60 * 1000) + GRACE_MS;
+}
+
+// Ошибка загрузки не должна убивать цикл: одного 502 от nginx хватило бы,
+// чтобы вкладка молча перестала обновляться до ручного рефреша.
+function scheduleReload() {
+  setTimeout(async () => {
+    try {
+      await load();
+    } catch (err) {
+      console.error('автообновление: шаг не удался, цикл продолжается', err);
+    } finally {
+      scheduleReload();
+    }
+  }, msUntilNextTick());
+}
+
+layoutTiles();
+load();
+scheduleReload();
+</script>
+{% endblock %}
