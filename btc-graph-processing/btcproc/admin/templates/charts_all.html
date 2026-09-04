@@ -24,15 +24,6 @@
   <div class="spacer"></div>
   <button id="reload" type="button" class="primary">Обновить</button>
 </form>
-{# Одна строка, а не абзац: место здесь отнимается у самих графиков.
-   Оговорка про несравнимость цветов между монетами обязательна — она ровно
-   то, что легко прочитать неверно, глядя на семь плиток разом. #}
-<p class="hint">Цвет свечи — состояние рынка, как на графике монеты; смена
-цвета = переход. Цвета <b>своей</b> модели у каждой монеты: одинаковый оттенок
-в соседних плитках — разные состояния. Имя состояния под курсором — в
-заголовке плитки, весь список — на странице монеты. Стрелка = выпущенный
-кандидат: снизу long, сверху short, зелёная STRONG, янтарная MODERATE;
-кружок с номером — смена состояния.</p>
 
 <div class="tiles" id="tiles"></div>
 <div id="chartsError" class="chart-error"></div>
@@ -46,11 +37,15 @@ const el = (id) => document.getElementById(id);
 // иначе при медленном запросе страница секунду выглядит пустой.
 const TICKERS = {{ tickers | tojson }};
 
+// Ширина оси цены. Фиксирована, потому что от неё считается ширина бара, а
+// та — пороги прореживания подписей.
+const PRICE_SCALE_WIDTH = 64;
+
 function tileTheme() {
   return {
     layout: { background: { color: cssVar('--chart-bg') }, textColor: cssVar('--chart-text') },
     grid: { vertLines: { color: cssVar('--chart-grid') }, horzLines: { color: cssVar('--chart-grid') } },
-    rightPriceScale: { borderColor: cssVar('--chart-border'), minimumWidth: 64 },
+    rightPriceScale: { borderColor: cssVar('--chart-border'), minimumWidth: PRICE_SCALE_WIDTH },
     timeScale: { borderColor: cssVar('--chart-border'), timeVisible: true },
     crosshair: {
       mode: LightweightCharts.CrosshairMode.Normal,
@@ -212,8 +207,19 @@ function layoutTiles() {
 }
 
 // autoSize у графиков подхватывает новую высоту контейнера сам, поэтому
-// пересоздавать их не нужно — достаточно поменять переменную.
-window.addEventListener('resize', layoutTiles);
+// пересоздавать их не нужно — достаточно поменять переменную. А вот маркеры
+// перерисовать надо: сколько подписей кандидатов влезает, зависит от ширины
+// плитки, и после смены числа колонок прежний набор либо наезжает сам на
+// себя, либо оставляет пустое место. Через таймер: тащить окно мышью — это
+// десятки событий подряд.
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  layoutTiles();
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    for (const tile of tiles.values()) if (tile.bars.length) paint(tile);
+  }, 200);
+});
 
 function fmtPrice(value, precision) {
   return value === null || value === undefined ? '—' : value.toFixed(precision);
@@ -270,6 +276,62 @@ function stateMarkers(tile, taken) {
     .filter(Boolean);
 }
 
+// Подпись кандидата — теми же словами, что на /chart: рейтинг, сторона,
+// оценка. Формат общий намеренно: одна и та же стрелка на двух страницах не
+// должна читаться по-разному.
+function candidateLabel(candidate) {
+  const score = candidate.score === null || candidate.score === undefined
+    ? '' : ' ' + candidate.score.toFixed(2);
+  return candidate.rating + ' ' + candidate.side + score;
+}
+
+// Подписи ПРОРЕЖИВАЮТСЯ: «MODERATE long 0.60» — это около сотни пикселей, а
+// кандидаты выходят пачками (пять штук за четыре часа — обычное дело). На
+// плитке шириной в треть экрана такие подписи наезжают друг на друга и
+// обрезаются её краем, то есть перестают читаться все разом, а не только
+// лишние. Поэтому подпись достаётся первому кандидату пачки, а остальные
+// остаются стрелками — они на месте, и полный текст любого виден в заголовке
+// при наведении.
+//
+// Порог в барах, а не в пикселях: ширина бара меняется с окном и шириной
+// плитки, а расстояние между кандидатами в барах — нет.
+// Пороги в ПИКСЕЛЯХ, а не в барах: подпись занимает своё место на экране
+// независимо от того, сколько баров под ней. Порог в барах верен ровно для
+// одной ширины плитки и одного окна — на 24 часах бар вдвое уже, чем на 12,
+// и «десять баров» превращаются то в сотню пикселей, то в полсотни.
+const LABEL_MIN_GAP_PX = 110;   // ширина «MODERATE long 0.60» с запасом
+const LABEL_EDGE_PX = 60;       // половина подписи: у края она уходит за плитку
+
+// Ширина бара на экране. Ось цены в ширину графика входит, поэтому вычитаем
+// её — иначе бар выходит уже, чем есть, и подписей ставится больше, чем влезет.
+function barWidthPx(tile) {
+  const plot = Math.max(1, tile.box.clientWidth - PRICE_SCALE_WIDTH);
+  return plot / Math.max(1, tile.bars.length);
+}
+
+function labelledCandidates(tile) {
+  const index = new Map(tile.bars.map((bar, i) => [bar.time, i]));
+  const width = barWidthPx(tile);
+  const edge = LABEL_EDGE_PX / width;
+  const gap = LABEL_MIN_GAP_PX / width;
+  const last = tile.bars.length - 1;
+  const labelled = new Set();
+  let lastAt = null;
+  for (const candidate of Array.from(tile.candidates.values()).sort((a, b) => a.time - b.time)) {
+    const at = index.get(candidate.time);
+    if (at === undefined) continue;   // кандидат вне окна баров
+    // У самых краёв подпись не ставится вовсе: она рисуется по центру своей
+    // стрелки и уходит за край плитки — «DERATE long 0.49» вместо «MODERATE».
+    // Обрезанное слово хуже отсутствующего: оно читается как другое.
+    if (at < edge || at > last - edge) continue;
+    if (lastAt === null || at - lastAt >= gap) {
+      labelled.add(candidate.time);
+      lastAt = at;
+    }
+  }
+  return labelled;
+}
+
 function paint(tile) {
   const painted = tile.bars.map((bar) => {
     const state = tile.states.get(bar.time);
@@ -283,8 +345,10 @@ function paint(tile) {
   // Маркеры одним списком и обязательно по возрастанию времени — этого
   // требует сама библиотека. Стрелки кандидатов кладём первыми: они занимают
   // сторону бара, а подпись состояния уступает.
+  const labelled = labelledCandidates(tile);
   const marks = Array.from(tile.candidates.values())
-    .map(c => ({ time: c.time, position: c.position, color: c.color, shape: c.shape }));
+    .map(c => ({ time: c.time, position: c.position, color: c.color, shape: c.shape,
+                 text: labelled.has(c.time) ? candidateLabel(c) : '' }));
   const taken = new Set(marks.map(m => m.time + '|' + m.position));
   marks.push(...stateMarkers(tile, taken));
   marks.sort((a, b) => a.time - b.time);
@@ -363,7 +427,11 @@ async function loadStates(hours) {
     const tile = tiles.get(symbol);
     if (!tile) continue;
     tile.states = new Map((item.bars || []).map(b => [b.time, b]));
-    tile.names = new Map((item.names || []).map(n => [n.group_id, n.name]));
+    // Array.isArray, а не `|| []`: если сервер когда-нибудь снова отдаст имена
+    // словарём, `.map` бросит исключение прямо в цикле — и раскраску потеряют
+    // ВСЕ монеты, а не одна. Плитка без имён остаётся раскрашенной.
+    const names = Array.isArray(item.names) ? item.names : [];
+    tile.names = new Map(names.map(n => [n.group_id, n.name]));
     tile.candidates = new Map((item.candidates || []).map(c => [c.time, c]));
     tile.runId = item.run_id;
     paint(tile);
