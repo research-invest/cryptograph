@@ -912,26 +912,46 @@ window.addEventListener('btcproc:theme', () => {
 });
 
 // ─── Автообновление ─────────────────────────────────────────────────────────
-// Раз в 30 минут, но не «через 30 минут от открытия страницы», а в круглые
-// отметки настенных часов (…:30, …:00) — так время следующего
-// обновления видно на любых часах, не только по факту открытия вкладки.
-// setTimeout, а не setInterval: каждый раз заново считаем миллисекунды до
-// следующей получасовки, поэтому дрейф от времени выполнения самого запроса
-// не накапливается.
+// Ритм задаёт крон: `live` стартует в круглые отметки часов (…:00, …:30). Но
+// расчёт не мгновенный — он идёт минутами, и тем дольше, чем дальше монета в
+// очереди `--all`. Обновляться ровно в :00 и :30 значит читать базу ДО того,
+// как в неё что-то записано: график показывал бы данные прошлого получаса, и
+// выглядело бы это как «система молчит», а не как «страница поторопилась».
+//
+// Поэтому по часам считается не обновление, а МОМЕНТ, с которого имеет смысл
+// спрашивать. Дальше страница коротко опрашивает `/api/chart/freshness` и
+// грузит бары ровно тогда, когда отметка данных изменилась и прогон монеты
+// завершился. Фиксированная задержка («обновлять на :36») этого не даёт:
+// длительность прогона не постоянна, а у последней монеты в очереди она
+// вдвое больше, чем у первой.
+//
+// setTimeout, а не setInterval: каждый шаг заново считает, когда проснуться,
+// поэтому время самих запросов не накапливается в дрейф.
+const AUTO_TICK_MINUTES = 30;             // ритм крона live
+const AUTO_GRACE_MS = 60 * 1000;          // фора после отметки: прогон только стартовал
+const AUTO_POLL_MS = 45 * 1000;           // как часто спрашивать, приехали ли данные
+const AUTO_WAIT_MAX_MS = 20 * 60 * 1000;  // потолок ожидания одного цикла
+
 let autoReloadTimer = null;
 let autoReloadInFlight = false;
+// Отметка данных, на которой нарисован текущий график. null — ещё не знаем;
+// первый же ответ её и заполнит, не считая данные изменившимися.
+let freshToken = null;
+// Момент начала ожидания новых данных. null — не ждём, спим до отметки часов.
+let waitingSince = null;
 
 function msUntilNextTick() {
   const now = new Date();
   const next = new Date(now);
-  next.setMinutes(now.getMinutes() + (30 - now.getMinutes() % 30), 0, 0);
+  const step = AUTO_TICK_MINUTES;
+  next.setMinutes(now.getMinutes() + (step - now.getMinutes() % step), 0, 0);
   const delay = next - now;
-  return delay > 0 ? delay : 30 * 60 * 1000;
+  return (delay > 0 ? delay : step * 60 * 1000) + AUTO_GRACE_MS;
 }
 
 // load() всегда прыгает на правый край и сбрасывает масштаб цены — это
-// ожидаемо для ручного «Показать», но фоновое обновление не должно каждые
-// 30 минут выдёргивать из-под пользователя вид, если он ушёл смотреть историю.
+// ожидаемо для ручного «Показать», но фоновое обновление не должно
+// выдёргивать из-под пользователя вид, если он ушёл смотреть историю.
 // Поэтому сохраняем видимый логический диапазон и восстанавливаем его после.
 async function autoReload() {
   if (autoReloadInFlight) return;
@@ -951,25 +971,78 @@ async function autoReload() {
   }
 }
 
-function scheduleAutoReload() {
+async function fetchFreshness() {
+  const response = await fetch('/api/chart/freshness?' + new URLSearchParams({ symbol: SYMBOL }));
+  if (!response.ok) throw new Error('freshness ' + response.status);
+  return await response.json();
+}
+
+// Один шаг цикла. Возвращает, через сколько будить следующий: либо скоро
+// (ждём приезда данных), либо к следующей отметке часов.
+async function autoStep() {
+  let state;
+  try {
+    state = await fetchFreshness();
+  } catch (err) {
+    // Отметка недоступна — ведём себя как раньше: обновляемся по часам.
+    // Хуже прежнего от этого не станет, а молча перестать обновляться нельзя.
+    console.warn('автообновление: отметка свежести недоступна, обновляюсь по часам', err);
+    waitingSince = null;
+    await autoReload();
+    return msUntilNextTick();
+  }
+
+  if (freshToken === null) freshToken = state.token;   // первая встреча — не «изменилось»
+  const changed = state.token !== freshToken;
+
+  // Данные приехали, но прогон монеты ещё идёт: бары он пишет раньше
+  // кандидатов, и обновиться сейчас значит показать бары без разметки, а
+  // через минуту всё равно перерисовать. Ждём конца.
+  if (changed && !state.busy) {
+    freshToken = state.token;
+    waitingSince = null;
+    await autoReload();
+    return msUntilNextTick();
+  }
+
+  if (waitingSince === null) waitingSince = Date.now();
+  if (Date.now() - waitingSince < AUTO_WAIT_MAX_MS) return AUTO_POLL_MS;
+
+  // Ждали дольше разумного. Причины бывают штатные: live выключен, монета
+  // отстала, идёт долгий train. Обновляемся всё равно — раз в цикл, а не
+  // каждые 45 секунд — и уходим спать до следующей отметки.
+  freshToken = state.token;
+  waitingSince = null;
+  await autoReload();
+  return msUntilNextTick();
+}
+
+function scheduleAutoReload(delay) {
+  clearTimeout(autoReloadTimer);
   autoReloadTimer = setTimeout(async () => {
-    // Ошибка загрузки НЕ должна убивать цикл. Раньше исключение из load()
+    // Ошибка шага НЕ должна убивать цикл. Раньше исключение из load()
     // пролетало наружу через await, следующий setTimeout не заводился, и
     // одного транзиентного сбоя — перезапуск админки, обрыв сети, 502 от
     // nginx — хватало, чтобы вкладка молча перестала обновляться до ручного
     // рефреша (аудит 2026-08-15, B3). Для страницы «смотрим рынок раз в
     // полчаса» это и есть основной сценарий.
+    let next = msUntilNextTick();
     try {
-      await autoReload();
+      next = await autoStep();
     } catch (err) {
-      console.error('автообновление: загрузка не удалась, цикл продолжается', err);
+      console.error('автообновление: шаг не удался, цикл продолжается', err);
     } finally {
-      scheduleAutoReload();
+      scheduleAutoReload(next);
     }
-  }, msUntilNextTick());
+  }, delay);
 }
 
-scheduleAutoReload();
+// Стартовая отметка снимается сразу: без неё первый же шаг счёл бы данные
+// изменившимися и перезагрузил график на ровном месте. Сбой здесь не важен —
+// шаг заполнит её сам.
+fetchFreshness().then(state => { freshToken = state.token; }).catch(() => {});
+
+scheduleAutoReload(msUntilNextTick());
 
 // Наводка на бар кандидата (`?focus=`). Окно данных не сужаем: кандидат из
 // сводки свежий, а 1500 баров базового ТФ — это две недели, он в них есть.

@@ -1204,6 +1204,18 @@ def api_chart_indicator(request: Request, name: str, run: str | None = None,
     )
 
 
+@app.get("/api/chart/freshness")
+def api_chart_freshness(request: Request):
+    """
+    Отметка данных монеты для автообновления графика.
+
+    Отдельный дешёвый запрос вместо перезагрузки всего графика по часам:
+    страница спрашивает «приехало ли что-то новое» и грузит бары только
+    тогда, когда приехало. Обоснование — докстринг `queries.chart_freshness`.
+    """
+    return queries.chart_freshness(current_symbol(request))
+
+
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: int):
     run = runs_repo.get_run(run_id)

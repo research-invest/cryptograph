@@ -428,6 +428,54 @@ def chart_data(run_id: int, symbol: str | None = None, start: str | None = None,
     }
 
 
+def chart_freshness(symbol: str) -> dict:
+    """
+    Отметка данных монеты: по её изменению график понимает, что перезагрузка
+    имеет смысл.
+
+    Нужна потому, что регулярный расчёт не мгновенный. Крон поднимает `live`
+    в начале получасовки, а бары и кандидаты появляются в базе минутами
+    позже — и тем позже, чем дальше монета в очереди `--all`. График,
+    обновляющийся ровно в :00 и :30, читает базу до записи и показывает
+    данные прошлого получаса, причём выглядит это как «система молчит», а не
+    как «страница поторопилась».
+
+    Наружу отдаётся не «свежо/несвежо», а токен и признак занятости: решение
+    принимает страница, сравнивая токен с тем, на котором нарисована. Так оно
+    не зависит ни от часов клиента, ни от того, сколько прогон занял на самом
+    деле — а занимает он каждый раз разное время.
+    """
+    last_bar = fetch_one(
+        "SELECT max(ts) AS ts FROM ohlcv WHERE symbol = %s AND tf = %s",
+        (symbol, config.data.base_tf),
+    ) or {}
+    # Терминальный статус любой, не только 'done': упавший прогон тоже
+    # заканчивает ожидание. Иначе страница ждала бы данных, которых уже не
+    # будет, до самого потолка ожидания.
+    last_run = fetch_one(
+        "SELECT run_id, kind, status, finished_at FROM runs "
+        "WHERE symbol = %s AND finished_at IS NOT NULL "
+        "ORDER BY finished_at DESC LIMIT 1",
+        (symbol,),
+    )
+    # Прогон любого вида: train перенумеровывает состояния и сносит граф
+    # монеты, читать базу на его середине бессмысленно ровно так же.
+    busy = runs_repo.active_run(symbol=symbol) is not None
+
+    token = "|".join([
+        str(last_bar.get("ts")),
+        str(last_run["run_id"]) if last_run else "-",
+        str(last_run["finished_at"]) if last_run else "-",
+    ])
+    return {
+        "symbol": symbol,
+        "token": token,
+        "busy": busy,
+        "last_bar_ts": last_bar.get("ts"),
+        "last_run": last_run,
+    }
+
+
 def _feature_version(root: int) -> str | None:
     """Набор признаков, которым обучена модель прогона."""
     row = fetch_one("SELECT feature_ver FROM state_models WHERE run_id = %s", (root,))
